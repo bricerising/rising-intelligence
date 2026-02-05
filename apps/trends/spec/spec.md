@@ -73,7 +73,7 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 
 - **NFR-001**: Snapshot cadence SHOULD be <= 5 minutes.
 - **NFR-002**: Processing MUST not fall behind indefinitely; consumer lag is observable.
-- **NFR-003**: Service MUST continue operating if Redis is unavailable (with degraded performance).
+- **NFR-003**: Service MUST crash and restart if Redis is unavailable. Redis is required infrastructure.
 
 ## Window State Management
 
@@ -83,15 +83,20 @@ Window state is maintained in Redis for speed (see `specs/006`):
 
 | Key Pattern | Purpose | TTL |
 |-------------|---------|-----|
-| `window:{window}:{topic}:{bucket}` | Event count for topic in bucket | 3 × window |
+| `window:{window}:{topic}:{bucket}` | Story count for topic in bucket | 3 × window |
 | `prev:{window}:{topic}` | Previous window count | 2 × window |
 | `evidence:{window}:{topic}` | Sorted set of top event IDs | 2 × window |
-| `baseline:{window}:{topic}:{dow}` | 7-day baseline cache | 24h |
+| `baseline:{window}:{topic}:{dow}` | 30-day baseline cache | 24h |
 | `dedup:{window}:{bucket}` | Set of processed event_ids | 3 × window |
+| `story:{window}:{topic}:{bucket}:{url_hash}` | Story cluster data | 3 × window |
+| `story_urls:{window}:{topic}:{bucket}` | Set of canonical URL hashes | 3 × window |
 
-### Event Deduplication
+### Event Deduplication and Story Clustering
 
-To prevent duplicate events from inflating window counts, the service tracks processed `event_id`s per window bucket:
+The Trends service performs **two levels of deduplication**:
+
+1. **Event-level dedup**: Prevent the same `event_id` from being processed twice (handles Kafka at-least-once)
+2. **Story-level dedup**: Group events sharing a canonical URL as one "story" for counting
 
 ```typescript
 async function processEvent(event: RawEvent): Promise<void> {
@@ -99,32 +104,82 @@ async function processEvent(event: RawEvent): Promise<void> {
   const bucket = getBucket(event.fetched_at, '60m');
   const dedupKey = `dedup:60m:${bucket}`;
 
-  // Check if already processed in this window
-  const isNew = await redis.sadd(dedupKey, event.event_id);
-  if (isNew === 0) {
-    // Duplicate - skip counting but don't error
+  // Level 1: Event-level dedup
+  const isNewEvent = await redis.sadd(dedupKey, event.event_id);
+  if (isNewEvent === 0) {
     metrics.increment('trends_duplicates_skipped_total');
     return;
   }
-
-  // Set TTL on first add (3 × window = 3 hours for 60m window)
   await redis.expire(dedupKey, 3 * 60 * 60);
 
-  // Count for each topic
+  // Level 2: Story-level dedup (URL normalization)
+  const canonicalUrl = normalizeUrl(event.url ?? extractFirstUrl(event.text));
+
   for (const topic of topics) {
-    await incrementTopicCount(topic, bucket);
+    await countStoryForTopic(topic, bucket, event, canonicalUrl);
     await updateEvidence(topic, event);
+  }
+}
+
+async function countStoryForTopic(
+  topic: string,
+  bucket: string,
+  event: RawEvent,
+  canonicalUrl: string | null
+): Promise<void> {
+  const storyUrlsKey = `story_urls:60m:${topic}:${bucket}`;
+
+  if (canonicalUrl) {
+    const urlHash = hash(canonicalUrl);
+    const isNewStory = await redis.sadd(storyUrlsKey, urlHash);
+    await redis.expire(storyUrlsKey, 3 * 60 * 60);
+
+    if (isNewStory === 1) {
+      // New story - increment count
+      await incrementStoryCount(topic, bucket);
+    }
+    // Existing story - don't increment, but still track for evidence
+  } else {
+    // No URL - treat as standalone story (count the event)
+    await incrementStoryCount(topic, bucket);
   }
 }
 ```
 
-**Why dedup at this layer?**
-- Kafka delivers at-least-once (duplicates are expected)
-- Consumer restarts replay from last committed offset
-- Without dedup, replayed events inflate counts
-- Dedup is cheap (Redis SADD is O(1))
+**URL Normalization**:
 
-**Recovery**: After restart, the dedup set may be incomplete. The first window after restart may have slightly inflated counts (from events counted before restart + replayed). This stabilizes after one window period.
+```typescript
+function normalizeUrl(url: string | undefined): string | null {
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+
+    // Lowercase hostname
+    parsed.hostname = parsed.hostname.toLowerCase();
+
+    // Remove tracking params
+    const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content',
+                           'utm_term', 'ref', 'source', 'fbclid', 'gclid'];
+    trackingParams.forEach(p => parsed.searchParams.delete(p));
+
+    // Remove trailing slash
+    parsed.pathname = parsed.pathname.replace(/\/$/, '');
+
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+```
+
+**Why story-level dedup?**
+- Same AWS announcement appears on RSS, Reddit, HN, Bluesky
+- Without dedup: counted 4 times (over-counts volume)
+- With dedup: counted once (accurate story count)
+- Evidence still includes all sources (for brief diversity)
+
+**Recovery**: After restart, story dedup sets may be incomplete. The first window after restart may have slightly inflated counts. This stabilizes after one window period.
 
 ### Window Alignment
 
@@ -225,6 +280,8 @@ The Trends service MAY validate that topics match the allowlist (for filtering m
 
 Baselines provide historical context for trend scoring. Without baselines, a topic that's "always busy" (like "Python") would score the same as a sudden spike.
 
+**Baseline timeframe: 30 days** with day-of-week adjustment.
+
 ### Data Source
 
 Baselines are computed from the `trend_snapshots` table in Postgres:
@@ -239,7 +296,7 @@ SELECT
   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY volume) as median_volume
 FROM trend_snapshots,
   jsonb_array_elements(snapshot->'topics') as t(topic_data)
-WHERE generated_at > NOW() - INTERVAL '7 days'
+WHERE generated_at > NOW() - INTERVAL '30 days'
 GROUP BY topic, window, day_of_week, hour;
 ```
 
@@ -247,9 +304,9 @@ GROUP BY topic, window, day_of_week, hour;
 
 Baselines are recomputed **daily at midnight UTC**:
 
-1. Query last 7 days of snapshots from Postgres
+1. Query last 30 days of snapshots from Postgres
 2. Aggregate by topic + window + day-of-week + hour
-3. Compute mean and median volume
+3. Compute mean and median volume (median preferred for robustness)
 4. Cache results in Redis with 24h TTL
 
 ### Redis Caching
@@ -292,19 +349,20 @@ async function getBaseline(
     return median;
   }
 
-  // Fallback: no baseline data yet (first week)
+  // Fallback: no baseline data yet (first 30 days)
   return 0;
 }
 ```
 
 ### Cold Start Behavior
 
-During the first 7 days (no historical data):
-- `baseline_volume` = 0 for all topics
-- `baseline_delta` = 0 (neutral contribution to score)
-- Scoring relies on volume + acceleration only
+During the first 30 days (insufficient historical data):
+- If < 3 data points for same day-of-week, use all-days median from available data
+- If < 7 total data points, `baseline_volume` = 0 (no baseline adjustment)
+- Scoring relies on volume + acceleration only until data accumulates
+- Log when fallback is used: `log.info({ topic, reason: 'insufficient_data' }, 'Using baseline fallback')`
 
-After 7 days, baselines become meaningful and the full scoring formula applies.
+After 30 days, baselines are robust (4+ samples per day-of-week) and the full scoring formula applies.
 
 ## Scoring Algorithm
 
@@ -354,7 +412,7 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/rising_intelligence
 REDIS_URL=redis://localhost:6379
 TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
 
-# Scheduling (UTC recommended - see Timezone Handling)
+# Scheduling (all times UTC)
 DAILY_BRIEF_CRON=0 1 * * *  # 1:00 UTC daily
 SNAPSHOT_INTERVAL_SECONDS=300
 
@@ -366,21 +424,26 @@ MAX_LAG_AGE_MS=300000
 WEIGHT_VOLUME=0.3
 WEIGHT_ACCEL=0.5
 WEIGHT_BASELINE=0.2
+
+# Baseline
+BASELINE_LOOKBACK_DAYS=30
 ```
 
 ## Timezone Handling
 
-**All internal timestamps use UTC.** Local time is only used for display purposes.
+**All times are UTC. No local timezone support.**
 
 - Window buckets align to UTC clock time (e.g., 14:00 UTC, 14:15 UTC)
-- `fetched_at` from events is expected to be UTC ISO8601
+- `fetched_at` from events MUST be UTC ISO8601
 - Daily brief triggers at a fixed UTC time (configured via cron)
-- Grafana dashboards handle timezone conversion for display
+- Baselines use UTC day-of-week and hour
+- Grafana dashboards handle timezone conversion for display only
 
-**Why UTC?**
+**Why UTC only?**
 - Avoids DST-related bugs (missed or duplicate briefs)
 - Deterministic window alignment across restarts
 - Simpler baseline comparison (same UTC hour across days)
+- No timezone configuration to misconfigure
 
 ## Health Check
 
@@ -402,8 +465,8 @@ interface HealthStatus {
 
 **Health criteria**:
 - `healthy`: All dependencies reachable; consumer lag < 1000; snapshot within last 10 minutes
-- `degraded`: Redis unavailable OR lag > 1000 OR stale snapshots
-- `unhealthy`: Kafka OR Postgres unreachable
+- `degraded`: Lag > 1000 OR stale snapshots
+- `unhealthy`: Kafka OR Postgres OR Redis unreachable (service will crash)
 
 **Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
 

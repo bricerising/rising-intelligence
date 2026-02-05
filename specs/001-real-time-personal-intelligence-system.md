@@ -192,14 +192,16 @@ flowchart TD
 
 ### Kafka Topics
 
-| Topic | Producer | Consumer(s) | Purpose |
-|-------|----------|-------------|---------|
-| `events.raw` | Collector | Persister, Trends | Normalized source events |
-| `events.raw.dlq` | Collector | (manual inspection) | Failed parse/normalize |
-| `collector.heartbeat` | Collector | Trends | Per-source health heartbeats |
-| `trends.snapshots` | Trends | (stored to Postgres) | Periodic trend rankings |
-| `summary.requests` | Trends | Brief | Request to generate a brief |
-| `summary.results` | Brief | (stored to Postgres) | Generated briefs |
+| Topic | Producer | Consumer(s) | Partition Key | Purpose |
+|-------|----------|-------------|---------------|---------|
+| `events.raw` | Collector | Persister, Trends | `date_hour` (YYYYMMDDHH) | Normalized source events |
+| `events.raw.dlq` | Collector | (manual inspection) | `date_hour` | Failed parse/normalize |
+| `collector.heartbeat` | Collector | Trends | `source` | Per-source health heartbeats |
+| `trends.snapshots` | Trends | (stored to Postgres) | `window` | Periodic trend rankings |
+| `summary.requests` | Trends | Brief | `request_id` | Request to generate a brief |
+| `summary.results` | Brief | (stored to Postgres) | `request_id` | Generated briefs |
+
+**Partition key rationale**: Using `date_hour` for events provides predictable distribution and makes time-based queries efficient. All events from the same hour land on the same partition, enabling efficient windowed processing.
 
 ### Service Responsibilities
 
@@ -305,17 +307,27 @@ The allowlist MUST support aliases (e.g., "EC2" → `aws.ec2`, "Bedrock" → `aw
 
 Without deduplication, volume metrics over-count because we're measuring "mentions" not "unique stories."
 
-**Solution**: Two-tier approach combining URL clustering and source weighting.
+**Solution**: URL-based story clustering in the Trends service, applied per topic per window.
 
-#### Tier 1: URL-based Story Clustering
+#### Where Dedup Lives
 
-Events that share a canonical URL are grouped as the same "story":
+| Service | Dedup Responsibility |
+|---------|---------------------|
+| Collector | None - publishes all events |
+| Persister | None - writes all events to Postgres (preserves evidence diversity) |
+| Trends | **URL-based story dedup** when counting for windows |
+
+This design keeps Collector and Persister simple while ensuring trend counts are accurate.
+
+#### URL-based Story Clustering
+
+Events that share a canonical URL are grouped as the same "story" within a topic window:
 
 ```typescript
 interface StoryCluster {
   story_id: string;           // hash of canonical URL
   canonical_url: string;      // normalized URL (no query params, lowercase)
-  first_seen_at: string;      // earliest fetched_at
+  first_seen_at: string;      // earliest fetched_at in window
   source_events: string[];    // event_ids that reference this URL
   sources: Source[];          // unique sources that covered it
 }
@@ -331,31 +343,72 @@ interface StoryCluster {
 **Linking events to stories**:
 - Events with URLs: extract and normalize URL → lookup/create story
 - Events without URLs (social posts): attempt to link via extracted URLs in `text`
-- Events with no extractable URL: treated as standalone (no clustering)
+- Events with no extractable URL: treated as standalone (counted as individual event)
 
-#### Tier 2: Source Weighting
+#### Counting Strategy
 
-Even with clustering, we want volume to reflect both breadth and depth of coverage. Apply weights by source type:
+For trend scoring, count **unique stories** not raw events:
 
-| Source Type | Weight | Rationale |
-|-------------|--------|-----------|
-| Curated (RSS, News) | 1.0 | Original reporting / announcements |
-| Developer (HN, GitHub) | 0.8 | High-signal discussion |
-| Social (Reddit) | 0.3 | Multiple posts per story, often duplicative |
-| Microblog (Bluesky, Mastodon) | 0.2 | High volume, low signal per post |
-
-**Weighted volume calculation**:
 ```typescript
-function calculateWeightedVolume(events: RawEvent[]): number {
-  return events.reduce((sum, e) => sum + SOURCE_WEIGHTS[e.source], 0);
+function calculateTopicVolume(
+  events: RawEvent[],
+  window: TrendWindow
+): number {
+  // Group events by canonical URL
+  const stories = new Map<string, StoryCluster>();
+
+  for (const event of events) {
+    const canonicalUrl = normalizeUrl(event.url ?? extractFirstUrl(event.text));
+
+    if (canonicalUrl) {
+      // URL-based grouping
+      const existing = stories.get(canonicalUrl);
+      if (existing) {
+        existing.source_events.push(event.event_id);
+        existing.sources.push(event.source);
+      } else {
+        stories.set(canonicalUrl, {
+          story_id: hash(canonicalUrl),
+          canonical_url: canonicalUrl,
+          first_seen_at: event.fetched_at,
+          source_events: [event.event_id],
+          sources: [event.source],
+        });
+      }
+    } else {
+      // No URL - count as standalone story
+      stories.set(event.event_id, {
+        story_id: event.event_id,
+        canonical_url: '',
+        first_seen_at: event.fetched_at,
+        source_events: [event.event_id],
+        sources: [event.source],
+      });
+    }
+  }
+
+  return stories.size; // Unique stories, not events
 }
 ```
 
-**Story-level volume** (alternative to event-level):
+#### Redis Key Structure for Story Tracking
+
+```
+story:{window}:{topic}:{bucket}:{canonical_url_hash} → StoryCluster JSON
+story_count:{window}:{topic}:{bucket} → integer (unique story count)
+```
+
+TTL: 3× window size (same as event dedup)
+
+#### Source Diversity Bonus (Optional)
+
+Stories covered by multiple sources may be weighted higher:
+
 ```typescript
-// Count unique stories, not individual events
-function calculateStoryVolume(stories: StoryCluster[]): number {
-  return stories.length; // Each story counts as 1, regardless of how many events reference it
+function calculateDiversityBonus(story: StoryCluster): number {
+  const uniqueSources = new Set(story.sources).size;
+  // Bonus: 1.0 for 1 source, 1.2 for 2, 1.4 for 3+
+  return 1 + Math.min(uniqueSources - 1, 2) * 0.2;
 }
 ```
 
@@ -365,29 +418,16 @@ function calculateStoryVolume(stories: StoryCluster[]): number {
 # In topics.allowlist.yaml or separate config
 story_dedup:
   enabled: true
-  url_similarity_threshold: 0.9  # For fuzzy URL matching
-  source_weights:
-    rss: 1.0
-    news: 1.0
-    hackernews: 0.8
-    github: 0.8
-    reddit: 0.3
-    bluesky: 0.2
-    mastodon: 0.2
-  # Use weighted_volume (default) or story_count for trend scoring
-  volume_mode: weighted_volume
+  url_normalization:
+    remove_query_params: true
+    preserve_query_params: ["id", "v"]  # YouTube video ID, etc.
+    remove_tracking_params: ["utm_*", "ref", "source", "fbclid"]
+    follow_redirects: true
+    redirect_cache_ttl_seconds: 86400
+  diversity_bonus:
+    enabled: false  # Optional: boost multi-source stories
+    max_bonus: 1.4
 ```
-
-#### MVP vs Future
-
-**MVP**: Use source weighting only (simpler, no clustering infrastructure)
-- Apply weights at trend calculation time
-- Dedupe only within single source (already implemented via `seen_events`)
-
-**Future**: Add URL-based story clustering
-- Requires additional Redis structures for story tracking
-- Enables "story view" in dashboards (grouped by canonical URL)
-- Enables richer evidence selection (one item per source per story)
 
 ### Topic Discovery (Emerging Terms)
 
@@ -565,10 +605,11 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 - GitHub: `GITHUB_TRACKED_REPOS` (comma-separated `owner/repo`), `GITHUB_TOKEN`
 - LLM: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_DAILY_BUDGET_USD`, `LLM_MAX_TOPICS_PER_BRIEF`
 
-### Scheduling (suggested)
+### Scheduling
 
-- `TZ` (e.g., `America/Los_Angeles`)
-- `DAILY_BRIEF_LOCAL_TIME` (e.g., `17:00`)
+- `DAILY_BRIEF_CRON` (e.g., `0 1 * * *` for 1:00 UTC daily)
+
+**All times are UTC.** No local timezone configuration. Grafana handles display timezone conversion.
 
 ### Suggested initial sources (MVP defaults)
 
@@ -645,10 +686,13 @@ Where `norm()` maps to 0..1 (e.g., logistic scaling) and weights `wv/wa/wb` are 
 
 ### Baseline Computation (30-day with Day-of-Week Adjustment)
 
-**Why 30 days instead of 7?**
+**Baseline timeframe: 30 days** (not 7 days).
+
+**Why 30 days?**
 - 7 days is too short for tech news cycles
 - Conferences (re:Invent, WWDC, Google I/O) cause week-long spikes
 - One viral post can skew a 7-day baseline
+- 30 days provides ~4 samples per day-of-week for robust median
 
 **Why day-of-week adjustment?**
 - Tech discussion has strong weekly patterns:
@@ -687,8 +731,8 @@ function calculateBaseline(topic: string, window: TrendWindow, dayOfWeek: number
 }
 ```
 
-**Fallback for new topics**:
-- If < 3 data points for same day-of-week, use all-days median
+**Fallback for new topics** (first 30 days):
+- If < 3 data points for same day-of-week, use all-days median from available data
 - If < 7 total data points, use raw volume (no baseline adjustment)
 - Log when fallback is used for debugging
 
@@ -1036,24 +1080,27 @@ interface SystemHealth {
 
 **Impact**:
 - Window counters unavailable
-- Deduplication cache unavailable
+- Story deduplication cache unavailable
 - Budget tracking unavailable
 
 **Behavior**:
-- System level: UNHEALTHY (critical for Trends)
+- System level: **DOWN** (Redis is critical infrastructure)
 - Collector: CONTINUES (uses SQLite checkpoints, not Redis)
 - Persister: CONTINUES (writes to Postgres)
-- Trends: PAUSED - cannot compute snapshots without window state
-- Brief: PAUSED - no new snapshots to trigger briefs
+- Trends: **FAILS** - service crashes and restarts, cannot operate without Redis
+- Brief: **FAILS** - cannot track budget or process requests
+
+**Design decision**: Redis is required infrastructure, not optional. Services that depend on Redis MUST fail loudly rather than operate in a degraded state that produces incorrect results.
 
 **Recovery**:
-- On Redis recovery, Trends replays from last Kafka offset
+- On Redis recovery, services automatically reconnect
+- Trends replays from last committed Kafka offset
 - Window counts rebuild over one window period (15-60 min)
 - System returns to HEALTHY after one full window cycle
 
 **User visibility**:
-- Dashboard shows "Trend calculation paused - Redis unavailable"
-- Stale data warning on trend panels
+- Dashboard shows "System down - Redis unavailable"
+- Alert: `ri_redis_connection_lost` fires immediately
 
 #### Scenario 4: Postgres Down or Disk Full
 
@@ -1108,11 +1155,11 @@ interface SystemHealth {
 | 1 source | DEGRADED | ✅ (partial) | ✅ (with note) | None |
 | Multiple sources | DEGRADED | ✅ (limited) | ⚠️ (may skip) | None |
 | LLM | DEGRADED | ✅ | ❌ (queued) | None |
-| Redis | UNHEALTHY | ❌ (paused) | ❌ | None* |
+| Redis | **DOWN** | ❌ (crash) | ❌ (crash) | None* |
 | Postgres | UNHEALTHY | ⚠️ (no persist) | ❌ | None |
 | Kafka | DOWN | ❌ | ❌ | None |
 
-*Redis data loss is acceptable - ephemeral by design, rebuilt on recovery
+*Redis data loss is acceptable - ephemeral by design, rebuilt on recovery. Services crash and restart on Redis failure.
 
 ### Alerts for Degradation
 

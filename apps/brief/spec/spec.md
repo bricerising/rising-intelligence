@@ -258,40 +258,51 @@ For a 128K context model (e.g., GPT-4 Turbo, Claude 3):
 |-----------|--------------|-------|
 | System prompt | ~500 | Fixed |
 | Few-shot example | ~400 | Fixed |
-| Evidence per topic | ~1000 | Variable, truncate if needed |
-| Topics (max 10) | ~10000 | Total evidence budget |
+| Evidence per topic | ~2000 | Variable, generous for quality |
+| Topics (max 10) | ~20000 | Total evidence budget |
 | Output buffer | ~2000 | Reserved for response |
-| **Total** | ~13000 | Well under 128K |
+| **Total** | ~23000 | Well under 128K - plenty of headroom |
+
+**Design choice**: Allow longer excerpts (up to 500 chars) to preserve context. With 128K context window, we have ample budget. Better briefs are worth more tokens.
+
+### Evidence Excerpt Length
+
+Default `text_excerpt` length: **500 characters** (up from 200).
+
+Rationale:
+- Key information often appears after the first 200 chars
+- LLM produces better summaries with more context
+- Token budget is not constrained (using <25% of 128K window)
+- Cost difference is negligible (~$0.01/brief at GPT-4 Turbo pricing)
 
 ### Evidence Truncation Strategy
 
-When evidence exceeds budget:
+Truncation is a **last resort**, not a default:
 
 1. **Priority 1**: Keep highest-engagement items
 2. **Priority 2**: Ensure source diversity (at least 1 curated, 1 discussion)
-3. **Priority 3**: Truncate `text_excerpt` to 200 chars
-4. **Priority 4**: Reduce evidence items per topic (min 2)
+3. **Priority 3**: Reduce evidence items per topic (min 3)
+4. **Priority 4**: Only if still over budget, truncate `text_excerpt` to 300 chars
 
 ```typescript
+const EXCERPT_MAX_LENGTH = 500;  // Default - generous
+const EXCERPT_FALLBACK_LENGTH = 300;  // Only if over token budget
+
 function truncateEvidence(
   topics: TopicBriefInput[],
   maxTokens: number
 ): TopicBriefInput[] {
   let totalTokens = estimateTokens(topics);
 
+  // Step 1: Reduce item count if way over budget
   while (totalTokens > maxTokens) {
     // Find topic with most evidence
     const largest = topics.reduce((a, b) =>
       a.evidence.length > b.evidence.length ? a : b
     );
 
-    if (largest.evidence.length <= 2) {
-      // Can't reduce further, truncate excerpts
-      for (const topic of topics) {
-        for (const item of topic.evidence) {
-          item.text_excerpt = item.text_excerpt.slice(0, 200);
-        }
-      }
+    if (largest.evidence.length <= 3) {
+      // Can't reduce items further, fall back to shorter excerpts
       break;
     }
 
@@ -302,6 +313,18 @@ function truncateEvidence(
     largest.evidence.pop();
 
     totalTokens = estimateTokens(topics);
+  }
+
+  // Step 2: Only truncate excerpts if still over budget
+  if (totalTokens > maxTokens) {
+    log.warn({ totalTokens, maxTokens }, 'Truncating excerpts to fit budget');
+    for (const topic of topics) {
+      for (const item of topic.evidence) {
+        if (item.text_excerpt.length > EXCERPT_FALLBACK_LENGTH) {
+          item.text_excerpt = item.text_excerpt.slice(0, EXCERPT_FALLBACK_LENGTH) + '...';
+        }
+      }
+    }
   }
 
   return topics;
@@ -505,6 +528,9 @@ LLM_DAILY_BUDGET_USD=1.00
 LLM_MAX_TOPICS_PER_BRIEF=10
 LLM_MAX_EVIDENCE_PER_TOPIC=5
 LLM_MAX_OUTPUT_TOKENS=2000
+
+# Evidence
+EVIDENCE_EXCERPT_MAX_LENGTH=500
 
 # Retry
 LLM_MAX_RETRIES=3
