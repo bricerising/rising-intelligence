@@ -1,6 +1,7 @@
 # Spec 002: Unified Observability Stack (LGTM + OpenTelemetry)
 
-**Created**: 2026-02-05  
+**Created**: 2026-02-05
+**Updated**: 2026-02-05
 **Status**: Proposed
 
 ## Overview
@@ -12,7 +13,18 @@ The goal is to make the system **operationally legible** from day 1:
 - debug ingestion failures and rate limiting,
 - detect consumer lag / backlog,
 - understand trend computation timing and correctness,
-- correlate “a brief was produced” back to the evidence that drove it.
+- correlate "a brief was produced" back to the evidence that drove it.
+
+## Data Storage Responsibilities
+
+| Data Type | Storage | Notes |
+|-----------|---------|-------|
+| **Application logs** | Loki | Service debug logs, errors, trace correlation |
+| **Raw events** | Postgres | Searchable event archive (see spec 005) |
+| **Metrics** | Mimir | Prometheus-compatible metrics |
+| **Traces** | Tempo | Distributed traces |
+
+**Important**: Loki is for **application logs only**, not for raw event storage. Raw events (tweets, posts, articles) are stored in Postgres for efficient querying. This avoids dual-write complexity and leverages SQL's superior query capabilities.
 
 ## Architecture
 

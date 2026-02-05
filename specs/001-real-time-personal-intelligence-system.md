@@ -1,6 +1,7 @@
 # Spec 001: Real-Time Personal Intelligence System
 
-**Created**: 2026-02-05  
+**Created**: 2026-02-05
+**Updated**: 2026-02-05
 **Status**: Proposed
 
 ## Overview
@@ -51,21 +52,25 @@ Planned tree:
 
 ```text
 apps/
-  collector/          # multi-source ingestion → RawEvent
+  collector/          # multi-source ingestion → Kafka (events.raw)
     spec/
-  trends/             # windowed aggregation + scoring → TrendSnapshot
+  persister/          # Kafka consumer → Postgres + Redis (materialized views)
     spec/
-  brief/              # LLM summarization → Brief
+  trends/             # Kafka consumer → windowed aggregation + scoring
+    spec/
+  brief/              # Kafka consumer → LLM summarization
     spec/
 packages/
   shared/             # contracts + config + lifecycle + telemetry + kafka helpers
+  db/                 # Prisma schema + client
 infra/
   grafana/            # provisioning + dashboards
-  postgres/           # read model init schema (local dev)
+  postgres/           # bootstrap only (schema managed by Prisma)
   loki/
   mimir/
   tempo/
   otel/
+  config/             # topics allowlist
 specs/                # thematic system specifications
 ```
 
@@ -97,6 +102,7 @@ specs/                # thematic system specifications
 - **NFR-004 (Cost Control)**: LLM usage MUST be bounded (batch + top-trends only) with a configurable daily token/cost budget.
 - **NFR-005 (Local-first Security)**: Secrets MUST be stored out of source control and not logged.
 - **NFR-006 (Auditability)**: Trend scores and briefs MUST link back to source URLs/IDs used as evidence.
+- **NFR-007 (Data Freshness)**: Briefs MUST NOT be generated when consumer lag exceeds configured thresholds.
 
 ## Invariants (“Constitution”)
 
@@ -107,57 +113,102 @@ specs/                # thematic system specifications
 
 ## Architecture
 
+### Design Principle: Kafka as the Central Driver
+
+**Kafka topics are the main driver of activity in this system.** Services communicate via Kafka, and derived state (Postgres, Redis) is materialized by consumers. This provides:
+
+- **Single source of truth**: Kafka is the append-only event log
+- **Decoupled services**: Each service has a single responsibility
+- **Replay-friendly**: All derived state can be rebuilt from Kafka
+- **At-least-once semantics**: Duplicates are expected; consumers are idempotent
+
 ### High-level components
 
-- **Collector service** (`apps/collector`): fetch (multiple sources) → normalize → publish.
-- **Kafka (or compatible)**: central event bus + retention for replay.
-- **Trend processor** (`apps/trends`): topic extraction + windowed aggregation + scoring.
-- **Storage/observability**:
-  - **Loki** for raw event logs (search + ad-hoc LogQL metrics).
-  - Optional **Prometheus/Mimir** for first-class metrics.
-  - **Postgres** for durable trend snapshots and briefs (Grafana query datasource).
-- **LLM summarizer service** (`apps/brief`, LangChain): consumes summary requests → emits briefs.
+- **Collector service** (`apps/collector`): fetch (multiple sources) → normalize → publish to Kafka. Does NOT write to Postgres/Redis directly.
+- **Kafka (Redpanda)**: central event bus + retention for replay. The source of truth for all events.
+- **Persister service** (`apps/persister`): consumes `events.raw` → writes to Postgres + Redis. Lightweight materializer.
+- **Trends service** (`apps/trends`): consumes `events.raw` → topic extraction + windowed aggregation + scoring → publishes snapshots.
+- **Brief service** (`apps/brief`): consumes `summary.requests` → LLM summarization → publishes results.
+- **Storage**:
+  - **Postgres**: queryable materialized views (raw events, snapshots, briefs). See `specs/005`.
+  - **Redis**: ephemeral state (window aggregation, seen cache). See `specs/006`.
+- **Observability** (LGTM stack):
+  - **Loki** for application logs (service debug logs, NOT raw events).
+  - **Mimir** for Prometheus-compatible metrics.
+  - **Tempo** for distributed traces.
 - **Grafana dashboards**: metrics, logs, top trends, and brief display.
 
 ### Data flow
 
 ```mermaid
-flowchart LR
+flowchart TD
   subgraph Sources
     RSS[RSS / News / Blogs]
     HN[Hacker News / Dev feeds]
     RD[Reddit]
     GH[GitHub releases/trending]
-    X["Twitter/X (optional)"]
+  end
+
+  subgraph Kafka
+    ER[events.raw]
+    TS[trends.snapshots]
+    SReq[summary.requests]
+    SRes[summary.results]
   end
 
   C[collector]
+  PS[persister]
+  TP[trends]
+  BR[brief]
 
-  K[(Kafka / Redpanda)]
-  L[(Loki)]
-  P[(Prometheus/Mimir\n(optional))]
+  R[(Redis)]
   PG[(Postgres)]
-
-  TP[trend-processor]
-  SR[summary-requests topic]
-  SS[llm-summarizer]
-  OUT[briefs + trend snapshots]
   G[Grafana]
 
-  RSS --> C --> K
+  RSS --> C
   HN --> C
   RD --> C
   GH --> C
-  X --> C
 
-  C --> L --> G
-  K --> TP --> OUT --> G
-  TP --> P --> G
-  TP --> PG
+  C --> ER
 
-  TP --> SR --> SS --> OUT
-  SS --> PG
+  ER --> PS
+  PS --> PG
+  PS --> R
+
+  ER --> TP
+  TP --> R
+  TP --> TS
+  TP --> SReq
+  TS --> PG
+
+  SReq --> BR
+  BR --> SRes
+  SRes --> PG
+
+  PG --> G
 ```
+
+### Kafka Topics
+
+| Topic | Producer | Consumer(s) | Purpose |
+|-------|----------|-------------|---------|
+| `events.raw` | Collector | Persister, Trends | Normalized source events |
+| `events.raw.dlq` | Collector | (manual inspection) | Failed parse/normalize |
+| `trends.snapshots` | Trends | (stored to Postgres) | Periodic trend rankings |
+| `summary.requests` | Trends | Brief | Request to generate a brief |
+| `summary.results` | Brief | (stored to Postgres) | Generated briefs |
+
+### Service Responsibilities
+
+| Service | Reads From | Writes To | Responsibility |
+|---------|------------|-----------|----------------|
+| Collector | External APIs | Kafka (`events.raw`) | Ingest + normalize |
+| Persister | Kafka (`events.raw`) | Postgres, Redis | Materialize queryable state |
+| Trends | Kafka (`events.raw`) | Kafka, Postgres, Redis | Compute trends, trigger briefs |
+| Brief | Kafka (`summary.requests`) | Kafka, Postgres | LLM summarization |
+
+**Key insight**: Collector has no database dependencies. It only talks to external APIs and Kafka. This keeps ingestion fast and simple.
 
 ## Event & Topic Model
 
@@ -282,7 +333,7 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 - `KAFKA_BROKERS` (e.g., `localhost:9092`)
 - `KAFKA_CLIENT_ID`
 - `KAFKA_CONSUMER_GROUP` (per service)
-- `LOKI_URL` (if mirroring raw events to Loki)
+- `REDIS_URL` (e.g., `redis://localhost:6379`)
 - `TOPICS_ALLOWLIST_PATH` (aliases + matchers)
 - `SCHEMA_REGISTRY_URL` (e.g., `http://localhost:8081`)
 - Postgres:
@@ -319,10 +370,39 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 
 ## Trend Detection & Scoring
 
+### Window Time Semantics
+
+The system uses **event time** (from `fetched_at`) for window assignment, not processing time:
+
+- **Event time**: When the collector fetched the item (`fetched_at` field)
+- **Processing time**: When the trends service processes the event
+
+**Why event time?**
+- Deterministic: same events always produce same windows
+- Replay-safe: reprocessing historical data produces correct results
+- Handles consumer lag: late-arriving events go to correct windows
+
+**Window alignment**: Buckets align to clock time:
+- 15m windows: :00, :15, :30, :45
+- 60m windows: :00
+- 24h windows: midnight UTC (or configured timezone)
+
+**Late arrivals**: Events arriving after their window has closed are counted in the window they belong to, but may not affect already-published snapshots. The next snapshot will include them.
+
+### Window State Management
+
+Window state (counters, evidence) is maintained in **Redis** for speed (see `specs/006`):
+
+- Current window counters: `window:{window}:{topic}:{bucket}`
+- Previous window cache: `prev:{window}:{topic}`
+- Evidence buffer: sorted set of top event IDs per topic
+
+**Recovery on restart**: Consumer replays from last committed Kafka offset. Counts may temporarily inflate but stabilize after one window period. This is acceptable for MVP.
+
 ### Windows
 
 - Compute metrics on at least `15m` and `60m` windows in MVP.
-- Optionally compute `24h` aggregates for “daily context”.
+- Optionally compute `24h` aggregates for "daily context".
 
 ### Scoring (MVP proposal)
 
@@ -387,10 +467,26 @@ export interface BriefResult {
 }
 ```
 
+### Data Freshness Validation
+
+Before triggering a brief, the Trends service MUST verify data freshness:
+
+1. **Check consumer lag**: Query `consumer_lag` table for the `trends-processor` group
+2. **Freshness threshold**: Total lag across all partitions MUST be < `MAX_BRIEF_LAG_MESSAGES` (default: 100)
+3. **Staleness threshold**: `updated_at` for lag records MUST be < `MAX_BRIEF_LAG_AGE_SECONDS` (default: 300)
+
+**If data is stale**:
+- Log a warning with lag details
+- Skip brief generation (do not publish `SummaryRequest`)
+- Emit metric `brief_skipped_stale_data_total`
+- Retry on next scheduled trigger
+
+**Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours) would mislead the operator. It's better to skip and wait for data to catch up.
+
 ### Triggering
 
-- **Daily**: Trends service publishes a `summary.requests` message at a fixed local time (e.g., 17:00), including last 24h + last 60m context.
-- **Threshold** (optional): Trends service publishes a request if any topic exceeds alert threshold, requesting a short “flash brief”.
+- **Daily**: Trends service publishes a `summary.requests` message at a fixed local time (e.g., 17:00), including last 24h + last 60m context. **Only if data freshness check passes.**
+- **Threshold** (optional): Trends service publishes a request if any topic exceeds alert threshold, requesting a short "flash brief". **Only if data freshness check passes.**
 
 ### SummaryRequest format (MVP)
 
@@ -408,22 +504,23 @@ export interface BriefResult {
   - top-engagement items,
   - diverse sources (at least 1 curated + 1 discussion where available),
   - dedupe near-identical text/URLs.
-- Prefer passing **bounded evidence excerpts** in `summary.requests` so the Brief service does not need random-access reads from Kafka/Loki in MVP.
+- Prefer passing **bounded evidence excerpts** in `summary.requests` so the Brief service does not need random-access reads from Kafka or Postgres in MVP.
 
 ## Dashboards & UX
 
 ### Grafana panels (MVP)
 
-- **Top Trends (60m)**: table of `topic, volume, acceleration, score`.
-- **Mentions Over Time**: time series for top topics (last 24h).
-- **Raw Stream Explorer**: Loki log panel filtering by `source` and `topic`.
+- **Top Trends (60m)**: table of `topic, volume, acceleration, score` (from Postgres `trend_snapshots`).
+- **Mentions Over Time**: time series for top topics (last 24h) (from Postgres `raw_events` aggregation).
+- **Raw Event Explorer**: Postgres table panel with filtering by `source`, `topic`, date range, and text search.
 - **Latest Brief**: Postgres-backed panel showing most recent `BriefResult` (rendered from stored JSON/fields).
+- **Data Freshness**: Consumer lag gauge from `consumer_lag` table.
 
 Notes:
 
 - Trends SHOULD export Prometheus metrics for **Top N topics only** to keep label cardinality bounded (e.g., `trend_score{topic=...,window=...}`).
-- Trend snapshots and brief results MUST be persisted to Postgres to power dashboards.
-- Full snapshots and brief payloads SHOULD also be mirrored to Loki as structured logs for “source of truth” inspection.
+- All queryable data (events, snapshots, briefs) is stored in Postgres.
+- Application logs (service debug, errors) go to Loki for operational debugging.
 
 ### Alerting (optional MVP)
 

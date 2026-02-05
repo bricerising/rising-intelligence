@@ -1,0 +1,164 @@
+// =============================================================================
+// Rising Intelligence - Database Schema
+// =============================================================================
+// Managed by Prisma. Run `npm run db:migrate` to apply changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// RAW EVENTS (queryable event store for search/exploration)
+// =============================================================================
+// Replaces Loki for raw event search. Events are immutable once written.
+
+model RawEvent {
+  id        BigInt   @id @default(autoincrement())
+  eventId   String   @unique @map("event_id") // stable per-source unique ID
+  source    Source
+  fetchedAt DateTime @map("fetched_at")
+  publishedAt DateTime? @map("published_at")
+
+  url   String?
+  title String?
+  text  String   // primary content for extraction/search
+
+  // Author info (denormalized for query simplicity)
+  authorId          String? @map("author_id")
+  authorHandle      String? @map("author_handle")
+  authorDisplayName String? @map("author_display_name")
+
+  // Engagement metrics
+  engagementScore    Int? @map("engagement_score")
+  engagementComments Int? @map("engagement_comments")
+  engagementLikes    Int? @map("engagement_likes")
+  engagementShares   Int? @map("engagement_shares")
+
+  // Extracted/derived fields
+  lang              String?
+  tags              String[] // e.g., ['ai', 'aws']
+  extractedHashtags String[] @map("extracted_hashtags")
+  extractedUrls     String[] @map("extracted_urls")
+  topics            String[] // canonical topic keys matched by Trends service
+
+  // Free-form per-source metadata
+  sourceMeta Json? @map("source_meta")
+
+  @@index([source, fetchedAt(sort: Desc)], name: "idx_raw_events_source_fetched")
+  @@index([fetchedAt(sort: Desc)], name: "idx_raw_events_fetched")
+  @@index([publishedAt(sort: Desc)], name: "idx_raw_events_published")
+  @@index([topics], name: "idx_raw_events_topics", type: Gin)
+  @@map("raw_events")
+}
+
+enum Source {
+  RSS
+  NEWS
+  HACKERNEWS
+  REDDIT
+  GITHUB
+  TWITTER
+
+  @@map("source")
+}
+
+// =============================================================================
+// SOURCE CHECKPOINTS (DEPRECATED - kept for backwards compatibility)
+// =============================================================================
+// NOTE: The Collector service now uses local SQLite for checkpoints to maintain
+// zero database dependencies. This table is no longer used and can be removed
+// in a future migration.
+//
+// Original purpose: cursor persistence for reliable ingestion.
+
+model SourceCheckpoint {
+  source         String // e.g., 'rss.aws_blog', 'reddit.r_aws', 'hackernews'
+  checkpointKey  String @map("checkpoint_key") // e.g., 'after_cursor', 'last_item_id'
+  checkpointValue String @map("checkpoint_value")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@id([source, checkpointKey])
+  @@map("source_checkpoints")
+}
+
+// =============================================================================
+// TREND SNAPSHOTS (historical trend data for charts/tables)
+// =============================================================================
+// Append-only. Each snapshot captures the ranked topics at a point in time.
+
+model TrendSnapshot {
+  id          BigInt      @id @default(autoincrement())
+  generatedAt DateTime    @map("generated_at")
+  window      TrendWindow
+  snapshot    Json        // full TrendSnapshot protobuf as JSON
+
+  @@index([window, generatedAt(sort: Desc)], name: "idx_trend_snapshots_window_generated")
+  @@map("trend_snapshots")
+}
+
+enum TrendWindow {
+  WINDOW_15M @map("15m")
+  WINDOW_60M @map("60m")
+  WINDOW_24H @map("24h")
+
+  @@map("trend_window")
+}
+
+// =============================================================================
+// BRIEF RESULTS (LLM-generated summaries)
+// =============================================================================
+// Stores both success and failure results for audit/debugging.
+
+model BriefResult {
+  requestId  String      @id @map("request_id")
+  producedAt DateTime    @map("produced_at")
+  status     BriefStatus
+  result     Json        // full BriefResult protobuf as JSON
+
+  @@index([producedAt(sort: Desc)], name: "idx_brief_results_produced")
+  @@map("brief_results")
+}
+
+enum BriefStatus {
+  SUCCESS @map("success")
+  FAILURE @map("failure")
+
+  @@map("brief_status")
+}
+
+// =============================================================================
+// CONSUMER LAG TRACKING (for data freshness checks)
+// =============================================================================
+// Tracks Kafka consumer progress for freshness validation before brief triggers.
+
+model ConsumerLag {
+  consumerGroup String   @map("consumer_group") // e.g., 'trends-processor'
+  topic         String   // Kafka topic name
+  partition     Int
+  currentOffset BigInt   @map("current_offset")
+  latestOffset  BigInt   @map("latest_offset")
+  lagMessages   BigInt   @map("lag_messages")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@id([consumerGroup, topic, partition])
+  @@map("consumer_lag")
+}
+
+// =============================================================================
+// RETENTION POLICY (cleanup configuration)
+// =============================================================================
+// Defines how long to keep data in each table. Enforced by a scheduled job.
+
+model RetentionPolicy {
+  tableName     String   @id @map("table_name")
+  retentionDays Int      @map("retention_days")
+  enabled       Boolean  @default(true)
+  lastCleanupAt DateTime? @map("last_cleanup_at")
+
+  @@map("retention_policies")
+}

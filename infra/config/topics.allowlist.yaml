@@ -3,6 +3,7 @@ version: 1
 # Canonical topic allowlist used by the Trends service.
 # - Keep the allowlist intentionally small in MVP (tens, not hundreds).
 # - Prefer specific topics ("aws.bedrock") over always-on generics ("ai").
+# - Topics are grouped by category for readability.
 
 defaults:
   case_insensitive: true
@@ -12,6 +13,9 @@ suppression:
   muted_topics: []
 
 topics:
+  # ===========================================================================
+  # AWS Services
+  # ===========================================================================
   - key: aws.ec2
     display_name: AWS EC2
     aliases:
@@ -20,8 +24,18 @@ topics:
     matchers:
       - type: regex
         pattern: "\\bEC2\\b"
-      - type: keyword
-        value: "ec2"
+
+  - key: aws.lambda
+    display_name: AWS Lambda
+    aliases:
+      - Lambda
+      - "AWS Lambda"
+      - "serverless"
+    matchers:
+      - type: regex
+        pattern: "\\bLambda\\b"
+      - type: regex
+        pattern: "\\bserverless\\b"
 
   - key: aws.bedrock
     display_name: AWS Bedrock
@@ -30,8 +44,39 @@ topics:
       - "Amazon Bedrock"
     matchers:
       - type: regex
-        pattern: "\\bbedrock\\b"
+        pattern: "\\b[Bb]edrock\\b"
 
+  - key: aws.sagemaker
+    display_name: AWS SageMaker
+    aliases:
+      - SageMaker
+      - "Amazon SageMaker"
+    matchers:
+      - type: regex
+        pattern: "\\bSageMaker\\b"
+
+  - key: aws.s3
+    display_name: AWS S3
+    aliases:
+      - S3
+      - "Amazon S3"
+      - "Simple Storage Service"
+    matchers:
+      - type: regex
+        pattern: "\\bS3\\b"
+
+  - key: aws.eks
+    display_name: AWS EKS
+    aliases:
+      - EKS
+      - "Elastic Kubernetes Service"
+    matchers:
+      - type: regex
+        pattern: "\\bEKS\\b"
+
+  # ===========================================================================
+  # AI / ML
+  # ===========================================================================
   - key: ai.llm
     display_name: LLMs
     aliases:
@@ -41,6 +86,8 @@ topics:
     matchers:
       - type: regex
         pattern: "\\bLLM(s)?\\b"
+      - type: regex
+        pattern: "large language model"
 
   - key: ai.rag
     display_name: RAG
@@ -50,3 +97,142 @@ topics:
     matchers:
       - type: regex
         pattern: "\\bRAG\\b"
+
+  - key: ai.agents
+    display_name: AI Agents
+    aliases:
+      - "AI agent"
+      - "AI agents"
+      - "agentic"
+    matchers:
+      - type: regex
+        pattern: "\\bAI agents?\\b"
+      - type: regex
+        pattern: "\\bagentic\\b"
+
+  - key: ai.openai
+    display_name: OpenAI
+    aliases:
+      - OpenAI
+      - GPT
+      - ChatGPT
+      - "GPT-4"
+      - "GPT-5"
+    matchers:
+      - type: regex
+        pattern: "\\bOpenAI\\b"
+      - type: regex
+        pattern: "\\bGPT-?[0-9]\\b"
+      - type: regex
+        pattern: "\\bChatGPT\\b"
+
+  - key: ai.anthropic
+    display_name: Anthropic/Claude
+    aliases:
+      - Anthropic
+      - Claude
+    matchers:
+      - type: regex
+        pattern: "\\bAnthropic\\b"
+      - type: regex
+        pattern: "\\bClaude\\b"
+
+  - key: ai.embedding
+    display_name: Embeddings
+    aliases:
+      - embedding
+      - embeddings
+      - "vector embedding"
+    matchers:
+      - type: regex
+        pattern: "\\bembeddings?\\b"
+
+  # ===========================================================================
+  # Languages & Frameworks
+  # ===========================================================================
+  - key: lang.rust
+    display_name: Rust
+    aliases:
+      - Rust
+      - rustlang
+    matchers:
+      - type: regex
+        pattern: "\\bRust\\b"
+      - type: regex
+        pattern: "\\brustlang\\b"
+
+  - key: lang.typescript
+    display_name: TypeScript
+    aliases:
+      - TypeScript
+      - TS
+    matchers:
+      - type: regex
+        pattern: "\\bTypeScript\\b"
+
+  - key: lang.python
+    display_name: Python
+    aliases:
+      - Python
+    matchers:
+      - type: regex
+        pattern: "\\bPython\\b"
+
+  - key: framework.react
+    display_name: React
+    aliases:
+      - React
+      - ReactJS
+    matchers:
+      - type: regex
+        pattern: "\\bReact(JS)?\\b"
+
+  # ===========================================================================
+  # Infrastructure & DevOps
+  # ===========================================================================
+  - key: infra.kubernetes
+    display_name: Kubernetes
+    aliases:
+      - Kubernetes
+      - K8s
+      - k8s
+    matchers:
+      - type: regex
+        pattern: "\\bKubernetes\\b"
+      - type: regex
+        pattern: "\\b[Kk]8s\\b"
+
+  - key: infra.docker
+    display_name: Docker
+    aliases:
+      - Docker
+      - container
+      - containers
+    matchers:
+      - type: regex
+        pattern: "\\bDocker\\b"
+
+  - key: infra.terraform
+    display_name: Terraform
+    aliases:
+      - Terraform
+      - IaC
+      - "infrastructure as code"
+    matchers:
+      - type: regex
+        pattern: "\\bTerraform\\b"
+
+  # ===========================================================================
+  # General Tech
+  # ===========================================================================
+  - key: tech.opensource
+    display_name: Open Source
+    aliases:
+      - "open source"
+      - "open-source"
+      - OSS
+    matchers:
+      - type: regex
+        pattern: "\\bopen[- ]?source\\b"
+      - type: regex
+        pattern: "\\bOSS\\b"

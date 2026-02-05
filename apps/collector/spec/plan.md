@@ -2,18 +2,34 @@
 
 ## Overview
 
-Build `apps/collector` with modular source adapters producing `RawEvent` to `events.raw`.
+Build `apps/collector` as a simple ingestion service: External APIs → Kafka. No database dependencies.
 
 ## Architecture (High Level)
 
-- Adapters: `rss`, `hackernews`, `reddit`, `github` (optional), `twitter` (optional)
-- Shared:
-  - config + env parsing
-  - HTTP client with retry/backoff
-  - checkpoint storage (Redis; local Compose)
-- Outputs:
-  - Kafka: `events.raw` + `events.raw.dlq`
-  - Logs: Loki via OTLP (preferred) or stdout + promtail
+- **Input**: External APIs (RSS, HN, Reddit)
+- **Output**: Kafka (`events.raw`, `events.raw.dlq`)
+- **State**: Local checkpoints only (SQLite file)
+- **No dependencies**: No Postgres, no Redis
+
+```
+External APIs → Adapters → Normalizer → Kafka
+                              ↓
+                       Local Checkpoints
+```
+
+## Dependencies
+
+```json
+{
+  "@rising-intelligence/shared": "workspace:*",
+  "kafkajs": "^2.x",
+  "better-sqlite3": "^9.x",
+  "rss-parser": "^3.x",
+  "node-fetch": "^3.x"
+}
+```
+
+Note: No `@rising-intelligence/db` — collector doesn't use Prisma.
 
 ## Phases
 
@@ -21,16 +37,279 @@ Build `apps/collector` with modular source adapters producing `RawEvent` to `eve
 
 - Create service bootstrap and config
 - Implement `RawEvent` schema validation at the boundary
-- Publish to `events.raw` and DLQ
+- Publish to `events.raw` (Kafka)
+- DLQ for failures
 
-### Phase 2: MVP sources
+**Deliverables**:
+- `src/index.ts` - service entry point
+- `src/config.ts` - environment config
+- `src/kafka/producer.ts` - Kafka producer
+- `src/normalizer.ts` - common normalization logic
+- `src/validator.ts` - RawEvent schema validation
 
-- RSS/Atom adapter (poll + dedupe)
-- Hacker News adapter (poll + dedupe)
-- Reddit adapter (poll + dedupe)
+### Phase 2: MVP sources + checkpoints
+
+- RSS/Atom adapter (poll + checkpoint)
+- Hacker News adapter (poll + checkpoint)
+- Reddit adapter (poll + checkpoint)
+- SQLite checkpoint storage
+
+**Deliverables**:
+- `src/adapters/rss.ts`
+- `src/adapters/hackernews.ts`
+- `src/adapters/reddit.ts`
+- `src/checkpoint.ts` - SQLite checkpoint read/write
 
 ### Phase 3: Reliability + ops
 
-- Backoff/jitter, rate limit handling
-- Cursor checkpointing per source
-- Metrics + traces + dashboards
+- Exponential backoff with jitter
+- In-memory rate limit tracking
+- Metrics + traces
+- Health check endpoints
+
+**Deliverables**:
+- `src/backoff.ts` - backoff logic
+- `src/ratelimit.ts` - in-memory rate limit tracking
+- `src/health.ts` - `/healthz` and `/readyz` endpoints
+- Grafana dashboard for collector metrics
+
+### Phase 4: Additional sources (post-MVP)
+
+- GitHub releases adapter
+- Twitter/X adapter (if API access available)
+
+## Key Implementation Details
+
+### Adapter Interface
+
+```typescript
+interface SourceAdapter {
+  name: string;
+  pollIntervalMs: number;
+
+  // Load checkpoint from local storage
+  getCheckpoint(): Promise<Record<string, string>>;
+
+  // Fetch new items since checkpoint
+  fetch(): AsyncIterable<{ event: RawEvent; checkpoint: Record<string, string> }>;
+
+  // Save checkpoint after successful batch
+  saveCheckpoint(checkpoint: Record<string, string>): Promise<void>;
+}
+```
+
+### Main Loop
+
+```typescript
+async function runAdapter(adapter: SourceAdapter) {
+  const producer = await createKafkaProducer();
+  const backoff = new BackoffManager(adapter.name);
+
+  while (true) {
+    try {
+      let lastCheckpoint: Record<string, string> | null = null;
+      let batchSize = 0;
+
+      for await (const { event, checkpoint } of adapter.fetch()) {
+        // Validate
+        const validated = validateRawEvent(event);
+        if (!validated.success) {
+          await publishToDLQ(producer, event, validated.error);
+          continue;
+        }
+
+        // Publish to Kafka
+        await producer.send({
+          topic: 'events.raw',
+          messages: [{ key: event.event_id, value: serialize(event) }],
+        });
+
+        lastCheckpoint = checkpoint;
+        batchSize++;
+      }
+
+      // Save checkpoint after batch
+      if (lastCheckpoint) {
+        await adapter.saveCheckpoint(lastCheckpoint);
+        log.info({ adapter: adapter.name, batchSize }, 'Batch complete');
+      }
+
+      // Reset backoff on success
+      backoff.reset();
+
+      // Wait for next poll
+      await sleep(adapter.pollIntervalMs);
+
+    } catch (error) {
+      log.error({ adapter: adapter.name, error }, 'Adapter error');
+
+      if (isRateLimitError(error)) {
+        await backoff.waitRateLimit();
+      } else {
+        await backoff.waitTransient();
+      }
+    }
+  }
+}
+```
+
+### Checkpoint Storage (SQLite)
+
+```typescript
+import Database from 'better-sqlite3';
+
+class CheckpointStore {
+  private db: Database.Database;
+
+  constructor(path: string) {
+    this.db = new Database(path);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+  }
+
+  get(key: string): string | undefined {
+    const row = this.db.prepare('SELECT value FROM checkpoints WHERE key = ?').get(key);
+    return row?.value;
+  }
+
+  set(key: string, value: string): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO checkpoints (key, value, updated_at)
+      VALUES (?, ?, datetime('now'))
+    `).run(key, value);
+  }
+
+  getAll(prefix: string): Record<string, string> {
+    const rows = this.db.prepare('SELECT key, value FROM checkpoints WHERE key LIKE ?').all(`${prefix}%`);
+    return Object.fromEntries(rows.map(r => [r.key, r.value]));
+  }
+}
+```
+
+### RSS Adapter Example
+
+```typescript
+import Parser from 'rss-parser';
+
+class RSSAdapter implements SourceAdapter {
+  name = 'rss';
+  pollIntervalMs = 5 * 60 * 1000; // 5 minutes
+
+  constructor(
+    private feedUrls: string[],
+    private checkpoints: CheckpointStore,
+  ) {}
+
+  async getCheckpoint(): Promise<Record<string, string>> {
+    return this.checkpoints.getAll('rss.');
+  }
+
+  async *fetch(): AsyncIterable<{ event: RawEvent; checkpoint: Record<string, string> }> {
+    const parser = new Parser();
+
+    for (const feedUrl of this.feedUrls) {
+      const feedId = hashUrl(feedUrl);
+      const lastGuid = this.checkpoints.get(`rss.${feedId}.last_guid`);
+
+      const feed = await parser.parseURL(feedUrl);
+      const newItems = getItemsAfter(feed.items, lastGuid);
+
+      for (const item of newItems) {
+        const event: RawEvent = {
+          event_id: `rss:${hashUrl(item.link ?? item.guid)}`,
+          source: 'RSS',
+          fetched_at: new Date().toISOString(),
+          published_at: item.pubDate,
+          url: item.link,
+          title: item.title,
+          text: item.contentSnippet ?? item.content ?? '',
+          // ... other fields
+        };
+
+        yield {
+          event,
+          checkpoint: { [`rss.${feedId}.last_guid`]: item.guid },
+        };
+      }
+    }
+  }
+
+  async saveCheckpoint(checkpoint: Record<string, string>): Promise<void> {
+    for (const [key, value] of Object.entries(checkpoint)) {
+      this.checkpoints.set(key, value);
+    }
+  }
+}
+```
+
+### Backoff Manager
+
+```typescript
+class BackoffManager {
+  private attempts = 0;
+  private readonly maxDelayMs = 15 * 60 * 1000; // 15 minutes
+
+  constructor(private name: string) {}
+
+  reset(): void {
+    this.attempts = 0;
+  }
+
+  async waitRateLimit(): Promise<void> {
+    const baseDelay = 30_000; // 30 seconds
+    await this.wait(baseDelay);
+  }
+
+  async waitTransient(): Promise<void> {
+    const baseDelay = 5_000; // 5 seconds
+    await this.wait(baseDelay);
+  }
+
+  private async wait(baseDelay: number): Promise<void> {
+    const delay = Math.min(
+      baseDelay * Math.pow(2, this.attempts),
+      this.maxDelayMs
+    );
+    const jitter = delay * 0.2 * Math.random();
+    const total = delay + jitter;
+
+    log.info({ adapter: this.name, delayMs: total, attempt: this.attempts }, 'Backing off');
+    await sleep(total);
+    this.attempts++;
+  }
+}
+```
+
+## Testing Strategy
+
+### Unit Tests
+
+- Normalizer: various input formats → RawEvent
+- Checkpoint store: CRUD operations
+- Backoff: timing and jitter
+- Validation: schema edge cases
+
+### Integration Tests
+
+- Full adapter cycle with mock HTTP responses
+- Kafka producer verification
+- Checkpoint persistence round-trip
+
+### Acceptance Tests
+
+- Soak test: 24h continuous run, verify no crashes
+- Restart test: kill mid-batch, verify checkpoint recovery
+- Rate limit test: simulate 429s, verify backoff behavior
+
+## Metrics
+
+- `collector_events_published_total{source=...}`
+- `collector_events_dlq_total{source=...}`
+- `collector_fetch_duration_seconds{source=...}`
+- `collector_backoff_total{source=...,reason=...}`
+- `collector_checkpoint_lag_seconds{source=...}`
