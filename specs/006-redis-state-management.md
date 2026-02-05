@@ -132,6 +132,28 @@ ZADD evidence:60m:aws.bedrock 85 "event_id_2"
 - `ZREMRANGEBYRANK` to cap size
 - TTL = window size × 2
 
+### 7. Window Deduplication (Trends Service)
+
+Tracks which event_ids have been counted in each window bucket to prevent duplicate events from inflating counts.
+
+**Key pattern**: `dedup:{window}:{bucket}` (set)
+
+```
+SADD dedup:60m:2026-02-05T14:00:00Z "event_123"
+SADD dedup:60m:2026-02-05T14:00:00Z "event_456"
+```
+
+**Operations**:
+- `SADD` returns 1 if new, 0 if already exists
+- Check return value before incrementing counters
+- TTL = window size × 3 (e.g., 3h for 60m window)
+
+**Why this matters**:
+- Kafka delivers at-least-once (duplicates expected)
+- Consumer restarts replay from last committed offset
+- Without dedup, replayed events inflate trend scores
+- SADD is O(1), minimal overhead per event
+
 ## Redis Configuration
 
 From `docker-compose.yml`:
@@ -162,9 +184,11 @@ redis:
 |-----------|------|----------|-------|
 | Window counters | 20 topics × 3 windows × 4 buckets | ~100 bytes | ~24 KB |
 | Previous window | 20 topics × 3 windows | ~100 bytes | ~6 KB |
-| Dedup cache | ~10K events/day × 24h TTL | ~50 bytes | ~12 MB |
+| Dedup cache (Persister) | ~10K events/day × 24h TTL | ~50 bytes | ~12 MB |
+| Window dedup (Trends) | ~3K events/window × 3 windows | ~50 bytes | ~450 KB |
 | Rate limits | 6 sources × 60 keys | ~50 bytes | ~18 KB |
 | Evidence buffers | 20 topics × 3 windows × 10 items | ~100 bytes | ~60 KB |
+| Budget tracking | 7 days | ~100 bytes | ~700 bytes |
 
 **Total estimate**: ~15 MB active, well under 256 MB limit.
 

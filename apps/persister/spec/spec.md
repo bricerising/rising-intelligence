@@ -19,8 +19,13 @@ This service exists to decouple ingestion (Collector) from storage writes, follo
 
 The persister does one thing: consume events and write them to storage. It doesn't:
 - Transform events (that's the Collector's job)
+- Extract topics (that's done by the Collector before publishing)
 - Compute trends (that's the Trends service's job)
 - Make decisions (it just persists)
+
+### Pre-Enriched Events
+
+Events arrive from `events.raw` with topics already extracted by the Collector. The `tags` field contains canonical topic keys (e.g., `["aws.bedrock", "ai.llm"]`). The Persister writes these directly to `raw_events.topics` without additional processing.
 
 ### Idempotent Writes
 
@@ -164,3 +169,65 @@ POSTGRES_RETRY_DELAY_MS=1000
 - `persister_redis_write_duration_seconds`
 - `persister_consumer_lag{partition=...}`
 - `persister_errors_total{type=postgres|redis|parse}`
+
+## Health Check
+
+The Persister exposes a `/health` endpoint for container orchestration:
+
+```typescript
+interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  checks: {
+    kafka: 'ok' | 'error';
+    postgres: 'ok' | 'error';
+    redis: 'ok' | 'error';
+  };
+  consumer_lag: number;
+  uptime_seconds: number;
+}
+```
+
+**Health criteria**:
+- `healthy`: Kafka, Postgres, Redis all reachable; consumer lag < 1000
+- `degraded`: Redis unavailable (cache miss acceptable) OR lag > 1000
+- `unhealthy`: Kafka OR Postgres unreachable
+
+**Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
+
+## Graceful Shutdown
+
+On SIGTERM/SIGINT, the Persister:
+
+1. Stops consuming new messages
+2. Processes remaining in-flight batch (max 30s timeout)
+3. Commits final Kafka offsets
+4. Closes Postgres and Redis connections
+5. Exits with code 0
+
+```typescript
+process.on('SIGTERM', async () => {
+  log.info('Received SIGTERM, initiating graceful shutdown');
+
+  // Stop consuming
+  await consumer.pause([{ topic: 'events.raw' }]);
+
+  // Process remaining messages (max 30s)
+  await Promise.race([
+    processRemainingMessages(),
+    sleep(30_000),
+  ]);
+
+  // Commit final offsets
+  await consumer.commitOffsets();
+
+  // Close connections
+  await Promise.all([
+    consumer.disconnect(),
+    prisma.$disconnect(),
+    redis.quit(),
+  ]);
+
+  log.info('Graceful shutdown complete');
+  process.exit(0);
+});
+```

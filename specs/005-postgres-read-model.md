@@ -76,7 +76,34 @@ Queryable event archive. Events are **immutable** once written.
 - `(fetched_at DESC)` — global timeline
 - `(published_at DESC)` — by publish time
 - `GIN(topics)` — topic containment queries
-- `GIN(to_tsvector(title || text))` — full-text search (future)
+- `GIN(search_vector)` — full-text search (see below)
+
+### Full-Text Search
+
+The `raw_events` table includes a generated `tsvector` column for efficient full-text search:
+
+```sql
+-- In migration
+ALTER TABLE raw_events
+ADD COLUMN search_vector tsvector
+GENERATED ALWAYS AS (
+  setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+  setweight(to_tsvector('english', coalesce(text, '')), 'B')
+) STORED;
+
+CREATE INDEX idx_raw_events_search ON raw_events USING GIN(search_vector);
+```
+
+**Query example**:
+```sql
+SELECT id, title, ts_rank(search_vector, query) AS rank
+FROM raw_events, to_tsquery('english', 'bedrock & aws') AS query
+WHERE search_vector @@ query
+ORDER BY rank DESC
+LIMIT 50;
+```
+
+**Note**: The `GENERATED ALWAYS AS ... STORED` column is automatically maintained by Postgres. No application code needed.
 
 ### `source_checkpoints`
 
@@ -156,35 +183,219 @@ Configures cleanup for each table.
 
 ## Write Responsibilities
 
-| Table | Writer | Notes |
-|-------|--------|-------|
-| `raw_events` | Persister service | Consumes `events.raw` from Kafka |
-| `source_checkpoints` | (unused) | Collector uses local SQLite instead |
-| `trend_snapshots` | Trends service | Periodic snapshot persistence |
-| `brief_results` | Brief service | After LLM generation |
-| `consumer_lag` | Trends service | Periodic update for freshness checks |
-| `retention_policies` | Seed script / admin | Initial configuration |
+Each table has a **single owner service** that is responsible for writes. This prevents coordination issues and race conditions.
+
+| Table | Owner Service | Writes | Reads |
+|-------|--------------|--------|-------|
+| `raw_events` | Persister | Insert only (immutable) | Grafana, Trends (for evidence) |
+| `source_checkpoints` | (deprecated) | — | — |
+| `trend_snapshots` | Trends | Insert only (append) | Grafana |
+| `brief_results` | Brief | Insert + idempotent upsert | Grafana |
+| `consumer_lag` | Trends | Upsert (periodic) | Trends (freshness check), Grafana |
+| `retention_policies` | Seed script / Admin | Initial seed only | Retention job |
+
+### Ownership Rules
+
+1. **Single writer per table**: Only one service writes to each table. This simplifies reasoning about data consistency.
+
+2. **No cross-service writes**: Services don't write to tables owned by other services. For example:
+   - Persister does NOT write to `trend_snapshots`
+   - Brief does NOT write to `consumer_lag`
+
+3. **Kafka as coordination layer**: If data needs to flow between services, it goes through Kafka, not direct database writes.
+
+4. **Read access is shared**: Any service can read any table (for queries, not writes).
+
+### Why Not "Persister Writes Everything"?
+
+We considered routing all Postgres writes through the Persister, but decided against it:
+
+- **Latency**: Trends and Brief would need to publish to Kafka, wait for Persister, then verify writes
+- **Complexity**: Persister becomes a bottleneck and needs to understand all schemas
+- **Coupling**: Schema changes in one domain (e.g., brief_results) require Persister changes
+
+Instead, each service owns its domain tables and writes directly. The services are still decoupled via Kafka for event flow.
 
 **Note**: The `source_checkpoints` table is no longer used. The Collector service stores checkpoints in local SQLite to maintain zero database dependencies. This table can be removed in a future migration.
 
 ## Retention Enforcement
 
-A scheduled job (cron or pg_cron extension) should run daily:
+A **retention cleanup job** runs daily to enforce retention policies.
 
-```sql
--- Example cleanup query for raw_events
-DELETE FROM raw_events
-WHERE fetched_at < NOW() - (
-  SELECT retention_days * INTERVAL '1 day'
-  FROM retention_policies
-  WHERE table_name = 'raw_events' AND enabled = true
-);
+### Job Specification
+
+**Schedule**: Daily at 03:00 UTC (low-traffic period)
+
+**Implementation**: `packages/db/src/retention-job.ts`
+
+```typescript
+interface CleanupResult {
+  tableName: string;
+  rowsDeleted: number;
+  durationMs: number;
+  error?: string;
+}
+
+async function runRetentionCleanup(): Promise<CleanupResult[]> {
+  const policies = await prisma.retentionPolicy.findMany({
+    where: { enabled: true, retentionDays: { gt: 0 } },
+  });
+
+  const results: CleanupResult[] = [];
+
+  for (const policy of policies) {
+    const start = Date.now();
+    try {
+      const deleted = await cleanupTable(policy.tableName, policy.retentionDays);
+
+      await prisma.retentionPolicy.update({
+        where: { tableName: policy.tableName },
+        data: { lastCleanupAt: new Date() },
+      });
+
+      results.push({
+        tableName: policy.tableName,
+        rowsDeleted: deleted,
+        durationMs: Date.now() - start,
+      });
+
+      log.info({ table: policy.tableName, deleted }, 'Retention cleanup completed');
+    } catch (error) {
+      results.push({
+        tableName: policy.tableName,
+        rowsDeleted: 0,
+        durationMs: Date.now() - start,
+        error: error.message,
+      });
+
+      log.error({ table: policy.tableName, error }, 'Retention cleanup failed');
+    }
+  }
+
+  return results;
+}
+
+async function cleanupTable(tableName: string, retentionDays: number): Promise<number> {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+  // Table-specific cleanup queries
+  switch (tableName) {
+    case 'raw_events':
+      const r1 = await prisma.$executeRaw`
+        DELETE FROM raw_events WHERE fetched_at < ${cutoff}
+      `;
+      return r1;
+
+    case 'trend_snapshots':
+      const r2 = await prisma.$executeRaw`
+        DELETE FROM trend_snapshots WHERE generated_at < ${cutoff}
+      `;
+      return r2;
+
+    case 'brief_results':
+      const r3 = await prisma.$executeRaw`
+        DELETE FROM brief_results WHERE produced_at < ${cutoff}
+      `;
+      return r3;
+
+    case 'consumer_lag':
+      const r4 = await prisma.$executeRaw`
+        DELETE FROM consumer_lag WHERE updated_at < ${cutoff}
+      `;
+      return r4;
+
+    default:
+      throw new Error(`Unknown table: ${tableName}`);
+  }
+}
 ```
 
-This can be implemented as:
-- A simple script in `packages/db/src/cleanup.ts`
-- A pg_cron job inside Postgres
-- An external cron calling the cleanup script
+### Batch Deletion
+
+For large tables (`raw_events`), delete in batches to avoid long-running transactions:
+
+```typescript
+async function cleanupTableBatched(
+  tableName: string,
+  retentionDays: number,
+  batchSize: number = 10000
+): Promise<number> {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  let totalDeleted = 0;
+  let deleted: number;
+
+  do {
+    deleted = await prisma.$executeRaw`
+      DELETE FROM raw_events
+      WHERE id IN (
+        SELECT id FROM raw_events
+        WHERE fetched_at < ${cutoff}
+        LIMIT ${batchSize}
+      )
+    `;
+    totalDeleted += deleted;
+
+    if (deleted > 0) {
+      log.debug({ deleted, totalDeleted }, 'Batch deleted');
+      await sleep(100); // Brief pause to reduce lock contention
+    }
+  } while (deleted === batchSize);
+
+  return totalDeleted;
+}
+```
+
+### Metrics
+
+- `retention_cleanup_rows_deleted_total{table=...}`
+- `retention_cleanup_duration_seconds{table=...}`
+- `retention_cleanup_errors_total{table=...}`
+
+### Running the Job
+
+**Option 1**: Kubernetes CronJob
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: retention-cleanup
+spec:
+  schedule: "0 3 * * *"  # 03:00 UTC daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cleanup
+            image: rising-intelligence/db:latest
+            command: ["npm", "run", "retention:cleanup"]
+          restartPolicy: OnFailure
+```
+
+**Option 2**: Docker Compose with external cron
+```bash
+# Add to host crontab
+0 3 * * * docker compose run --rm db npm run retention:cleanup >> /var/log/retention.log 2>&1
+```
+
+**Option 3**: In-process scheduler (simpler for MVP)
+```typescript
+// In a long-running service (e.g., Trends)
+import { CronJob } from 'cron';
+
+const retentionJob = new CronJob('0 3 * * *', async () => {
+  log.info('Starting scheduled retention cleanup');
+  await runRetentionCleanup();
+}, null, true, 'UTC');
+```
+
+### Alerting
+
+| Alert | Condition | Severity |
+|-------|-----------|----------|
+| Cleanup Failed | `retention_cleanup_errors_total` > 0 | Warning |
+| Cleanup Stale | No cleanup in 48h (check `last_cleanup_at`) | Warning |
+| Table Growth | `raw_events` count growing despite cleanup | Warning |
 
 ## Grafana Integration
 

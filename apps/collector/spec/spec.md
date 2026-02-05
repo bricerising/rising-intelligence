@@ -26,6 +26,16 @@ The collector's only job is to get data into Kafka. All derived state (Postgres,
 - **No coupling**: External API issues don't affect database writes
 - **Replay-friendly**: Can rebuild all state from Kafka
 
+### Topic Extraction at Ingestion
+
+The Collector extracts topics from event content **before** publishing to Kafka. This ensures:
+
+- `RawEvent.tags` field is populated in the wire contract
+- Downstream consumers (Persister, Trends) receive pre-enriched events
+- Topic extraction logic is centralized (not duplicated across services)
+
+Topic extraction uses the **same allowlist** (`TOPICS_ALLOWLIST_PATH`) as the Trends service, with pre-compiled regexes for performance.
+
 ### Checkpoint-Only Deduplication (Option B)
 
 The collector uses **source checkpoints** to avoid re-fetching old data, but accepts that some duplicates may enter Kafka:
@@ -88,6 +98,9 @@ As an operator, I can restart the collector without re-processing large amounts 
 - **FR-005**: Service MUST emit parse/normalize failures to `events.raw.dlq` (`DeadLetterEvent`).
 - **FR-006**: Service MUST persist checkpoints to local storage (file or embedded DB) for restart recovery.
 - **FR-007**: Service MUST implement exponential backoff with jitter for rate limits and errors.
+- **FR-008**: Service MUST extract topics from event content using the allowlist before publishing.
+- **FR-009**: Service MUST validate the allowlist on startup and fail loudly if regexes are invalid.
+- **FR-010**: Service MUST pre-compile all regex matchers on startup for performance.
 
 ### Non-Functional Requirements
 
@@ -118,6 +131,97 @@ As an operator, I can restart the collector without re-processing large amounts 
 ```
 
 **No Postgres. No Redis. Just Kafka.**
+
+## Topic Extraction
+
+The Collector extracts topics at ingestion time to ensure `RawEvent.tags` is populated before events reach Kafka.
+
+### Allowlist Loading and Validation
+
+On startup, the Collector:
+
+1. Loads the allowlist from `TOPICS_ALLOWLIST_PATH`
+2. Validates the YAML structure
+3. Pre-compiles all regex matchers
+4. Fails with a clear error if any regex is invalid
+
+```typescript
+interface CompiledAllowlist {
+  topics: Array<{
+    key: string;
+    displayName: string;
+    matchers: Array<{
+      type: 'keyword' | 'regex';
+      value?: string;      // for keyword
+      pattern?: RegExp;    // pre-compiled for regex
+    }>;
+  }>;
+  maxTopicsPerEvent: number;
+  mutedTopics: Set<string>;
+}
+
+function loadAllowlist(path: string): CompiledAllowlist {
+  const raw = yaml.parse(fs.readFileSync(path, 'utf-8'));
+
+  const topics = raw.topics.map((t: any) => ({
+    key: t.key,
+    displayName: t.display_name,
+    matchers: t.matchers.map((m: any) => {
+      if (m.type === 'regex') {
+        try {
+          return { type: 'regex', pattern: new RegExp(m.pattern, 'i') };
+        } catch (e) {
+          throw new Error(`Invalid regex for topic ${t.key}: ${m.pattern}`);
+        }
+      }
+      return { type: 'keyword', value: m.value.toLowerCase() };
+    }),
+  }));
+
+  return {
+    topics,
+    maxTopicsPerEvent: raw.defaults?.max_topics_per_event ?? 8,
+    mutedTopics: new Set(raw.suppression?.muted_topics ?? []),
+  };
+}
+```
+
+### Extraction Logic
+
+```typescript
+function extractTopics(
+  event: { title?: string; text: string },
+  allowlist: CompiledAllowlist
+): string[] {
+  const content = `${event.title ?? ''} ${event.text}`.toLowerCase();
+  const matches: string[] = [];
+
+  for (const topic of allowlist.topics) {
+    if (allowlist.mutedTopics.has(topic.key)) continue;
+    if (matches.length >= allowlist.maxTopicsPerEvent) break;
+
+    for (const matcher of topic.matchers) {
+      const matched = matcher.type === 'keyword'
+        ? content.includes(matcher.value!)
+        : matcher.pattern!.test(content);
+
+      if (matched) {
+        matches.push(topic.key);
+        break; // Only add topic once
+      }
+    }
+  }
+
+  return matches;
+}
+```
+
+### Performance Considerations
+
+- Regexes are pre-compiled once at startup (not per-event)
+- Early exit when `maxTopicsPerEvent` is reached
+- Muted topics are skipped entirely
+- Keyword matching is faster than regex; order matchers accordingly
 
 ## Checkpoint Strategy
 
@@ -196,3 +300,88 @@ GITHUB_TOKEN=...
 ```
 
 Note: No `DATABASE_URL` or `REDIS_URL` — the collector doesn't need them.
+
+## Health Check
+
+The Collector exposes a `/health` endpoint for container orchestration:
+
+```typescript
+interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  checks: {
+    kafka: 'ok' | 'error';
+    checkpoints: 'ok' | 'error';
+    allowlist: 'ok' | 'error';
+  };
+  uptime_seconds: number;
+  last_event_at?: string; // ISO8601
+}
+```
+
+**Health criteria**:
+- `healthy`: Kafka reachable, checkpoints writable, allowlist loaded
+- `degraded`: One source failing but others working
+- `unhealthy`: Kafka unreachable OR checkpoints unwritable
+
+**Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
+
+## Graceful Shutdown
+
+On SIGTERM/SIGINT, the Collector:
+
+1. Stops accepting new poll cycles
+2. Completes the current batch (with 30s timeout)
+3. Flushes pending Kafka messages
+4. Persists current checkpoints
+5. Closes connections
+6. Exits with code 0
+
+```typescript
+process.on('SIGTERM', async () => {
+  log.info('Received SIGTERM, initiating graceful shutdown');
+
+  // Stop polling
+  stopPolling();
+
+  // Wait for in-flight batches (max 30s)
+  await Promise.race([
+    waitForInflightBatches(),
+    sleep(30_000),
+  ]);
+
+  // Flush Kafka producer
+  await producer.flush({ timeout: 10_000 });
+
+  // Persist checkpoints
+  await checkpointStore.flush();
+
+  // Close connections
+  await producer.disconnect();
+
+  log.info('Graceful shutdown complete');
+  process.exit(0);
+});
+```
+
+## Volume Mount Warning
+
+**CRITICAL**: The checkpoint database (`CHECKPOINT_PATH`) MUST be mounted as a persistent volume in Docker/Kubernetes deployments.
+
+```yaml
+# docker-compose.yml
+collector:
+  volumes:
+    - collector-checkpoints:/data  # REQUIRED for checkpoint persistence
+  environment:
+    - CHECKPOINT_PATH=/data/checkpoints.db
+```
+
+**If the volume is not mounted**:
+- Checkpoints are lost on container restart
+- Collector re-ingests ALL data from the beginning
+- Duplicate events flood Kafka and downstream services
+
+Verify the volume is mounted correctly:
+```bash
+docker compose exec collector ls -la /data/checkpoints.db
+```

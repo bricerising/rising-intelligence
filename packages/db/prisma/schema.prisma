@@ -44,15 +44,24 @@ model RawEvent {
   tags              String[] // e.g., ['ai', 'aws']
   extractedHashtags String[] @map("extracted_hashtags")
   extractedUrls     String[] @map("extracted_urls")
-  topics            String[] // canonical topic keys matched by Trends service
+  topics            String[] // canonical topic keys (pre-extracted by Collector, written by Persister)
 
   // Free-form per-source metadata
   sourceMeta Json? @map("source_meta")
+
+  // Full-text search vector (generated column - see migration)
+  // Note: Prisma doesn't support GENERATED columns directly.
+  // Add via raw SQL migration: ALTER TABLE raw_events ADD COLUMN search_vector tsvector
+  // GENERATED ALWAYS AS (
+  //   setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+  //   setweight(to_tsvector('english', coalesce(text, '')), 'B')
+  // ) STORED;
 
   @@index([source, fetchedAt(sort: Desc)], name: "idx_raw_events_source_fetched")
   @@index([fetchedAt(sort: Desc)], name: "idx_raw_events_fetched")
   @@index([publishedAt(sort: Desc)], name: "idx_raw_events_published")
   @@index([topics], name: "idx_raw_events_topics", type: Gin)
+  // Note: GIN index on search_vector added via raw SQL migration
   @@map("raw_events")
 }
 

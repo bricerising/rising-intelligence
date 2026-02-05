@@ -548,9 +548,90 @@ Notes:
   - HTTP 429 rate limits,
   - transient network errors,
   - 5xx responses.
-- Each ingestion service SHOULD checkpoint “last seen” cursor per source to avoid gaps/duplicates.
+- Each ingestion service SHOULD checkpoint "last seen" cursor per source to avoid gaps/duplicates.
 - Consumers MUST be idempotent (store per-window aggregates in a way that tolerates reprocessing).
 - Failures to parse/normalize MUST go to DLQ with enough context to debug.
+
+## Backpressure Strategy
+
+The system must handle bursts of data without losing events or exhausting resources.
+
+### Limits and Thresholds
+
+| Component | Limit | Purpose |
+|-----------|-------|---------|
+| Collector batch size | 100 events max | Prevents memory exhaustion on large feeds |
+| Collector poll interval | 60s min per source | Respects API rate limits |
+| Kafka producer buffer | 10MB | Buffers during transient Kafka issues |
+| Kafka consumer batch | 500 messages | Balances latency vs throughput |
+| Redis pipeline batch | 100 commands | Reduces round-trips |
+| Postgres batch insert | 100 rows | Avoids long transactions |
+
+### Kafka Configuration
+
+```yaml
+# Producer (Collector)
+producer:
+  buffer.memory: 10485760  # 10MB
+  batch.size: 65536        # 64KB per batch
+  linger.ms: 100           # Wait up to 100ms for batching
+  acks: all                # Wait for all replicas
+
+# Consumer (Persister, Trends)
+consumer:
+  max.poll.records: 500    # Messages per poll
+  max.poll.interval.ms: 300000  # 5 min max processing time
+  session.timeout.ms: 45000     # Heartbeat timeout
+  fetch.max.bytes: 52428800     # 50MB max fetch
+```
+
+### Consumer Lag Alerting
+
+Consumer lag is the primary indicator of backpressure. Alert thresholds:
+
+| Service | Warning Lag | Critical Lag |
+|---------|-------------|--------------|
+| Persister | 1,000 messages | 10,000 messages |
+| Trends | 500 messages | 5,000 messages |
+
+**When lag is high**:
+1. Check service health (is it running?)
+2. Check dependency health (Postgres, Redis)
+3. Check for slow operations (long-running queries, slow LLM calls)
+4. Consider scaling horizontally (more partitions + consumers)
+
+### Circuit Breakers
+
+Services implement circuit breakers for external dependencies:
+
+```typescript
+interface CircuitBreakerConfig {
+  failureThreshold: 5;      // Open after 5 consecutive failures
+  successThreshold: 3;      // Close after 3 consecutive successes
+  timeout: 30_000;          // Half-open after 30s
+}
+
+// Example: Brief service LLM circuit breaker
+const llmCircuit = new CircuitBreaker(callLLM, {
+  failureThreshold: 3,
+  timeout: 60_000,
+  fallback: () => {
+    log.warn('LLM circuit open, skipping brief generation');
+    return { skipped: true, reason: 'circuit_open' };
+  },
+});
+```
+
+### Backpressure Propagation
+
+When a downstream service is slow:
+
+1. **Kafka buffers**: Messages queue in Kafka partitions
+2. **Consumer lag increases**: Visible in metrics
+3. **Alerts fire**: Operator notified
+4. **Graceful degradation**: Briefs may be skipped (freshness check fails)
+
+The system does NOT drop events under backpressure. Kafka's retention ensures events are preserved until consumers catch up.
 
 ## Security / Privacy
 

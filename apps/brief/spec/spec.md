@@ -52,6 +52,40 @@ As an operator, I want every claim in the brief to be backed by evidence, so I c
 - **Budgeting**: enforce daily cost/token budgets.
 - **Safety**: do not emit secrets; redact sensitive content if configured.
 - **Honesty**: if uncertain, say so; never fabricate sources.
+- **Idempotency**: duplicate requests MUST NOT generate duplicate briefs or waste LLM budget.
+
+## Idempotency Handling
+
+Kafka delivers at-least-once. If the Trends service crashes after publishing a `SummaryRequest` but before committing its offset, the request is redelivered. The Brief service MUST handle this gracefully.
+
+### Deduplication Strategy
+
+Before generating a brief, check if `request_id` already exists in `brief_results`:
+
+```typescript
+async function processRequest(request: SummaryRequest): Promise<void> {
+  // Check for existing result
+  const existing = await prisma.briefResult.findUnique({
+    where: { requestId: request.request_id },
+  });
+
+  if (existing) {
+    log.info({ requestId: request.request_id }, 'Duplicate request, skipping');
+    metrics.increment('brief_duplicates_skipped_total');
+    return; // Commit offset without processing
+  }
+
+  // Process normally
+  const result = await generateBrief(request);
+  await persistResult(result);
+}
+```
+
+### Edge Cases
+
+- **Concurrent processing**: Use Postgres `INSERT ... ON CONFLICT` to handle race conditions
+- **Partial failure**: If LLM succeeds but Postgres write fails, retry will regenerate (wasted tokens but correct behavior)
+- **Budget tracking**: Dedup check happens BEFORE budget check to avoid false "budget exceeded" on replays
 
 ## Requirements
 
@@ -64,6 +98,8 @@ As an operator, I want every claim in the brief to be backed by evidence, so I c
 - **FR-005 (Read model)**: Service MUST persist each produced result to Postgres (`brief_results`).
 - **FR-006**: Service MUST enforce daily cost budget and degrade gracefully if exceeded.
 - **FR-007**: Service MUST use structured output (JSON mode or function calling) for reliable parsing.
+- **FR-008**: Service MUST be idempotent: duplicate `SummaryRequest` messages MUST NOT generate duplicate briefs.
+- **FR-009**: Service MUST emit alerts (metrics + logs) when brief generation fails.
 
 ### Non-Functional Requirements
 
@@ -130,6 +166,64 @@ Evidence items:
 {repeat for each topic}
 
 Generate the briefing now. Remember: cite sources, be concise, focus on actionable insights.
+```
+
+### SummaryRequest → Prompt Mapping
+
+The following table shows how `SummaryRequest` protobuf fields map to prompt placeholders:
+
+| Prompt Placeholder | SummaryRequest Field | Transformation |
+|--------------------|---------------------|----------------|
+| `{brief_type}` | `type` | `DAILY` → "daily", `THRESHOLD` → "flash" |
+| `{date}` | `requested_at` | Format as "Feb 5, 2026" |
+| `{topics_summary}` | `topics[].topic` + `topics[].metrics[]` | Build ranked list with scores |
+| `{topic.display_name}` | `topics[].topic` | Lookup from allowlist |
+| `{score}` | `topics[].metrics[].score` | Use 60m window metric |
+| `{volume}` | `topics[].metrics[].volume` | Use 60m window metric |
+| `{acceleration}` | `topics[].metrics[].acceleration` | Format as percentage |
+| `{evidence_item.*}` | `topics[].evidence[]` | Iterate evidence items |
+| `{index}` | - | Sequential index [1], [2], etc. |
+| `{title}` | `evidence[].title` | Truncate to 100 chars if needed |
+| `{source}` | `evidence[].source` | E.g., "Reddit", "HN", "RSS" |
+| `{published_at}` | `evidence[].published_at` | Format as "Feb 5, 2:30 PM" |
+| `{url}` | `evidence[].url` | Full URL |
+| `{text_excerpt}` | `evidence[].text_excerpt` | Truncate per context budget |
+| `{engagement_score}` | `evidence[].engagement.score` | Integer or "N/A" |
+
+### Prompt Building Code
+
+```typescript
+function buildPrompt(request: SummaryRequest): string {
+  const date = formatDate(request.requested_at);
+  const briefType = request.type === 'DAILY' ? 'daily' : 'flash';
+
+  const topicsSummary = request.topics
+    .map((t, i) => {
+      const metric = t.metrics.find(m => m.window === 'WINDOW_60M');
+      return `${i + 1}. ${t.topic} (score: ${metric?.score ?? 0})`;
+    })
+    .join('\n');
+
+  const evidenceByTopic = request.topics
+    .map(t => {
+      const metric = t.metrics.find(m => m.window === 'WINDOW_60M');
+      const displayName = allowlist.getDisplayName(t.topic);
+      const header = `## ${displayName} (score: ${metric?.score}, volume: ${metric?.volume}, acceleration: ${formatPercent(metric?.acceleration)})`;
+
+      const items = t.evidence
+        .map((e, i) => `[${i + 1}] ${e.title}\n    Source: ${e.source} | Published: ${formatDateTime(e.published_at)}\n    URL: ${e.url}\n    Excerpt: ${e.text_excerpt}\n    Engagement: ${e.engagement?.score ?? 'N/A'}`)
+        .join('\n\n');
+
+      return `${header}\n\nEvidence items:\n${items}`;
+    })
+    .join('\n\n---\n\n');
+
+  return USER_PROMPT_TEMPLATE
+    .replace('{brief_type}', briefType)
+    .replace('{date}', date)
+    .replace('{topics_summary}', topicsSummary)
+    .replace('{evidence_by_topic}', evidenceByTopic);
+}
 ```
 
 ### Few-Shot Example (included in system prompt for consistency)
@@ -333,12 +427,65 @@ async function generateBrief(request: SummaryRequest): Promise<Brief> {
 }
 ```
 
+## Failure Alerting
+
+Brief generation failures MUST be observable and alertable:
+
+### Metrics
+
+- `brief_generation_failed_total{reason=llm_error|parse_error|budget_exceeded|timeout}`
+- `brief_generation_succeeded_total`
+- `brief_generation_duration_seconds` (histogram)
+- `brief_duplicates_skipped_total`
+
+### Logs
+
+All failures MUST be logged at ERROR level with structured context:
+
+```typescript
+log.error({
+  requestId: request.request_id,
+  error: error.message,
+  errorCode: categorizeError(error), // 'llm_error', 'parse_error', etc.
+  retryCount: attempt,
+  topicCount: request.topics.length,
+}, 'Brief generation failed');
+```
+
+### Alerts (Grafana)
+
+Configure the following alerts:
+
+| Alert | Condition | Severity |
+|-------|-----------|----------|
+| Brief Generation Failed | `brief_generation_failed_total` increases | Warning |
+| No Brief Today | No successful brief in 24h | Critical |
+| LLM Latency High | P95 `brief_generation_duration_seconds` > 120s | Warning |
+| Budget Exhausted | `brief_budget_exceeded_total` > 0 | Warning |
+
+### Example Alert Rule (Grafana)
+
+```yaml
+- alert: NoBriefToday
+  expr: |
+    increase(brief_generation_succeeded_total[24h]) == 0
+    and
+    increase(brief_generation_failed_total[24h]) > 0
+  for: 1h
+  labels:
+    severity: critical
+  annotations:
+    summary: "No brief generated in the last 24 hours"
+    description: "Brief generation has been failing. Check logs for details."
+```
+
 ## Success Criteria
 
 - **SC-001**: Briefs are consistently actionable and evidence-grounded.
 - **SC-002**: Spend stays within configured budget in 3-day local soak.
 - **SC-003**: Every highlight has at least one valid citation URL.
 - **SC-004**: Output parsing never fails on valid LLM responses.
+- **SC-005**: Failure alerts fire within 5 minutes of a failed brief.
 
 ## Configuration
 
@@ -362,4 +509,79 @@ LLM_MAX_OUTPUT_TOKENS=2000
 # Retry
 LLM_MAX_RETRIES=3
 LLM_RETRY_DELAY_MS=1000
+
+# Timeouts
+LLM_TIMEOUT_MS=120000
 ```
+
+## Health Check
+
+The Brief service exposes a `/health` endpoint for container orchestration:
+
+```typescript
+interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  checks: {
+    kafka: 'ok' | 'error';
+    postgres: 'ok' | 'error';
+    redis: 'ok' | 'error';
+    llm_api: 'ok' | 'error' | 'unknown';
+  };
+  last_brief_at?: string;
+  daily_budget_remaining_usd: number;
+  uptime_seconds: number;
+}
+```
+
+**Health criteria**:
+- `healthy`: All dependencies reachable; budget remaining > 0
+- `degraded`: Budget exhausted OR LLM API slow/unreliable
+- `unhealthy`: Kafka OR Postgres unreachable
+
+**LLM API check**: The service does NOT make test LLM calls for health checks (too expensive). Instead, it tracks recent success/failure rate and marks `llm_api: 'error'` if the last 3 calls failed.
+
+**Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
+
+## Graceful Shutdown
+
+On SIGTERM/SIGINT, the Brief service:
+
+1. Stops consuming new messages
+2. Waits for in-flight LLM call to complete (with 2-minute timeout)
+3. Persists result to Postgres (success or timeout failure)
+4. Commits Kafka offset
+5. Closes connections
+6. Exits with code 0
+
+```typescript
+process.on('SIGTERM', async () => {
+  log.info('Received SIGTERM, initiating graceful shutdown');
+
+  // Stop consuming
+  await consumer.pause([{ topic: 'summary.requests' }]);
+
+  // Wait for in-flight LLM call (max 2 minutes)
+  if (llmCallInProgress) {
+    log.info('Waiting for in-flight LLM call to complete');
+    await Promise.race([
+      llmCallPromise,
+      sleep(120_000),
+    ]);
+  }
+
+  // Commit final offset
+  await consumer.commitOffsets();
+
+  // Close connections
+  await Promise.all([
+    consumer.disconnect(),
+    prisma.$disconnect(),
+    redis.quit(),
+  ]);
+
+  log.info('Graceful shutdown complete');
+  process.exit(0);
+});
+```
+
+**Important**: LLM calls can take 30-60 seconds. The shutdown timeout (2 minutes) is intentionally longer to avoid wasting tokens on interrupted calls.
