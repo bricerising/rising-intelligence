@@ -441,3 +441,154 @@ describe('BlueskyAdapter', () => {
   });
 });
 ```
+
+---
+
+## Lobsters (Computing-Focused Community)
+
+### Why Lobsters
+
+- High-signal, low-noise: Strictly moderated for on-topic computing content
+- Invite-only community with engaged technical members
+- Complements Hacker News with more niche engineering/CS content
+- Official RSS feed available with consistent structure
+
+### API Access
+
+Lobsters provides a simple, no-auth public API:
+
+```typescript
+// Fetch hottest stories
+const response = await fetch('https://lobste.rs/hottest.json');
+
+// Fetch newest stories
+const response = await fetch('https://lobste.rs/newest.json');
+
+// Fetch by tag
+const response = await fetch('https://lobste.rs/t/rust.json');
+```
+
+### RSS Feed
+
+```
+https://lobste.rs/rss
+```
+
+### Polling Implementation
+
+```typescript
+interface LobstersStory {
+  short_id: string;
+  short_id_url: string;
+  created_at: string;
+  title: string;
+  url: string;
+  score: number;
+  flags: number;
+  comment_count: number;
+  description: string;
+  comments_url: string;
+  submitter_user: {
+    username: string;
+  };
+  tags: string[];
+}
+
+async function fetchLobstersHot(): Promise<LobstersStory[]> {
+  const response = await fetch('https://lobste.rs/hottest.json');
+  if (!response.ok) {
+    throw new Error(`Lobsters API error: ${response.status}`);
+  }
+  return response.json();
+}
+```
+
+### Checkpoint Strategy
+
+| Checkpoint Key | Value | Purpose |
+|---------------|-------|---------|
+| `lobsters.last_short_id` | Short ID (e.g., `abc123`) | Track last seen story |
+| `lobsters.last_poll_at` | ISO8601 timestamp | Avoid re-fetching too soon |
+
+### Response Mapping
+
+```typescript
+function mapLobstersStory(story: LobstersStory): RawEvent {
+  return {
+    event_id: `lobsters:${story.short_id}`,
+    source: Source.NEWS,  // Use 'news' source type
+    fetched_at: new Date().toISOString(),
+    published_at: story.created_at,
+    url: story.url || story.short_id_url,  // External URL or Lobsters URL
+    title: story.title,
+    text: story.description || story.title,
+    author: {
+      handle: story.submitter_user.username,
+      display_name: story.submitter_user.username,
+    },
+    engagement: {
+      score: story.score,
+      comments: story.comment_count,
+    },
+    tags: story.tags,  // Lobsters has built-in tags
+    source_meta_json: JSON.stringify({
+      short_id: story.short_id,
+      comments_url: story.comments_url,
+      flags: story.flags,
+      lobsters_tags: story.tags,
+    }),
+  };
+}
+```
+
+### Rate Limiting
+
+Lobsters doesn't document rate limits, but be respectful:
+- Poll no more than every 30 minutes
+- Fetch only top/hot stories (not full archive)
+- Include a User-Agent header identifying your bot
+
+```typescript
+const headers = {
+  'User-Agent': 'RisingIntelligence/1.0 (https://github.com/your-repo)',
+  'Accept': 'application/json',
+};
+```
+
+### Error Handling
+
+| Error | Action |
+|-------|--------|
+| 429 (unlikely) | Exponential backoff, max 1 hour |
+| 5xx Server Error | Exponential backoff, max 5 min |
+| Invalid JSON | Log to DLQ, continue |
+
+### Metrics
+
+- `ri_collector_lobsters_stories_fetched_total`
+- `ri_collector_lobsters_poll_duration_seconds`
+- `ri_collector_lobsters_errors_total{type}`
+
+### Configuration
+
+```bash
+# Lobsters
+LOBSTERS_ENABLED=true
+LOBSTERS_MODE=hot  # or 'newest'
+LOBSTERS_POLL_INTERVAL_SECONDS=1800
+LOBSTERS_BATCH_SIZE=25
+```
+
+### Tag Filtering (Optional)
+
+Lobsters has a rich tag system. You can filter by tag if desired:
+
+```typescript
+const RELEVANT_TAGS = ['ai', 'ml', 'cloud', 'devops', 'rust', 'go', 'security'];
+
+function isRelevantStory(story: LobstersStory): boolean {
+  return story.tags.some(tag => RELEVANT_TAGS.includes(tag));
+}
+```
+
+However, for a general tech intelligence system, fetching all hot stories is recommended since Lobsters is already well-moderated for relevance.

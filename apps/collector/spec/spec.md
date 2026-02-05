@@ -309,22 +309,36 @@ Rate limit state is lost on restart, which is fine — it recovers quickly.
 
 ## Configuration
 
-```
+### Environment Variables
+
+```bash
 # Required
 KAFKA_BROKERS=localhost:9092
 
 # Checkpoint storage
 CHECKPOINT_PATH=/data/checkpoints.db
 
-# Source configuration - Traditional
-RSS_FEED_URLS=https://aws.amazon.com/blogs/aws/feed/,...
-REDDIT_SUBREDDITS=aws,MachineLearning,technology
-REDDIT_CLIENT_ID=...
-REDDIT_CLIENT_SECRET=...
+# Topics allowlist (for topic extraction)
+TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
+
+# Feeds configuration (curated RSS sources)
+FEEDS_CONFIG_PATH=/config/feeds.yaml
+
+# Hacker News
+HN_ENABLED=true
 HN_MODE=top
 HN_POLL_INTERVAL_SECONDS=300
 
-# Source configuration - Social (see social-adapters.md for details)
+# Lobsters (high-signal programming community)
+LOBSTERS_ENABLED=true
+LOBSTERS_POLL_INTERVAL_SECONDS=1800
+
+# Reddit credentials
+REDDIT_ENABLED=true
+REDDIT_CLIENT_ID=...
+REDDIT_CLIENT_SECRET=...
+
+# Social sources (see social-adapters.md for details)
 BLUESKY_ENABLED=true
 BLUESKY_MODE=polling
 BLUESKY_POLL_INTERVAL_SECONDS=300
@@ -335,10 +349,20 @@ MASTODON_POLL_INTERVAL_SECONDS=600
 MASTODON_INSTANCES=hachyderm.io,fosstodon.org,infosec.exchange
 MASTODON_TAGS=aws,ai,machinelearning,typescript,rust,devops
 
-# Optional
-GITHUB_TRACKED_REPOS=vercel/next.js,openai/openai-python
+# GitHub (optional - for releases tracking)
+GITHUB_ENABLED=true
 GITHUB_TOKEN=...
 ```
+
+### Feeds Configuration File
+
+See `infra/config/feeds.yaml` for the curated list of RSS feeds including:
+- **Official Blogs**: AWS, Google Cloud, Azure, GitHub, Cloudflare
+- **AI Research**: Google Research, OpenAI, DeepMind
+- **Aggregators**: Techmeme, InfoQ
+- **Open Source**: GitHub Trending, GitHub Releases
+
+Each feed has configurable poll intervals and priority levels.
 
 Note: No `DATABASE_URL` or `REDIS_URL` — the collector doesn't need them.
 

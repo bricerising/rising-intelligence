@@ -656,23 +656,38 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 
 ### Suggested initial sources (MVP defaults)
 
-- RSS/Blogs:
-  - AWS News Blog
-  - AWS "What's New" RSS
-  - A small set of tech/AI outlets you trust (3–10 feeds total)
-- Reddit subreddits:
-  - `r/aws`, `r/MachineLearning`, `r/technology`, `r/devops` (tune to taste)
-  - See rate limit budget calculations in `apps/collector/spec/rate-limits.md`
-- Dev/curation:
-  - Hacker News top stories (poll)
-  - GitHub releases for a curated list of repos (avoid scraping trending in MVP)
-- Social signal (replaces Twitter):
-  - **Bluesky**: Free public API, no rate limits for reads, good tech community adoption
-    - Follow relevant feeds/lists or search hashtags
-    - AT Protocol firehose available for real-time streaming
-  - **Mastodon** (optional): ActivityPub federation
-    - Subscribe to tech-focused instances (hachyderm.io, fosstodon.org)
-    - Use public timelines or relay subscriptions
+See `infra/config/feeds.yaml` for the complete curated feed list with URLs and polling intervals.
+
+**Official Tech & Cloud Blogs** (highest signal):
+- AWS News Blog, AWS "What's New" RSS
+- Google Cloud Blog, Microsoft Azure Blog
+- GitHub Blog, Cloudflare Blog
+
+**AI & Research Blogs**:
+- Google Research Blog, OpenAI News
+- (Meta AI lacks official RSS - monitor manually or via scraper)
+
+**Aggregators** (curated news):
+- Techmeme (breaking tech news aggregator)
+- InfoQ (developer-focused news by topic)
+
+**Developer Communities**:
+- Hacker News top stories (poll every 5 min)
+- Lobsters (high-signal, computing-focused)
+- Reddit: `r/aws`, `r/MachineLearning`, `r/programming`, `r/technology`, `r/devops`
+- See rate limit budget calculations in `apps/collector/spec/rate-limits.md`
+
+**Open Source Activity**:
+- GitHub Trending (third-party RSS: mshibanami/GitHubTrendingRSS)
+- GitHub Releases for key projects (kubernetes, terraform, langchain, etc.)
+
+**Social signal (replaces Twitter)**:
+- **Bluesky**: Free public API, no rate limits for reads, good tech community adoption
+  - Follow relevant feeds/lists or search hashtags
+  - AT Protocol firehose available for real-time streaming
+- **Mastodon** (optional): ActivityPub federation
+  - Subscribe to tech-focused instances (hachyderm.io, fosstodon.org)
+  - Use public timelines or relay subscriptions
 
 **NOTE**: Twitter/X is NOT viable for personal use. API access requires Enterprise tier ($42K+/year) or Academic Research access. The free/basic tiers have severe limits (10K reads/month) and no streaming.
 

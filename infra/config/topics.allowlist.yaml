@@ -367,6 +367,96 @@ topics:
         value: "OTel"
 
   # ===========================================================================
+  # Other Cloud Providers (Priority 70-80)
+  # ===========================================================================
+  - key: cloud.gcp
+    display_name: Google Cloud Platform
+    priority: 80
+    aliases: ["GCP", "Google Cloud"]
+    matchers:
+      - type: keyword
+        value: "Google Cloud"
+      - type: keyword
+        value: "GCP"
+      - type: regex
+        pattern: "\\bBigQuery\\b"
+      - type: regex
+        pattern: "\\bCloud Run\\b"
+
+  - key: cloud.azure
+    display_name: Microsoft Azure
+    priority: 80
+    aliases: ["Azure"]
+    matchers:
+      - type: keyword
+        value: "Azure"
+      - type: keyword
+        value: "Microsoft Cloud"
+      - type: regex
+        pattern: "\\bAzure\\s+(Functions|DevOps|Kubernetes)\\b"
+
+  - key: cloud.cloudflare
+    display_name: Cloudflare
+    priority: 70
+    aliases: ["CF Workers"]
+    matchers:
+      - type: keyword
+        value: "Cloudflare"
+      - type: keyword
+        value: "CF Workers"
+      - type: keyword
+        value: "Cloudflare Workers"
+
+  - key: cloud.general
+    display_name: Cloud Computing
+    priority: 30  # Low priority - too broad
+    aliases: ["Cloud"]
+    matchers:
+      - type: regex
+        pattern: "\\bcloud\\s+(computing|infrastructure|native)\\b"
+      - type: keyword
+        value: "multi-cloud"
+      - type: keyword
+        value: "hybrid cloud"
+
+  # ===========================================================================
+  # Developer Tools & Platforms (Priority 60-75)
+  # ===========================================================================
+  - key: dev.github
+    display_name: GitHub
+    priority: 75
+    aliases: ["GH"]
+    matchers:
+      - type: keyword
+        value: "GitHub"
+      - type: keyword
+        value: "GitHub Actions"
+      - type: keyword
+        value: "GitHub Copilot"
+
+  - key: dev.vscode
+    display_name: VS Code
+    priority: 60
+    aliases: ["Visual Studio Code"]
+    matchers:
+      - type: keyword
+        value: "VS Code"
+      - type: keyword
+        value: "Visual Studio Code"
+      - type: keyword
+        value: "VSCode"
+
+  - key: dev.cursor
+    display_name: Cursor
+    priority: 70
+    aliases: ["Cursor IDE"]
+    matchers:
+      - type: keyword
+        value: "Cursor IDE"
+      - type: regex
+        pattern: "\\bCursor\\b.*\\b(AI|editor|IDE)\\b"
+
+  # ===========================================================================
   # Security (Priority 70: Important but often noisy)
   # ===========================================================================
   - key: security.general
