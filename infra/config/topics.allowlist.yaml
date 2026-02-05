@@ -7,6 +7,7 @@
 # - topics[]: List of topic definitions
 #   - key: Canonical dotted key (e.g., "aws.bedrock")
 #   - display_name: Human-friendly name for dashboards
+#   - priority: Integer 1-100 (higher = more important, used for deterministic selection)
 #   - aliases: Alternative names (for UX and optional matching)
 #   - matchers: Rules for detecting this topic
 #     - type: "keyword" (case-insensitive substring) or "regex" (RE2-compatible)
@@ -14,19 +15,26 @@
 #
 # - suppression: Topics to exclude from trending/alerts
 # - defaults: Global settings
+#
+# IMPORTANT: When an event matches more than max_topics_per_event topics,
+# the topics with highest priority are kept. Topics with equal priority
+# are sorted alphabetically by key for determinism.
 
 defaults:
   # Maximum topics to extract per event (prevents over-tagging)
   max_topics_per_event: 5
   # Default regex flags (case-insensitive by default)
   regex_case_insensitive: true
+  # Default priority for topics without explicit priority
+  default_priority: 50
 
 topics:
   # ===========================================================================
-  # AWS Core Services
+  # AWS Core Services (Priority 80-90: High importance, specific)
   # ===========================================================================
   - key: aws.general
     display_name: AWS (General)
+    priority: 30  # Low priority - too broad, prefer specific services
     aliases: ["Amazon Web Services"]
     matchers:
       - type: keyword
@@ -36,6 +44,7 @@ topics:
 
   - key: aws.bedrock
     display_name: AWS Bedrock
+    priority: 90  # High priority - specific AI service
     aliases: ["Bedrock", "Amazon Bedrock"]
     matchers:
       - type: keyword
@@ -45,6 +54,7 @@ topics:
 
   - key: aws.lambda
     display_name: AWS Lambda
+    priority: 80
     aliases: ["Lambda"]
     matchers:
       - type: regex
@@ -54,6 +64,7 @@ topics:
 
   - key: aws.ec2
     display_name: AWS EC2
+    priority: 75
     aliases: ["EC2", "Elastic Compute"]
     matchers:
       - type: keyword
@@ -63,6 +74,7 @@ topics:
 
   - key: aws.s3
     display_name: AWS S3
+    priority: 75
     aliases: ["S3", "Simple Storage"]
     matchers:
       - type: keyword
@@ -72,6 +84,7 @@ topics:
 
   - key: aws.eks
     display_name: AWS EKS
+    priority: 80
     aliases: ["EKS", "Elastic Kubernetes"]
     matchers:
       - type: keyword
@@ -81,6 +94,7 @@ topics:
 
   - key: aws.sagemaker
     display_name: AWS SageMaker
+    priority: 85
     aliases: ["SageMaker"]
     matchers:
       - type: keyword
@@ -88,16 +102,18 @@ topics:
 
   - key: aws.dynamodb
     display_name: AWS DynamoDB
+    priority: 75
     aliases: ["DynamoDB", "Dynamo"]
     matchers:
       - type: keyword
         value: "DynamoDB"
 
   # ===========================================================================
-  # AI / ML General
+  # AI / ML General (Priority 40-85: Varies by specificity)
   # ===========================================================================
   - key: ai.general
     display_name: AI / ML
+    priority: 25  # Low priority - too broad, prefer specific topics
     aliases: ["Artificial Intelligence", "Machine Learning", "ML"]
     matchers:
       - type: regex
@@ -105,6 +121,7 @@ topics:
 
   - key: ai.llm
     display_name: Large Language Models
+    priority: 70
     aliases: ["LLM", "Language Model"]
     matchers:
       - type: keyword
@@ -116,6 +133,7 @@ topics:
 
   - key: ai.genai
     display_name: Generative AI
+    priority: 65
     aliases: ["GenAI", "Generative"]
     matchers:
       - type: keyword
@@ -125,6 +143,7 @@ topics:
 
   - key: ai.agents
     display_name: AI Agents
+    priority: 85  # High priority - hot topic
     aliases: ["Agents", "Agentic"]
     matchers:
       - type: regex
@@ -134,6 +153,7 @@ topics:
 
   - key: ai.rag
     display_name: RAG (Retrieval-Augmented Generation)
+    priority: 80
     aliases: ["RAG"]
     matchers:
       - type: keyword
@@ -144,10 +164,11 @@ topics:
         value: "retrieval augmented"
 
   # ===========================================================================
-  # AI Providers / Models
+  # AI Providers / Models (Priority 75-85: Specific providers)
   # ===========================================================================
   - key: ai.openai
     display_name: OpenAI
+    priority: 85
     aliases: ["GPT", "ChatGPT"]
     matchers:
       - type: keyword
@@ -159,6 +180,7 @@ topics:
 
   - key: ai.anthropic
     display_name: Anthropic
+    priority: 85
     aliases: ["Claude"]
     matchers:
       - type: keyword
@@ -168,6 +190,7 @@ topics:
 
   - key: ai.google
     display_name: Google AI
+    priority: 80
     aliases: ["Gemini", "Bard", "PaLM"]
     matchers:
       - type: keyword
@@ -179,6 +202,7 @@ topics:
 
   - key: ai.meta
     display_name: Meta AI
+    priority: 75
     aliases: ["LLaMA", "Llama"]
     matchers:
       - type: regex
@@ -188,6 +212,7 @@ topics:
 
   - key: ai.mistral
     display_name: Mistral AI
+    priority: 80
     aliases: ["Mistral", "Mixtral"]
     matchers:
       - type: keyword
@@ -196,10 +221,11 @@ topics:
         value: "Mixtral"
 
   # ===========================================================================
-  # Cloud / Infrastructure
+  # Cloud / Infrastructure (Priority 60-70)
   # ===========================================================================
   - key: cloud.kubernetes
     display_name: Kubernetes
+    priority: 70
     aliases: ["K8s", "Kube"]
     matchers:
       - type: keyword
@@ -209,6 +235,7 @@ topics:
 
   - key: cloud.docker
     display_name: Docker
+    priority: 60
     aliases: ["Container"]
     matchers:
       - type: keyword
@@ -218,6 +245,7 @@ topics:
 
   - key: cloud.terraform
     display_name: Terraform
+    priority: 65
     aliases: ["IaC", "Infrastructure as Code"]
     matchers:
       - type: keyword
@@ -226,10 +254,11 @@ topics:
         value: "OpenTofu"
 
   # ===========================================================================
-  # Programming Languages / Frameworks
+  # Programming Languages / Frameworks (Priority 50-65)
   # ===========================================================================
   - key: lang.rust
     display_name: Rust
+    priority: 65
     aliases: []
     matchers:
       - type: regex
@@ -237,6 +266,7 @@ topics:
 
   - key: lang.go
     display_name: Go (Golang)
+    priority: 60
     aliases: ["Golang"]
     matchers:
       - type: keyword
@@ -246,6 +276,7 @@ topics:
 
   - key: lang.typescript
     display_name: TypeScript
+    priority: 60
     aliases: ["TS"]
     matchers:
       - type: keyword
@@ -253,6 +284,7 @@ topics:
 
   - key: lang.python
     display_name: Python
+    priority: 55
     aliases: []
     matchers:
       - type: keyword
@@ -260,6 +292,7 @@ topics:
 
   - key: framework.react
     display_name: React
+    priority: 55
     aliases: ["React.js", "ReactJS"]
     matchers:
       - type: keyword
@@ -269,6 +302,7 @@ topics:
 
   - key: framework.node
     display_name: Node.js
+    priority: 50
     aliases: ["Node", "NodeJS"]
     matchers:
       - type: keyword
@@ -277,10 +311,11 @@ topics:
         value: "NodeJS"
 
   # ===========================================================================
-  # Data / Databases
+  # Data / Databases (Priority 55-65)
   # ===========================================================================
   - key: data.postgres
     display_name: PostgreSQL
+    priority: 60
     aliases: ["Postgres", "PG"]
     matchers:
       - type: keyword
@@ -290,6 +325,7 @@ topics:
 
   - key: data.kafka
     display_name: Apache Kafka
+    priority: 65
     aliases: ["Kafka"]
     matchers:
       - type: keyword
@@ -299,16 +335,18 @@ topics:
 
   - key: data.redis
     display_name: Redis
+    priority: 55
     aliases: []
     matchers:
       - type: keyword
         value: "Redis"
 
   # ===========================================================================
-  # Observability
+  # Observability (Priority 55-60)
   # ===========================================================================
   - key: observability.grafana
     display_name: Grafana
+    priority: 60
     aliases: ["Loki", "Mimir", "Tempo"]
     matchers:
       - type: keyword
@@ -320,6 +358,7 @@ topics:
 
   - key: observability.opentelemetry
     display_name: OpenTelemetry
+    priority: 60
     aliases: ["OTel"]
     matchers:
       - type: keyword
@@ -328,10 +367,11 @@ topics:
         value: "OTel"
 
   # ===========================================================================
-  # Security
+  # Security (Priority 70: Important but often noisy)
   # ===========================================================================
   - key: security.general
     display_name: Security
+    priority: 70
     aliases: ["Cybersecurity", "InfoSec"]
     matchers:
       - type: keyword
@@ -376,18 +416,40 @@ weights:
   #   ai.general: 0.3
 
 # ===========================================================================
-# Runtime Override Sources
+# Configuration Precedence (IMPORTANT)
 # ===========================================================================
-# Priority order for weight resolution (highest wins):
-# 1. Redis key: topic_weight:{key}
-# 2. Environment variable: TOPIC_WEIGHT_OVERRIDE (comma-separated key:value pairs)
-# 3. Config file overrides (above)
-# 4. Default weight (1.0)
+# Multiple configuration sources exist. Here's the resolution order (highest wins):
+#
+# TOPIC WEIGHTS:
+#   1. Redis key: `topic_weight:{key}` (runtime, via riops CLI or API)
+#   2. Environment: `TOPIC_WEIGHT_OVERRIDE=aws.bedrock:2.0,ai.openai:0.5`
+#   3. This file: `weights.overrides` section (below)
+#   4. Default: `weights.default` (1.0)
+#
+# TOPIC DEFINITIONS (matchers, aliases):
+#   - This file is the ONLY source. No runtime override.
+#   - To add/modify topics, edit this file and restart Collector.
+#
+# SUPPRESSION (muted_topics):
+#   - This file is the ONLY source. No runtime override.
+#   - To mute a topic, add to `suppression.muted_topics` and restart.
+#
+# EXAMPLES:
+#   # Temporarily boost Bedrock (via CLI, persists in Redis):
+#   riops topics set-weight aws.bedrock 2.0 --ttl 24h
+#
+#   # Boost via environment (set before starting service):
+#   export TOPIC_WEIGHT_OVERRIDE="aws.bedrock:2.0,ai.openai:1.5"
+#
+#   # Permanent boost (edit this file):
+#   weights:
+#     overrides:
+#       aws.bedrock: 1.5
 
 runtime:
   # Enable Redis-based weight overrides
   redis_overrides_enabled: true
   # Key pattern for Redis lookups
   redis_key_pattern: "topic_weight:{key}"
-  # TTL for Redis overrides (0 = no expiry)
+  # TTL for Redis overrides (0 = no expiry, set via CLI --ttl flag)
   redis_override_ttl_seconds: 0

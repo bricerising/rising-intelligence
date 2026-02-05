@@ -96,6 +96,162 @@ Outputs:
 
 - Updated subject versions in Schema Registry.
 
+## Schema Evolution Strategy
+
+### Guiding Principles
+
+1. **Backward compatibility by default**: New consumers can read old messages
+2. **No breaking changes in production**: If a change breaks old messages, create a new topic version
+3. **Explicit over implicit**: When in doubt, add a new field rather than repurpose an existing one
+
+### Safe Changes (Backward Compatible)
+
+These changes can be deployed without coordination:
+
+| Change | Safe? | Notes |
+|--------|-------|-------|
+| Add optional field | YES | Old consumers ignore it; new consumers use default |
+| Add new enum value | YES | Old consumers treat as UNSPECIFIED |
+| Add new message type | YES | Doesn't affect existing messages |
+| Deprecate field | YES | Mark as `[deprecated = true]`; don't remove |
+| Change field from required to optional | YES | Protobuf 3 has no required fields anyway |
+
+### Unsafe Changes (Breaking)
+
+These changes require migration planning:
+
+| Change | Safe? | Mitigation |
+|--------|-------|------------|
+| Remove field | NO | Mark as `reserved` instead |
+| Rename field | NO | Add new field, deprecate old |
+| Change field type | NO | Add new field with new type |
+| Change field number | NO | Never do this |
+| Remove enum value | NO | Mark as `reserved` |
+
+### Consumer Handling of Unknown Fields
+
+All consumers MUST handle unknown fields gracefully:
+
+```typescript
+// Generated Protobuf code handles this automatically
+// For JSON parsing, use safe defaults:
+function parseRawEvent(data: unknown): RawEvent {
+  const event = RawEventSchema.parse(data);
+
+  // Provide defaults for optional fields that might not exist in old messages
+  return {
+    ...event,
+    lang: event.lang ?? 'en',
+    tags: event.tags ?? [],
+    extracted: event.extracted ?? { hashtags: [], urls: [] },
+  };
+}
+```
+
+### Migration Playbook
+
+#### Scenario 1: Adding a New Field
+
+**Example**: Adding `sentiment` field to `RawEvent`.
+
+**Steps**:
+1. Add field to `contracts.proto`:
+   ```protobuf
+   message RawEvent {
+     // ... existing fields ...
+     string sentiment = 21;  // New field: "positive", "negative", "neutral"
+   }
+   ```
+2. Publish updated schema to registry
+3. Deploy new Collector (produces messages with `sentiment`)
+4. Deploy new consumers (handles both old messages without `sentiment` and new ones with)
+5. No data loss, no downtime
+
+**Consumer code**:
+```typescript
+const sentiment = event.sentiment || 'unknown';  // Safe default for old messages
+```
+
+#### Scenario 2: Changing a Field Type
+
+**Example**: Changing `engagement.score` from `int32` to `int64`.
+
+**Steps**:
+1. Add new field (don't modify existing):
+   ```protobuf
+   message Engagement {
+     int32 score = 1;           // Keep for backward compat
+     int64 score_v2 = 5;        // New field with larger type
+   }
+   ```
+2. Deploy producer to write BOTH fields
+3. Deploy consumers to prefer `score_v2`, fall back to `score`
+4. After retention period expires, stop writing `score` (optional)
+
+**Consumer code**:
+```typescript
+const score = event.engagement.score_v2 ?? event.engagement.score ?? 0;
+```
+
+#### Scenario 3: Breaking Change (Last Resort)
+
+**Example**: Complete restructure of `TrendSnapshot` format.
+
+**Steps**:
+1. Create new topic: `trends.snapshots.v2`
+2. Create new message type: `TrendSnapshotV2`
+3. Deploy new producer to write to BOTH topics (transition period)
+4. Migrate consumers to new topic one by one
+5. After all consumers migrated, stop writing to old topic
+6. Let old topic retention expire
+
+**Timeline**:
+```
+Day 0:   Deploy producer writing to v1 + v2
+Day 1-7: Migrate consumers to v2
+Day 8:   Stop writing to v1
+Day 22:  v1 topic retention expires (14 days)
+```
+
+### Retention Alignment
+
+**CRITICAL**: Kafka retention MUST be >= the time needed to complete migrations.
+
+Current retention (from `specs/001`):
+- `events.raw`: 14 days
+- `trends.snapshots`: 90 days
+- `summary.results`: 180 days
+
+This gives ample time for migration. If you need to do a breaking change, you have at least 14 days to coordinate deployment.
+
+### Pre-Deployment Checklist
+
+Before deploying schema changes:
+
+- [ ] Change is backward compatible OR migration plan documented
+- [ ] New fields have sensible defaults in consumer code
+- [ ] Schema registered in local dev and tested
+- [ ] PR includes updated `contracts.proto`
+- [ ] Breaking changes discussed and approved
+
+### Monitoring Schema Issues
+
+**Metrics to watch**:
+- `kafka_consumer_deserialization_errors_total`: Spike indicates schema mismatch
+- `kafka_dlq_messages_total`: Malformed messages going to DLQ
+
+**Alerts**:
+```yaml
+- alert: SchemaDeserializationErrors
+  expr: rate(kafka_consumer_deserialization_errors_total[5m]) > 0
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Schema deserialization errors detected"
+    description: "Check for schema compatibility issues between producers and consumers"
+```
+
 ## Future (post-MVP)
 
 - Adopt Buf for:

@@ -194,14 +194,14 @@ flowchart TD
 
 | Topic | Producer | Consumer(s) | Partition Key | Purpose |
 |-------|----------|-------------|---------------|---------|
-| `events.raw` | Collector | Persister, Trends | `date_hour` (YYYYMMDDHH) | Normalized source events |
-| `events.raw.dlq` | Collector | (manual inspection) | `date_hour` | Failed parse/normalize |
+| `events.raw` | Collector | Persister, Trends | `source` | Normalized source events |
+| `events.raw.dlq` | Collector | (manual inspection) | `source` | Failed parse/normalize |
 | `collector.heartbeat` | Collector | Trends | `source` | Per-source health heartbeats |
 | `trends.snapshots` | Trends | (stored to Postgres) | `window` | Periodic trend rankings |
 | `summary.requests` | Trends | Brief | `request_id` | Request to generate a brief |
 | `summary.results` | Brief | (stored to Postgres) | `request_id` | Generated briefs |
 
-**Partition key rationale**: Using `date_hour` for events provides predictable distribution and makes time-based queries efficient. All events from the same hour land on the same partition, enabling efficient windowed processing.
+**Partition key rationale**: Using `source` for events provides even distribution across partitions and allows source-specific consumer scaling. Each source (RSS, Reddit, HN, etc.) gets its own partition, enabling parallelism without hot-spot issues that time-based keys would cause during traffic spikes.
 
 ### Service Responsibilities
 
@@ -537,6 +537,49 @@ discovery:
     - "^\\d+$"                # Pure numbers
 ```
 
+### Topic Backfill Strategy
+
+**Problem**: When a new topic is added to the allowlist (e.g., AWS launches "Project Cypress"), historical events in Postgres won't have that topic tagged because topic extraction happens at ingestion time.
+
+**Design Decision**: Accept cold start for new topics. Do NOT backfill.
+
+**Rationale**:
+- Trend detection is forward-looking; historical accuracy is less important
+- Backfill adds complexity (re-processing, dedup handling, window recalculation)
+- Most new topics are "hot" precisely because they're new (little historical data anyway)
+- If you add a topic for an existing concept (e.g., adding `ai.claude` when it already existed), the first few days of data will be sparse, then it stabilizes
+
+**Behavior when adding a new topic**:
+1. Add topic to `topics.allowlist.yaml`
+2. Restart Collector (picks up new allowlist)
+3. New events are tagged with the new topic
+4. Historical events in Postgres remain unchanged
+5. Trend baseline starts accumulating from day 1 of the new topic
+6. After 7+ days, baselines become meaningful
+
+**What this means for briefs**:
+- A newly added topic may spike immediately (no baseline to compare against)
+- The Brief service should note when a topic has < 7 days of data: "New topic, limited historical context"
+
+**Optional: Query-Time Topic Matching**
+
+For ad-hoc analysis of historical data, Grafana queries CAN apply topic matchers at query time:
+
+```sql
+-- Find historical events that WOULD match a topic (slow, for exploration only)
+SELECT *
+FROM raw_events
+WHERE text ILIKE '%Bedrock%'
+  AND fetched_at > NOW() - INTERVAL '30 days';
+```
+
+This is NOT used for trend scoring (too slow), only for manual investigation.
+
+**Alternative (Not Implemented)**: A nightly job could re-run topic extraction on recent events and update `raw_events.topics`. This is deferred because:
+- Adds complexity (dedup with already-tagged events)
+- Window counts would need recalculation
+- Marginal benefit for personal use
+
 ### Topics allowlist file (v1)
 
 `TOPICS_ALLOWLIST_PATH` points to a committed, non-secret YAML file (example: `infra/config/topics.allowlist.yaml`) with:
@@ -560,11 +603,11 @@ MVP matcher semantics:
 
 ### Kafka topics (suggested)
 
-- `events.raw`: all `RawEvent` messages (partition key: `event_id`).
-- `events.raw.dlq`: failed parse/normalize (`DeadLetterEvent`; includes safe context; no secrets).
-- `trends.snapshots`: periodic `TrendSnapshot`.
-- `summary.requests`: requests to generate a brief (`SummaryRequest`; daily or threshold-triggered).
-- `summary.results`: produced brief results (`BriefResult`; success or failure + metadata).
+- `events.raw`: all `RawEvent` messages (partition key: `source`).
+- `events.raw.dlq`: failed parse/normalize (`DeadLetterEvent`; partition key: `source`; includes safe context; no secrets).
+- `trends.snapshots`: periodic `TrendSnapshot` (partition key: `window`).
+- `summary.requests`: requests to generate a brief (`SummaryRequest`; partition key: `request_id`; daily or threshold-triggered).
+- `summary.results`: produced brief results (`BriefResult`; partition key: `request_id`; success or failure + metadata).
 
 ### Retention
 
@@ -1172,7 +1215,11 @@ interface SystemHealth {
 | `PostgresUnavailable` | Postgres connection failed > 1min | Critical |
 | `KafkaUnavailable` | Kafka connection failed > 30s | Critical |
 | `BriefStale` | No brief generated in > 36 hours | Warning |
+| `BriefTriggerMissing` | No `SummaryRequest` published in > 26 hours | Warning |
 | `TrendsStale` | No snapshot in > 30 minutes | Warning |
+| `DataFreshnessBlocking` | Brief skipped due to stale data > 3 times in 24h | Warning |
+
+**Note on `BriefTriggerMissing`**: This catches the case where the Trends service cron job silently stops (crashed, misconfigured, or container not running). It's different from `BriefStale` which fires when the Brief service can't generate. Both alerts together cover the full pipeline.
 
 ## Backpressure Strategy
 

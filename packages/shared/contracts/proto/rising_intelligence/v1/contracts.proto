@@ -12,9 +12,11 @@ enum Source {
   SOURCE_HACKERNEWS = 3;
   SOURCE_REDDIT = 4;
   SOURCE_GITHUB = 5;
-  // DEPRECATED: Twitter/X API requires Enterprise tier ($42K+/year) or Academic access.
-  // Not viable for personal use. Kept for potential future use only.
-  SOURCE_TWITTER = 6 [deprecated = true];
+  // RESERVED: Twitter/X - DO NOT USE.
+  // API requires Enterprise tier ($42K+/year). Field number reserved for potential future use.
+  // Use SOURCE_BLUESKY or SOURCE_MASTODON for social signal instead.
+  reserved 6;
+  reserved "SOURCE_TWITTER";
   // Bluesky: Open AT Protocol with free public API access. Good replacement for Twitter signal.
   SOURCE_BLUESKY = 7;
   // Mastodon: ActivityPub federation. Access via instance APIs or relays.

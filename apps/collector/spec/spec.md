@@ -150,6 +150,7 @@ interface CompiledAllowlist {
   topics: Array<{
     key: string;
     displayName: string;
+    priority: number;  // Higher = more important (1-100)
     matchers: Array<{
       type: 'keyword' | 'regex';
       value?: string;      // for keyword
@@ -157,15 +158,18 @@ interface CompiledAllowlist {
     }>;
   }>;
   maxTopicsPerEvent: number;
+  defaultPriority: number;
   mutedTopics: Set<string>;
 }
 
 function loadAllowlist(path: string): CompiledAllowlist {
   const raw = yaml.parse(fs.readFileSync(path, 'utf-8'));
+  const defaultPriority = raw.defaults?.default_priority ?? 50;
 
   const topics = raw.topics.map((t: any) => ({
     key: t.key,
     displayName: t.display_name,
+    priority: t.priority ?? defaultPriority,
     matchers: t.matchers.map((m: any) => {
       if (m.type === 'regex') {
         try {
@@ -180,7 +184,8 @@ function loadAllowlist(path: string): CompiledAllowlist {
 
   return {
     topics,
-    maxTopicsPerEvent: raw.defaults?.max_topics_per_event ?? 8,
+    maxTopicsPerEvent: raw.defaults?.max_topics_per_event ?? 5,
+    defaultPriority,
     mutedTopics: new Set(raw.suppression?.muted_topics ?? []),
   };
 }
@@ -188,17 +193,29 @@ function loadAllowlist(path: string): CompiledAllowlist {
 
 ### Extraction Logic
 
+Topic extraction is **deterministic**: given the same content and allowlist, extraction always returns the same topics in the same order.
+
+**Algorithm**:
+1. Find ALL matching topics (no early exit)
+2. Sort by priority (descending), then by key (alphabetically) for ties
+3. Take top N (where N = `maxTopicsPerEvent`)
+
 ```typescript
+interface TopicMatch {
+  key: string;
+  priority: number;
+}
+
 function extractTopics(
   event: { title?: string; text: string },
   allowlist: CompiledAllowlist
 ): string[] {
   const content = `${event.title ?? ''} ${event.text}`.toLowerCase();
-  const matches: string[] = [];
+  const matches: TopicMatch[] = [];
 
+  // Step 1: Find ALL matching topics
   for (const topic of allowlist.topics) {
     if (allowlist.mutedTopics.has(topic.key)) continue;
-    if (matches.length >= allowlist.maxTopicsPerEvent) break;
 
     for (const matcher of topic.matchers) {
       const matched = matcher.type === 'keyword'
@@ -206,13 +223,22 @@ function extractTopics(
         : matcher.pattern!.test(content);
 
       if (matched) {
-        matches.push(topic.key);
-        break; // Only add topic once
+        matches.push({ key: topic.key, priority: topic.priority });
+        break; // Only add topic once per topic
       }
     }
   }
 
-  return matches;
+  // Step 2: Sort by priority (desc), then key (asc) for determinism
+  matches.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.key.localeCompare(b.key);
+  });
+
+  // Step 3: Take top N
+  return matches
+    .slice(0, allowlist.maxTopicsPerEvent)
+    .map(m => m.key);
 }
 ```
 
@@ -301,9 +327,11 @@ GITHUB_TOKEN=...
 
 Note: No `DATABASE_URL` or `REDIS_URL` — the collector doesn't need them.
 
-## Health Check
+## Observability Endpoints
 
-The Collector exposes a `/health` endpoint for container orchestration:
+The Collector exposes HTTP endpoints for health checks and metrics:
+
+### Health Check (`GET /health`)
 
 ```typescript
 interface HealthStatus {
@@ -323,7 +351,47 @@ interface HealthStatus {
 - `degraded`: One source failing but others working
 - `unhealthy`: Kafka unreachable OR checkpoints unwritable
 
-**Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
+**Returns**: 200 (healthy/degraded) or 503 (unhealthy)
+
+### Metrics (`GET /metrics`)
+
+Prometheus-format metrics for direct scraping (independent of Kafka):
+
+```prometheus
+# HELP ri_collector_events_published_total Events published to Kafka
+# TYPE ri_collector_events_published_total counter
+ri_collector_events_published_total{source="reddit"} 1234
+
+# HELP ri_collector_poll_duration_seconds Duration of poll cycle
+# TYPE ri_collector_poll_duration_seconds histogram
+ri_collector_poll_duration_seconds_bucket{source="reddit",le="1"} 95
+
+# HELP ri_collector_errors_total Errors by source and type
+# TYPE ri_collector_errors_total counter
+ri_collector_errors_total{source="reddit",type="rate_limit"} 2
+
+# HELP ri_collector_last_poll_timestamp_seconds Unix timestamp of last successful poll
+# TYPE ri_collector_last_poll_timestamp_seconds gauge
+ri_collector_last_poll_timestamp_seconds{source="reddit"} 1707177600
+
+# HELP ri_collector_checkpoints_written_total Checkpoint writes
+# TYPE ri_collector_checkpoints_written_total counter
+ri_collector_checkpoints_written_total{source="reddit"} 500
+```
+
+**Why both /health and /metrics?**
+- `/health`: Quick liveness/readiness check for container orchestration
+- `/metrics`: Detailed operational visibility, works even if Kafka is down
+
+**Scrape config** (add to Prometheus/OTel):
+```yaml
+scrape_configs:
+  - job_name: 'collector'
+    static_configs:
+      - targets: ['collector:3000']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
 
 ## Graceful Shutdown
 

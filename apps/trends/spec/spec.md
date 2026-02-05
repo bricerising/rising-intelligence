@@ -396,6 +396,17 @@ function computeScore(metrics: TopicMetrics): number {
 }
 ```
 
+## Metrics
+
+- `ri_trends_snapshots_generated_total{window}`: Snapshots published
+- `ri_trends_summary_requests_published_total{type}`: Brief triggers (daily/threshold)
+- `ri_trends_summary_requests_skipped_total{reason}`: Brief triggers skipped (stale_data, collector_unhealthy)
+- `ri_trends_consumer_lag{partition}`: Current consumer lag
+- `ri_trends_processing_duration_seconds`: Time to process a batch
+- `ri_trends_topics_scored_total`: Topics included in snapshots
+- `ri_trends_baseline_computed_total{topic}`: Baseline calculations
+- `ri_trends_baseline_fallback_total{reason}`: Fallback baseline used (insufficient_data, new_topic)
+
 ## Success Criteria
 
 - **SC-001**: Top trends are plausible and evidence-backed.
