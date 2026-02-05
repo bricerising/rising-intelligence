@@ -1,0 +1,56 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+  prometheus:
+    config:
+      global:
+        scrape_interval: 15s
+      scrape_configs:
+        # These targets will exist once app services are added to docker compose.
+        - job_name: "collector"
+          metrics_path: "/metrics"
+          static_configs:
+            - targets: ["collector:9101"]
+        - job_name: "trends"
+          metrics_path: "/metrics"
+          static_configs:
+            - targets: ["trends:9102"]
+        - job_name: "brief"
+          metrics_path: "/metrics"
+          static_configs:
+            - targets: ["brief:9103"]
+
+connectors:
+  servicegraph:
+  spanmetrics:
+
+processors:
+  batch:
+
+exporters:
+  logging:
+  prometheusremotewrite:
+    endpoint: "http://mimir:9009/api/v1/push"
+  otlp:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging, otlp, servicegraph, spanmetrics]
+    metrics:
+      receivers: [otlp, prometheus, servicegraph, spanmetrics]
+      processors: [batch]
+      exporters: [logging, prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging, loki]

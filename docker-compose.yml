@@ -1,0 +1,153 @@
+version: "3.9"
+
+services:
+  # Kafka-compatible broker (single-node local dev).
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      [
+        "redpanda",
+        "start",
+        "--overprovisioned",
+        "--smp",
+        "1",
+        "--memory",
+        "1G",
+        "--reserve-memory",
+        "0M",
+        "--node-id",
+        "0",
+        "--check=false",
+        "--kafka-addr",
+        "internal://0.0.0.0:9092,external://0.0.0.0:19092",
+        "--advertise-kafka-addr",
+        "internal://redpanda:9092,external://localhost:9092",
+        "--pandaproxy-addr",
+        "internal://0.0.0.0:8082,external://0.0.0.0:18082",
+        "--advertise-pandaproxy-addr",
+        "internal://redpanda:8082,external://localhost:8082"
+      ]
+    ports:
+      - "127.0.0.1:9092:19092" # kafka external
+      - "127.0.0.1:8082:18082" # pandaproxy external (optional)
+      - "127.0.0.1:9644:9644" # admin
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --brokers=localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    volumes:
+      - ./infra/otel/collector-config.yaml:/etc/otel/collector-config.yaml
+    depends_on:
+      - mimir
+      - loki
+      - tempo
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  mimir:
+    image: grafana/mimir:2.11.0
+    command: ["-config.file=/etc/mimir/mimir.yaml"]
+    ports:
+      - "127.0.0.1:9009:9009"
+    volumes:
+      - ./infra/mimir/mimir.yaml:/etc/mimir/mimir.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  loki:
+    image: grafana/loki:2.9.4
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - ./infra/promtail/promtail.yaml:/etc/promtail/config.yaml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  tempo:
+    image: grafana/tempo:2.3.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "127.0.0.1:3200:3200"
+      - "127.0.0.1:4317:4317" # otlp grpc
+      - "127.0.0.1:4318:4318" # otlp http
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards
+    depends_on:
+      - mimir
+      - loki
+      - tempo
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--dir",
+        "/tmp",
+        "--dbfilename",
+        "rising-intelligence.rdb",
+        "--maxmemory",
+        "256mb",
+        "--maxmemory-policy",
+        "allkeys-lru"
+      ]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  # Application services (apps/*) will be added once code exists.
