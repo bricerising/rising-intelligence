@@ -1,7 +1,5 @@
-// =============================================================================
-// Rising Intelligence - Database Schema
-// =============================================================================
-// Managed by Prisma. Run `npm run db:migrate` to apply changes.
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
   provider = "prisma-client-js"
@@ -13,161 +11,135 @@ datasource db {
 }
 
 // =============================================================================
-// RAW EVENTS (queryable event store for search/exploration)
+// Enums
 // =============================================================================
-// Replaces Loki for raw event search. Events are immutable once written.
 
+enum Source {
+  rss
+  news
+  hackernews
+  reddit
+  github
+  twitter
+}
+
+enum TrendWindow {
+  WINDOW_15M
+  WINDOW_60M
+  WINDOW_24H
+}
+
+enum BriefStatus {
+  success
+  failure
+}
+
+// =============================================================================
+// Raw Events (Persister writes, Grafana/Trends reads)
+// =============================================================================
+
+/// Queryable event archive. Events are immutable once written.
 model RawEvent {
-  id        BigInt   @id @default(autoincrement())
-  eventId   String   @unique @map("event_id") // stable per-source unique ID
-  source    Source
-  fetchedAt DateTime @map("fetched_at")
-  publishedAt DateTime? @map("published_at")
+  id                  BigInt    @id @default(autoincrement())
+  eventId             String    @unique @map("event_id")
+  source              Source
+  fetchedAt           DateTime  @map("fetched_at") @db.Timestamptz
+  publishedAt         DateTime? @map("published_at") @db.Timestamptz
 
-  url   String?
-  title String?
-  text  String   // primary content for extraction/search
+  url                 String?
+  title               String?
+  text                String
 
-  // Author info (denormalized for query simplicity)
-  authorId          String? @map("author_id")
-  authorHandle      String? @map("author_handle")
-  authorDisplayName String? @map("author_display_name")
+  // Denormalized author info
+  authorId            String?   @map("author_id")
+  authorHandle        String?   @map("author_handle")
+  authorDisplayName   String?   @map("author_display_name")
 
   // Engagement metrics
-  engagementScore    Int? @map("engagement_score")
-  engagementComments Int? @map("engagement_comments")
-  engagementLikes    Int? @map("engagement_likes")
-  engagementShares   Int? @map("engagement_shares")
+  engagementScore     Int?      @map("engagement_score")
+  engagementComments  Int?      @map("engagement_comments")
+  engagementLikes     Int?      @map("engagement_likes")
+  engagementShares    Int?      @map("engagement_shares")
 
-  // Extracted/derived fields
-  lang              String?
-  tags              String[] // e.g., ['ai', 'aws']
-  extractedHashtags String[] @map("extracted_hashtags")
-  extractedUrls     String[] @map("extracted_urls")
-  topics            String[] // canonical topic keys (pre-extracted by Collector, written by Persister)
+  // Derived fields
+  lang                String?
+  tags                String[]
+  extractedHashtags   String[]  @map("extracted_hashtags")
+  extractedUrls       String[]  @map("extracted_urls")
+  topics              String[]  // Canonical topic keys (set by Trends backfill or Collector)
 
-  // Free-form per-source metadata
-  sourceMeta Json? @map("source_meta")
-
-  // Full-text search vector (generated column - see migration)
-  // Note: Prisma doesn't support GENERATED columns directly.
-  // Add via raw SQL migration: ALTER TABLE raw_events ADD COLUMN search_vector tsvector
-  // GENERATED ALWAYS AS (
-  //   setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
-  //   setweight(to_tsvector('english', coalesce(text, '')), 'B')
-  // ) STORED;
+  // Free-form metadata
+  sourceMeta          Json?     @map("source_meta")
 
   @@index([source, fetchedAt(sort: Desc)], name: "idx_raw_events_source_fetched")
   @@index([fetchedAt(sort: Desc)], name: "idx_raw_events_fetched")
   @@index([publishedAt(sort: Desc)], name: "idx_raw_events_published")
   @@index([topics], name: "idx_raw_events_topics", type: Gin)
-  // Note: GIN index on search_vector added via raw SQL migration
   @@map("raw_events")
 }
 
-enum Source {
-  RSS
-  NEWS
-  HACKERNEWS
-  REDDIT
-  GITHUB
-  TWITTER
-
-  @@map("source")
-}
+// Note: Full-text search index (search_vector) is created via raw SQL migration
+// because Prisma doesn't support generated columns. See migrations.
 
 // =============================================================================
-// SOURCE CHECKPOINTS (DEPRECATED - kept for backwards compatibility)
+// Trend Snapshots (Trends writes, Grafana reads)
 // =============================================================================
-// NOTE: The Collector service now uses local SQLite for checkpoints to maintain
-// zero database dependencies. This table is no longer used and can be removed
-// in a future migration.
-//
-// Original purpose: cursor persistence for reliable ingestion.
 
-model SourceCheckpoint {
-  source         String // e.g., 'rss.aws_blog', 'reddit.r_aws', 'hackernews'
-  checkpointKey  String @map("checkpoint_key") // e.g., 'after_cursor', 'last_item_id'
-  checkpointValue String @map("checkpoint_value")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  @@id([source, checkpointKey])
-  @@map("source_checkpoints")
-}
-
-// =============================================================================
-// TREND SNAPSHOTS (historical trend data for charts/tables)
-// =============================================================================
-// Append-only. Each snapshot captures the ranked topics at a point in time.
-
+/// Append-only snapshot storage for historical trend charts.
 model TrendSnapshot {
   id          BigInt      @id @default(autoincrement())
-  generatedAt DateTime    @map("generated_at")
+  generatedAt DateTime    @map("generated_at") @db.Timestamptz
   window      TrendWindow
-  snapshot    Json        // full TrendSnapshot protobuf as JSON
+  snapshot    Json        // Full TrendSnapshot protobuf as JSON
 
+  @@index([generatedAt(sort: Desc)], name: "idx_trend_snapshots_generated")
   @@index([window, generatedAt(sort: Desc)], name: "idx_trend_snapshots_window_generated")
   @@map("trend_snapshots")
 }
 
-enum TrendWindow {
-  WINDOW_15M @map("15m")
-  WINDOW_60M @map("60m")
-  WINDOW_24H @map("24h")
-
-  @@map("trend_window")
-}
-
 // =============================================================================
-// BRIEF RESULTS (LLM-generated summaries)
+// Brief Results (Brief writes, Grafana reads)
 // =============================================================================
-// Stores both success and failure results for audit/debugging.
 
+/// Stores both success and failure results for audit.
 model BriefResult {
-  requestId  String      @id @map("request_id")
-  producedAt DateTime    @map("produced_at")
-  status     BriefStatus
-  result     Json        // full BriefResult protobuf as JSON
+  requestId   String      @id @map("request_id")
+  producedAt  DateTime    @map("produced_at") @db.Timestamptz
+  status      BriefStatus
+  result      Json        // Full BriefResult protobuf as JSON
 
   @@index([producedAt(sort: Desc)], name: "idx_brief_results_produced")
   @@map("brief_results")
 }
 
-enum BriefStatus {
-  SUCCESS @map("success")
-  FAILURE @map("failure")
-
-  @@map("brief_status")
-}
-
 // =============================================================================
-// CONSUMER LAG TRACKING (for data freshness checks)
+// Consumer Lag (Persister/Trends writes, Trends reads for freshness check)
 // =============================================================================
-// Tracks Kafka consumer progress for freshness validation before brief triggers.
 
+/// Tracks Kafka consumer progress for data freshness validation.
 model ConsumerLag {
-  consumerGroup String   @map("consumer_group") // e.g., 'trends-processor'
-  topic         String   // Kafka topic name
+  consumerGroup String   @map("consumer_group")
+  topic         String
   partition     Int
   currentOffset BigInt   @map("current_offset")
   latestOffset  BigInt   @map("latest_offset")
   lagMessages   BigInt   @map("lag_messages")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  updatedAt     DateTime @map("updated_at") @db.Timestamptz
 
   @@id([consumerGroup, topic, partition])
   @@map("consumer_lag")
 }
 
 // =============================================================================
-// RETENTION POLICY (cleanup configuration)
+// Retention Policies (Seed script writes, Retention job reads)
 // =============================================================================
-// Defines how long to keep data in each table. Enforced by a scheduled job.
 
+/// Configures cleanup for each table.
 model RetentionPolicy {
-  tableName     String   @id @map("table_name")
-  retentionDays Int      @map("retention_days")
-  enabled       Boolean  @default(true)
-  lastCleanupAt DateTime? @map("last_cleanup_at")
+  tableName     String    @id @map("table_name")
+  retentionDays Int       @map("retention_days")
+  enabled       Boolean   @default(true)
+  lastCleanupAt DateTime? @map("last_cleanup_at") @db.Timestamptz
 
   @@map("retention_policies")
 }

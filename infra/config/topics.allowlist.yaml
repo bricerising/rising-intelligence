@@ -1,238 +1,349 @@
-version: 1
-
-# Canonical topic allowlist used by the Trends service.
-# - Keep the allowlist intentionally small in MVP (tens, not hundreds).
-# - Prefer specific topics ("aws.bedrock") over always-on generics ("ai").
-# - Topics are grouped by category for readability.
+# Topics Allowlist Configuration
+# ==============================
+# This file defines the canonical topics tracked by the Rising Intelligence system.
+# Topics are matched against event title + text using keywords and regex patterns.
+#
+# Structure:
+# - topics[]: List of topic definitions
+#   - key: Canonical dotted key (e.g., "aws.bedrock")
+#   - display_name: Human-friendly name for dashboards
+#   - aliases: Alternative names (for UX and optional matching)
+#   - matchers: Rules for detecting this topic
+#     - type: "keyword" (case-insensitive substring) or "regex" (RE2-compatible)
+#     - value/pattern: The match value
+#
+# - suppression: Topics to exclude from trending/alerts
+# - defaults: Global settings
 
 defaults:
-  case_insensitive: true
-  max_topics_per_event: 8
-
-suppression:
-  muted_topics: []
+  # Maximum topics to extract per event (prevents over-tagging)
+  max_topics_per_event: 5
+  # Default regex flags (case-insensitive by default)
+  regex_case_insensitive: true
 
 topics:
   # ===========================================================================
-  # AWS Services
+  # AWS Core Services
   # ===========================================================================
-  - key: aws.ec2
-    display_name: AWS EC2
-    aliases:
-      - EC2
-      - "Amazon EC2"
+  - key: aws.general
+    display_name: AWS (General)
+    aliases: ["Amazon Web Services"]
     matchers:
-      - type: regex
-        pattern: "\\bEC2\\b"
-
-  - key: aws.lambda
-    display_name: AWS Lambda
-    aliases:
-      - Lambda
-      - "AWS Lambda"
-      - "serverless"
-    matchers:
-      - type: regex
-        pattern: "\\bLambda\\b"
-      - type: regex
-        pattern: "\\bserverless\\b"
+      - type: keyword
+        value: "AWS"
+      - type: keyword
+        value: "Amazon Web Services"
 
   - key: aws.bedrock
     display_name: AWS Bedrock
-    aliases:
-      - Bedrock
-      - "Amazon Bedrock"
+    aliases: ["Bedrock", "Amazon Bedrock"]
     matchers:
+      - type: keyword
+        value: "Bedrock"
       - type: regex
-        pattern: "\\b[Bb]edrock\\b"
+        pattern: "\\bBedrock\\b"
 
-  - key: aws.sagemaker
-    display_name: AWS SageMaker
-    aliases:
-      - SageMaker
-      - "Amazon SageMaker"
+  - key: aws.lambda
+    display_name: AWS Lambda
+    aliases: ["Lambda"]
     matchers:
       - type: regex
-        pattern: "\\bSageMaker\\b"
+        pattern: "\\b(AWS\\s+)?Lambda\\b"
+      - type: keyword
+        value: "serverless"
+
+  - key: aws.ec2
+    display_name: AWS EC2
+    aliases: ["EC2", "Elastic Compute"]
+    matchers:
+      - type: keyword
+        value: "EC2"
+      - type: regex
+        pattern: "\\bEC2\\b"
 
   - key: aws.s3
     display_name: AWS S3
-    aliases:
-      - S3
-      - "Amazon S3"
-      - "Simple Storage Service"
+    aliases: ["S3", "Simple Storage"]
     matchers:
+      - type: keyword
+        value: "S3"
       - type: regex
         pattern: "\\bS3\\b"
 
   - key: aws.eks
     display_name: AWS EKS
-    aliases:
-      - EKS
-      - "Elastic Kubernetes Service"
+    aliases: ["EKS", "Elastic Kubernetes"]
     matchers:
+      - type: keyword
+        value: "EKS"
       - type: regex
         pattern: "\\bEKS\\b"
 
-  # ===========================================================================
-  # AI / ML
-  # ===========================================================================
-  - key: ai.llm
-    display_name: LLMs
-    aliases:
-      - LLM
-      - "large language model"
-      - "large language models"
+  - key: aws.sagemaker
+    display_name: AWS SageMaker
+    aliases: ["SageMaker"]
     matchers:
-      - type: regex
-        pattern: "\\bLLM(s)?\\b"
-      - type: regex
-        pattern: "large language model"
+      - type: keyword
+        value: "SageMaker"
 
-  - key: ai.rag
-    display_name: RAG
-    aliases:
-      - RAG
-      - "retrieval augmented generation"
+  - key: aws.dynamodb
+    display_name: AWS DynamoDB
+    aliases: ["DynamoDB", "Dynamo"]
+    matchers:
+      - type: keyword
+        value: "DynamoDB"
+
+  # ===========================================================================
+  # AI / ML General
+  # ===========================================================================
+  - key: ai.general
+    display_name: AI / ML
+    aliases: ["Artificial Intelligence", "Machine Learning", "ML"]
     matchers:
       - type: regex
-        pattern: "\\bRAG\\b"
+        pattern: "\\b(AI|artificial intelligence|machine learning|ML)\\b"
+
+  - key: ai.llm
+    display_name: Large Language Models
+    aliases: ["LLM", "Language Model"]
+    matchers:
+      - type: keyword
+        value: "LLM"
+      - type: keyword
+        value: "large language model"
+      - type: regex
+        pattern: "\\bGPT-?\\d"
+
+  - key: ai.genai
+    display_name: Generative AI
+    aliases: ["GenAI", "Generative"]
+    matchers:
+      - type: keyword
+        value: "generative AI"
+      - type: keyword
+        value: "GenAI"
 
   - key: ai.agents
     display_name: AI Agents
-    aliases:
-      - "AI agent"
-      - "AI agents"
-      - "agentic"
+    aliases: ["Agents", "Agentic"]
     matchers:
       - type: regex
-        pattern: "\\bAI agents?\\b"
-      - type: regex
-        pattern: "\\bagentic\\b"
+        pattern: "\\b(AI\\s+)?agents?\\b"
+      - type: keyword
+        value: "agentic"
 
-  - key: ai.openai
-    display_name: OpenAI
-    aliases:
-      - OpenAI
-      - GPT
-      - ChatGPT
-      - "GPT-4"
-      - "GPT-5"
+  - key: ai.rag
+    display_name: RAG (Retrieval-Augmented Generation)
+    aliases: ["RAG"]
     matchers:
-      - type: regex
-        pattern: "\\bOpenAI\\b"
-      - type: regex
-        pattern: "\\bGPT-?[0-9]\\b"
-      - type: regex
-        pattern: "\\bChatGPT\\b"
-
-  - key: ai.anthropic
-    display_name: Anthropic/Claude
-    aliases:
-      - Anthropic
-      - Claude
-    matchers:
-      - type: regex
-        pattern: "\\bAnthropic\\b"
-      - type: regex
-        pattern: "\\bClaude\\b"
-
-  - key: ai.embedding
-    display_name: Embeddings
-    aliases:
-      - embedding
-      - embeddings
-      - "vector embedding"
-    matchers:
-      - type: regex
-        pattern: "\\bembeddings?\\b"
+      - type: keyword
+        value: "RAG"
+      - type: keyword
+        value: "retrieval-augmented"
+      - type: keyword
+        value: "retrieval augmented"
 
   # ===========================================================================
-  # Languages & Frameworks
+  # AI Providers / Models
+  # ===========================================================================
+  - key: ai.openai
+    display_name: OpenAI
+    aliases: ["GPT", "ChatGPT"]
+    matchers:
+      - type: keyword
+        value: "OpenAI"
+      - type: keyword
+        value: "ChatGPT"
+      - type: regex
+        pattern: "\\bGPT-?[34]"
+
+  - key: ai.anthropic
+    display_name: Anthropic
+    aliases: ["Claude"]
+    matchers:
+      - type: keyword
+        value: "Anthropic"
+      - type: keyword
+        value: "Claude"
+
+  - key: ai.google
+    display_name: Google AI
+    aliases: ["Gemini", "Bard", "PaLM"]
+    matchers:
+      - type: keyword
+        value: "Gemini"
+      - type: keyword
+        value: "Google AI"
+      - type: regex
+        pattern: "\\b(Bard|PaLM)\\b"
+
+  - key: ai.meta
+    display_name: Meta AI
+    aliases: ["LLaMA", "Llama"]
+    matchers:
+      - type: regex
+        pattern: "\\b(LLaMA|Llama\\s*\\d?)\\b"
+      - type: keyword
+        value: "Meta AI"
+
+  - key: ai.mistral
+    display_name: Mistral AI
+    aliases: ["Mistral", "Mixtral"]
+    matchers:
+      - type: keyword
+        value: "Mistral"
+      - type: keyword
+        value: "Mixtral"
+
+  # ===========================================================================
+  # Cloud / Infrastructure
+  # ===========================================================================
+  - key: cloud.kubernetes
+    display_name: Kubernetes
+    aliases: ["K8s", "Kube"]
+    matchers:
+      - type: keyword
+        value: "Kubernetes"
+      - type: keyword
+        value: "K8s"
+
+  - key: cloud.docker
+    display_name: Docker
+    aliases: ["Container"]
+    matchers:
+      - type: keyword
+        value: "Docker"
+      - type: keyword
+        value: "container"
+
+  - key: cloud.terraform
+    display_name: Terraform
+    aliases: ["IaC", "Infrastructure as Code"]
+    matchers:
+      - type: keyword
+        value: "Terraform"
+      - type: keyword
+        value: "OpenTofu"
+
+  # ===========================================================================
+  # Programming Languages / Frameworks
   # ===========================================================================
   - key: lang.rust
     display_name: Rust
-    aliases:
-      - Rust
-      - rustlang
+    aliases: []
     matchers:
       - type: regex
-        pattern: "\\bRust\\b"
+        pattern: "\\bRust\\b(?!\\s+(Belt|bucket))"
+
+  - key: lang.go
+    display_name: Go (Golang)
+    aliases: ["Golang"]
+    matchers:
+      - type: keyword
+        value: "Golang"
       - type: regex
-        pattern: "\\brustlang\\b"
+        pattern: "\\bGo\\s+(language|programming|1\\.\\d+)"
 
   - key: lang.typescript
     display_name: TypeScript
-    aliases:
-      - TypeScript
-      - TS
+    aliases: ["TS"]
     matchers:
-      - type: regex
-        pattern: "\\bTypeScript\\b"
+      - type: keyword
+        value: "TypeScript"
 
   - key: lang.python
     display_name: Python
-    aliases:
-      - Python
+    aliases: []
     matchers:
-      - type: regex
-        pattern: "\\bPython\\b"
+      - type: keyword
+        value: "Python"
 
   - key: framework.react
     display_name: React
-    aliases:
-      - React
-      - ReactJS
+    aliases: ["React.js", "ReactJS"]
     matchers:
-      - type: regex
-        pattern: "\\bReact(JS)?\\b"
+      - type: keyword
+        value: "React"
+      - type: keyword
+        value: "Next.js"
+
+  - key: framework.node
+    display_name: Node.js
+    aliases: ["Node", "NodeJS"]
+    matchers:
+      - type: keyword
+        value: "Node.js"
+      - type: keyword
+        value: "NodeJS"
 
   # ===========================================================================
-  # Infrastructure & DevOps
+  # Data / Databases
   # ===========================================================================
-  - key: infra.kubernetes
-    display_name: Kubernetes
-    aliases:
-      - Kubernetes
-      - K8s
-      - k8s
+  - key: data.postgres
+    display_name: PostgreSQL
+    aliases: ["Postgres", "PG"]
     matchers:
-      - type: regex
-        pattern: "\\bKubernetes\\b"
-      - type: regex
-        pattern: "\\b[Kk]8s\\b"
+      - type: keyword
+        value: "PostgreSQL"
+      - type: keyword
+        value: "Postgres"
 
-  - key: infra.docker
-    display_name: Docker
-    aliases:
-      - Docker
-      - container
-      - containers
+  - key: data.kafka
+    display_name: Apache Kafka
+    aliases: ["Kafka"]
     matchers:
-      - type: regex
-        pattern: "\\bDocker\\b"
+      - type: keyword
+        value: "Kafka"
+      - type: keyword
+        value: "Redpanda"
 
-  - key: infra.terraform
-    display_name: Terraform
-    aliases:
-      - Terraform
-      - IaC
-      - "infrastructure as code"
+  - key: data.redis
+    display_name: Redis
+    aliases: []
     matchers:
-      - type: regex
-        pattern: "\\bTerraform\\b"
+      - type: keyword
+        value: "Redis"
 
   # ===========================================================================
-  # General Tech
+  # Observability
   # ===========================================================================
-  - key: tech.opensource
-    display_name: Open Source
-    aliases:
-      - "open source"
-      - "open-source"
-      - OSS
+  - key: observability.grafana
+    display_name: Grafana
+    aliases: ["Loki", "Mimir", "Tempo"]
     matchers:
-      - type: regex
-        pattern: "\\bopen[- ]?source\\b"
-      - type: regex
-        pattern: "\\bOSS\\b"
+      - type: keyword
+        value: "Grafana"
+      - type: keyword
+        value: "Loki"
+      - type: keyword
+        value: "Prometheus"
+
+  - key: observability.opentelemetry
+    display_name: OpenTelemetry
+    aliases: ["OTel"]
+    matchers:
+      - type: keyword
+        value: "OpenTelemetry"
+      - type: keyword
+        value: "OTel"
+
+  # ===========================================================================
+  # Security
+  # ===========================================================================
+  - key: security.general
+    display_name: Security
+    aliases: ["Cybersecurity", "InfoSec"]
+    matchers:
+      - type: keyword
+        value: "cybersecurity"
+      - type: keyword
+        value: "vulnerability"
+      - type: keyword
+        value: "CVE-"
+
+suppression:
+  # Topics to exclude from trending/alerts (still tracked, just muted)
+  muted_topics: []
+  # Example: Mute general AI if it's too noisy
+  # muted_topics:
+  #   - ai.general

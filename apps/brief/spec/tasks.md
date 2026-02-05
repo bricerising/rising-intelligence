@@ -1,25 +1,75 @@
 # Tasks: Brief Service
 
-## Phase 1: Contracts + wiring
+## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton
 
-- **Acceptance**: service consumes `summary.requests` and publishes `summary.results` using a stub generator.
+- **Acceptance**: Service starts, exports `/metrics`, emits a startup log with `service=brief`.
 
-### T002: Brief contract + validation
+### T002: Kafka consumer setup
 
-- **Acceptance**: invalid outputs are rejected; published `BriefResult` messages validate against schema.
+- **Acceptance**: Service connects to Kafka, subscribes to `summary.requests`, logs received message count.
 
-### T003: Persist results to Postgres
+### T003: Proto deserialization
 
-- **Acceptance**: each produced `BriefResult` inserts a row into `brief_results` (see `specs/005-postgres-read-model.md`).
+- **Acceptance**: `SummaryRequest` protobuf messages are correctly deserialized.
 
-## Phase 2: LLM integration
+## Phase 2: LLM Integration
 
-### T004: Provider integration
+### T004: LLM client setup
 
-- **Acceptance**: service can generate a brief using the configured LLM provider/model.
+- **Acceptance**: Service connects to configured LLM provider (OpenAI/Anthropic), verifies API key.
 
-### T005: Budget enforcement
+### T005: Prompt template implementation
 
-- **Acceptance**: requests beyond budget are rejected or degraded deterministically.
+- **Acceptance**: `SummaryRequest` data is rendered into prompt using template from `prompts.md`.
+
+### T006: Brief generation
+
+- **Acceptance**: LLM response is parsed and validated; `Brief` object is created with citations.
+
+### T007: Hallucination detection
+
+- **Acceptance**: Responses with hallucination markers are flagged and logged.
+
+## Phase 3: Budget & Idempotency
+
+### T008: Budget tracking
+
+- **Acceptance**: Daily LLM spend is tracked in Redis; requests exceeding budget are rejected.
+
+### T009: Idempotent processing
+
+- **Acceptance**: Duplicate `request_id` values are detected and skipped.
+
+### T010: Postgres persistence
+
+- **Acceptance**: `BriefResult` (success or failure) is written to `brief_results` table.
+
+## Phase 4: Reliability
+
+### T011: Circuit breaker for LLM
+
+- **Acceptance**: Sustained LLM failures trigger circuit breaker; health endpoint reflects state.
+
+### T012: Fallback to cheaper model
+
+- **Acceptance**: When primary model fails, fallback to cheaper model is attempted.
+
+### T013: Kafka result publishing
+
+- **Acceptance**: `BriefResult` is published to `summary.results` topic.
+
+## Phase 5: Observability
+
+### T014: Metrics implementation
+
+- **Acceptance**: All metrics from `specs/008-observability-contracts.md` are exported.
+
+### T015: Structured logging
+
+- **Acceptance**: Logs include `traceId`, `spanId`, `requestId` as specified.
+
+### T016: Trace spans
+
+- **Acceptance**: `brief.process_request`, `brief.call_llm`, `brief.persist_result` spans appear in Tempo.

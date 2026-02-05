@@ -2,7 +2,7 @@
 
 ## Overview
 
-Collector is primarily a stateless transformer from “source items” → `RawEvent`.
+Collector is primarily a stateless transformer from "source items" → `RawEvent`.
 
 ## Key concepts
 
@@ -21,16 +21,59 @@ Collector is primarily a stateless transformer from “source items” → `RawE
 
 MVP decision:
 
-- Use Redis keys (local Compose includes Redis with persistence enabled).
+- Use **local SQLite** (`/data/checkpoints.db`) for checkpoint persistence.
+- This keeps Collector fully decoupled from Redis (no external dependencies except Kafka).
 
-### Suggested Redis keys
+### Why SQLite over Redis?
 
-- `collector:cursor:rss:<feed_url_hash>` → last seen GUID/URL hash + timestamp
-- `collector:cursor:hn` → last seen item id + timestamp
-- `collector:cursor:reddit:<subreddit>` → last seen fullname/cursor + timestamp
+- **Service isolation**: Collector has zero database dependencies, making it simpler to reason about and test.
+- **Persistence by default**: SQLite file is persisted via Docker volume mount.
+- **Crash recovery**: On restart, Collector reads last checkpoint from SQLite and resumes.
+
+### SQLite schema
+
+```sql
+CREATE TABLE IF NOT EXISTS checkpoints (
+  source TEXT NOT NULL,           -- e.g., 'rss.aws_blog', 'reddit.r_aws', 'hackernews'
+  checkpoint_key TEXT NOT NULL,   -- e.g., 'last_guid', 'after_cursor', 'last_max_id'
+  checkpoint_value TEXT NOT NULL, -- the cursor value
+  updated_at TEXT NOT NULL,       -- ISO8601 timestamp
+  PRIMARY KEY (source, checkpoint_key)
+);
+
+CREATE TABLE IF NOT EXISTS seen_events (
+  source TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  seen_at TEXT NOT NULL,          -- ISO8601 timestamp
+  PRIMARY KEY (source, event_id)
+);
+
+-- Cleanup old seen_events periodically (TTL ~7 days)
+CREATE INDEX IF NOT EXISTS idx_seen_events_seen_at ON seen_events(seen_at);
+```
+
+### Example checkpoints
+
+| source | checkpoint_key | checkpoint_value |
+|--------|----------------|------------------|
+| `rss.aws_blog` | `last_guid` | `https://aws.amazon.com/blogs/aws/...` |
+| `reddit.r_aws` | `after_cursor` | `t3_abc123` |
+| `hackernews` | `last_max_id` | `39876543` |
 
 ### Dedupe cache
 
-To bound duplicates across restarts, the collector SHOULD maintain a TTL cache of recently emitted IDs:
+To bound duplicates across restarts, the collector maintains the `seen_events` table:
 
-- `collector:seen:<source>:<event_id>` → `1` (TTL 7–14 days)
+- Insert `(source, event_id, now())` after successful Kafka publish
+- Before emitting, check if `(source, event_id)` exists
+- Periodically delete rows older than 7 days
+
+### Docker volume mount
+
+```yaml
+collector:
+  volumes:
+    - collector-checkpoints:/data
+```
+
+This ensures checkpoints survive container restarts.

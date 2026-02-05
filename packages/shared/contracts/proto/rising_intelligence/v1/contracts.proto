@@ -12,6 +12,9 @@ enum Source {
   SOURCE_HACKERNEWS = 3;
   SOURCE_REDDIT = 4;
   SOURCE_GITHUB = 5;
+  // NOTE: Twitter/X API access requires elevated access or Enterprise tier.
+  // This source is defined for future use but not implemented in MVP.
+  // Consider alternatives like Bluesky or Mastodon firehose if social signal is needed.
   SOURCE_TWITTER = 6;
 }
 

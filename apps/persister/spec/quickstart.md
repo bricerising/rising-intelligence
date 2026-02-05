@@ -1,80 +1,43 @@
 # Quickstart: Persister Service
 
-## Prerequisites
+## Overview
 
-- Docker Compose stack running (`docker compose up -d`)
-- Prisma migrations applied (`cd packages/db && npm run db:migrate:deploy`)
+The Persister service consumes events from Kafka (`events.raw`) and materializes them to:
+- **Postgres**: Queryable `raw_events` table for dashboards and evidence retrieval
+- **Redis**: Short-term deduplication cache (`seen:*` keys)
 
-## Local Development
+This service is the bridge between the append-only event log (Kafka) and the queryable read model (Postgres).
 
-```bash
-# Install dependencies
-npm install
-
-# Run in development mode
-npm run dev
-
-# Or build and run
-npm run build
-npm start
-```
-
-## Environment Variables
+## Run (planned)
 
 ```bash
-# Required
-KAFKA_BROKERS=localhost:9092
-DATABASE_URL=postgresql://rising:rising@localhost:5432/rising_intelligence
-REDIS_URL=redis://localhost:6379
-
-# Optional
-KAFKA_CONSUMER_GROUP=persister
-HEALTH_PORT=3002
-LOG_LEVEL=info
+docker compose up --build persister
 ```
 
-## Verify It's Working
+## Verify (planned)
 
-1. **Check consumer group**:
-   ```bash
-   docker exec -it rising-intelligence-redpanda-1 rpk group describe persister
-   ```
+- `raw_events` table in Postgres contains events from `events.raw` topic
+- `ri_persister_events_processed_total` metric increasing in Grafana
+- No duplicate `event_id` values in Postgres (UNIQUE constraint)
+- Consumer lag is low (`ri_persister_consumer_lag` < 1000)
 
-2. **Check Postgres rows**:
-   ```bash
-   docker exec -it rising-intelligence-postgres-1 psql -U rising -d rising_intelligence -c "SELECT COUNT(*) FROM raw_events"
-   ```
+## Dependencies
 
-3. **Check Redis keys**:
-   ```bash
-   docker exec -it rising-intelligence-redis-1 redis-cli KEYS "seen:*" | head -10
-   ```
+- **Kafka (Redpanda)**: Source of events
+- **Postgres**: Target for materialized events
+- **Redis**: Deduplication cache (optional but recommended)
 
-4. **Check health**:
-   ```bash
-   curl http://localhost:3002/healthz
-   curl http://localhost:3002/readyz
-   ```
+## Configuration
 
-## Troubleshooting
-
-### Consumer lag increasing
-
-Check Postgres performance:
-```bash
-docker logs rising-intelligence-postgres-1 --tail 100
-```
-
-### Events not appearing in Postgres
-
-Check persister logs:
-```bash
-docker logs rising-intelligence-persister-1 --tail 100
-```
-
-### Redis connection errors
-
-Redis is optional; persister continues without it. Check Redis:
-```bash
-docker exec -it rising-intelligence-redis-1 redis-cli PING
-```
+| Env Var | Required | Default | Description |
+|---------|----------|---------|-------------|
+| `KAFKA_BROKERS` | Yes | — | Kafka broker addresses |
+| `KAFKA_CONSUMER_GROUP` | Yes | `persister` | Consumer group ID |
+| `POSTGRES_HOST` | Yes | — | Postgres host |
+| `POSTGRES_PORT` | No | `5432` | Postgres port |
+| `POSTGRES_DB` | Yes | — | Database name |
+| `POSTGRES_USER` | Yes | — | Database user |
+| `POSTGRES_PASSWORD` | Yes | — | Database password |
+| `REDIS_URL` | No | — | Redis URL for dedup cache |
+| `BATCH_SIZE` | No | `100` | Events per batch insert |
+| `BATCH_TIMEOUT_MS` | No | `1000` | Max wait before flushing batch |

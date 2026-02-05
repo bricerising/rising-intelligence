@@ -205,10 +205,12 @@ flowchart TD
 |---------|------------|-----------|----------------|
 | Collector | External APIs | Kafka (`events.raw`) | Ingest + normalize |
 | Persister | Kafka (`events.raw`) | Postgres, Redis | Materialize queryable state |
-| Trends | Kafka (`events.raw`) | Kafka, Postgres, Redis | Compute trends, trigger briefs |
+| Trends | Kafka (`events.raw`), Postgres (evidence), Redis | Kafka, Postgres, Redis | Compute trends, trigger briefs |
 | Brief | Kafka (`summary.requests`) | Kafka, Postgres | LLM summarization |
 
 **Key insight**: Collector has no database dependencies. It only talks to external APIs and Kafka. This keeps ingestion fast and simple.
+
+**Note on Trends → Postgres**: When building a `SummaryRequest`, the Trends service queries `raw_events` to retrieve evidence items (title, text_excerpt, URL) for top topics. This is a read-only dependency; Trends does not modify `raw_events`.
 
 ## Event & Topic Model
 
@@ -320,9 +322,15 @@ MVP matcher semantics:
 
 ### Retention
 
-- `events.raw`: 7–14 days (enough for replay + baseline computation).
-- `trends.snapshots`: 30–90 days (small, useful for history charts).
-- `summary.results`: 90+ days (very small, high value).
+**IMPORTANT**: Kafka retention MUST be >= Postgres retention for the same data, to ensure rebuild capability.
+
+| Topic | Kafka Retention | Postgres Retention | Notes |
+|-------|-----------------|-------------------|-------|
+| `events.raw` | 14 days | 14 days (`raw_events`) | Aligned for rebuild capability |
+| `trends.snapshots` | 90 days | 90 days (`trend_snapshots`) | Small data, keep longer |
+| `summary.results` | 180 days | 180 days (`brief_results`) | Very small, high value |
+
+If Kafka retention expires before Postgres cleanup and Postgres data is corrupted, events in that window are lost permanently.
 
 ## Configuration
 

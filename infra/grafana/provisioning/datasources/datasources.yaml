@@ -1,0 +1,93 @@
+# Grafana Datasource Provisioning
+# ================================
+# This file configures all datasources for the Rising Intelligence dashboards.
+# Datasources are provisioned on Grafana startup.
+
+apiVersion: 1
+
+datasources:
+  # ===========================================================================
+  # Prometheus/Mimir (Metrics)
+  # ===========================================================================
+  - name: Mimir
+    uid: MIMIR
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Mimir
+      prometheusVersion: "2.11.0"
+
+  # ===========================================================================
+  # Loki (Application Logs)
+  # ===========================================================================
+  - name: Loki
+    uid: LOKI
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # Link logs to traces via traceId field
+        - name: TraceID
+          matcherRegex: '"traceId":"([a-f0-9]+)"'
+          url: '$${__value.raw}'
+          datasourceUid: TEMPO
+          urlDisplayLabel: View Trace
+
+  # ===========================================================================
+  # Tempo (Traces)
+  # ===========================================================================
+  - name: Tempo
+    uid: TEMPO
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      httpMethod: GET
+      tracesToLogs:
+        datasourceUid: LOKI
+        tags: ['service']
+        mappedTags: [{ key: 'service.name', value: 'service' }]
+        mapTagNamesEnabled: true
+        spanStartTimeShift: '-1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: MIMIR
+        tags: [{ key: 'service.name', value: 'service' }]
+      serviceMap:
+        datasourceUid: MIMIR
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: LOKI
+
+  # ===========================================================================
+  # PostgreSQL (Application Data)
+  # ===========================================================================
+  - name: PostgreSQL
+    uid: POSTGRES
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    editable: false
+    jsonData:
+      database: ${POSTGRES_DB:-rising_intelligence}
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1600  # Postgres 16
+      timescaledb: false
+    secureJsonData:
+      user: ${POSTGRES_USER:-rising}
+      password: ${POSTGRES_PASSWORD:-rising}

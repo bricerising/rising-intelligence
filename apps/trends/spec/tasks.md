@@ -1,39 +1,107 @@
 # Tasks: Trends Service
 
-## Phase 1: MVP snapshots
+## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton
 
-- **Acceptance**: service starts, exports `/metrics`, consumes `events.raw`.
+- **Acceptance**: Service starts, exports `/metrics`, emits a startup log with `service=trends`.
 
-### T002: Topic allowlist + aliases
+### T002: Kafka consumer setup
 
-- **Acceptance**: configurable allowlist maps multiple aliases to canonical topic keys.
+- **Acceptance**: Service connects to Kafka, subscribes to `events.raw`, logs received message count.
 
-### T003: Windowed counts + acceleration
+### T003: Proto deserialization
 
-- **Acceptance**: snapshots include `volume` + `prev_volume` + `acceleration` for 15m/60m.
+- **Acceptance**: `RawEvent` protobuf messages are correctly deserialized.
 
-### T004: Publish `trends.snapshots`
+## Phase 2: Topic Extraction
 
-- **Acceptance**: `TrendSnapshot` is produced on a fixed cadence with deterministic ordering.
+### T004: Topic allowlist loading
 
-### T005: Persist snapshots to Postgres
+- **Acceptance**: Topics loaded from `TOPICS_ALLOWLIST_PATH`; validation errors logged on startup.
 
-- **Acceptance**: each produced snapshot inserts a row into `trend_snapshots` (see `specs/005-postgres-read-model.md`).
+### T005: Topic matching
 
-## Phase 2: Baselines
+- **Acceptance**: Events are matched against topic matchers; `topics` array populated.
 
-### T006: Baseline computation
+### T006: Window deduplication
 
-- **Acceptance**: baseline fields populate once enough history exists.
+- **Acceptance**: Duplicate events (by `event_id`) within a window are not double-counted (Redis SADD).
 
-## Phase 3: Summary triggers
+## Phase 3: Window Aggregation
 
-### T007: Daily summary request
+### T007: Window counter implementation
 
-- **Acceptance**: at the configured local time, a `SummaryRequest` is published to `summary.requests` built from the latest 24h + 60m context.
+- **Acceptance**: Redis counters track volume per topic per window bucket.
 
-### T008: Threshold trigger (optional)
+### T008: Previous window caching
 
-- **Acceptance**: when a topic crosses configured thresholds, a threshold `SummaryRequest` is published with bounded evidence.
+- **Acceptance**: When window closes, current count moves to `prev:*` keys for acceleration calculation.
+
+### T009: Evidence buffer
+
+- **Acceptance**: Top evidence items (by engagement) are tracked per topic per window (Redis sorted set).
+
+## Phase 4: Snapshot Generation
+
+### T010: Snapshot computation
+
+- **Acceptance**: At configured interval, compute scores for all topics and produce `TrendSnapshot`.
+
+### T011: Score calculation
+
+- **Acceptance**: Score balances volume, acceleration, and baseline delta as per spec.
+
+### T012: Kafka snapshot publishing
+
+- **Acceptance**: `TrendSnapshot` published to `trends.snapshots` topic.
+
+### T013: Postgres snapshot persistence
+
+- **Acceptance**: `TrendSnapshot` written to `trend_snapshots` table.
+
+## Phase 5: Brief Triggering
+
+### T014: Daily brief trigger
+
+- **Acceptance**: At configured local time, check freshness and publish `SummaryRequest`.
+
+### T015: Evidence retrieval
+
+- **Acceptance**: Query Postgres `raw_events` to build evidence items for top topics.
+
+### T016: Data freshness check
+
+- **Acceptance**: Brief is skipped if consumer lag exceeds threshold; metric emitted.
+
+### T017: Threshold alert trigger (optional)
+
+- **Acceptance**: If topic score exceeds threshold, publish flash brief request.
+
+## Phase 6: Baseline Computation
+
+### T018: Baseline calculation
+
+- **Acceptance**: 7-day median volume (same day-of-week) computed from Postgres and cached in Redis.
+
+### T019: Baseline refresh
+
+- **Acceptance**: Baselines are recomputed daily and used in score calculation.
+
+## Phase 7: Observability
+
+### T020: Metrics implementation
+
+- **Acceptance**: All metrics from `specs/008-observability-contracts.md` are exported.
+
+### T021: Consumer lag tracking
+
+- **Acceptance**: `consumer_lag` table updated periodically with current lag.
+
+### T022: Structured logging
+
+- **Acceptance**: Logs include `traceId`, `spanId`, `kafkaTopic`, `partition`, `offset` as specified.
+
+### T023: Trace spans
+
+- **Acceptance**: `trends.process_event`, `trends.compute_snapshot` spans appear in Tempo.

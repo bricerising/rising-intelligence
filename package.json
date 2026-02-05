@@ -1,20 +1,25 @@
 {
   "name": "rising-intelligence",
+  "version": "0.1.0",
   "private": true,
+  "description": "Self-hosted, near-real-time personal intelligence system for monitoring tech/AI/AWS trends",
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false --noEmit"
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present",
+    "db:migrate": "npm run db:migrate --workspace=@rising-intelligence/db",
+    "db:migrate:deploy": "npm run db:migrate:deploy --workspace=@rising-intelligence/db",
+    "db:push": "npm run db:push --workspace=@rising-intelligence/db",
+    "db:generate": "npm run db:generate --workspace=@rising-intelligence/db",
+    "retention:cleanup": "npm run retention:cleanup --workspace=@rising-intelligence/db"
   },
-  "devDependencies": {
-    "@types/node": "^20.11.30",
-    "@rising-intelligence/ops-cli": "0.0.0",
-    "typescript": "^5.5.4"
-  }
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.0.0"
 }

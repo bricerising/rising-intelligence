@@ -9,11 +9,12 @@
 Postgres serves as the **primary queryable store** for:
 
 - **Raw events**: searchable event archive (replaces Loki for event search)
-- **Source checkpoints**: cursor persistence for reliable ingestion
 - **Trend snapshots**: historical trend data for charts/tables
 - **Brief results**: LLM-generated summaries
 - **Consumer lag**: tracking for data freshness validation
 - **Retention policies**: cleanup configuration
+
+**Note**: Source checkpoints are stored in the Collector's local SQLite (see `apps/collector/spec/data-model.md`), not Postgres. This keeps the Collector decoupled from the database.
 
 The schema is managed by **Prisma** in `packages/db/prisma/schema.prisma`.
 
@@ -31,7 +32,7 @@ Loki remains in the stack for **application logs only** (service debug logs, tra
 - Postgres container: `docker-compose.yml` as `postgres`
 - Bootstrap SQL: `infra/postgres/init/0001_init.sql` (extensions only)
 - Schema source of truth: `packages/db/prisma/schema.prisma`
-- Grafana datasource: `infra/grafana/provisioning/datasources/datasource.yaml` (uid: `POSTGRES`)
+- Grafana datasource: `infra/grafana/provisioning/datasources/datasources.yaml` (uid: `POSTGRES`)
 
 ### Applying Schema Changes
 
@@ -105,24 +106,6 @@ LIMIT 50;
 
 **Note**: The `GENERATED ALWAYS AS ... STORED` column is automatically maintained by Postgres. No application code needed.
 
-### `source_checkpoints`
-
-Cursor persistence for reliable ingestion across restarts.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `source` | TEXT | e.g., 'rss.aws_blog', 'reddit.r_aws' |
-| `checkpoint_key` | TEXT | e.g., 'after_cursor', 'last_item_id' |
-| `checkpoint_value` | TEXT | The cursor value |
-| `updated_at` | TIMESTAMPTZ | Last update time |
-
-**Primary Key**: `(source, checkpoint_key)`
-
-**Example checkpoints**:
-- `('reddit.r_aws', 'after_cursor', 't3_abc123')`
-- `('hackernews', 'last_max_id', '39876543')`
-- `('rss.aws_blog', 'last_guid', 'https://aws.amazon.com/...')`
-
 ### `trend_snapshots`
 
 Append-only snapshot storage for historical trend charts.
@@ -179,7 +162,6 @@ Configures cleanup for each table.
 - `trend_snapshots`: 90 days
 - `brief_results`: 180 days
 - `consumer_lag`: 7 days
-- `source_checkpoints`: 0 (never delete)
 
 ## Write Responsibilities
 
@@ -188,10 +170,9 @@ Each table has a **single owner service** that is responsible for writes. This p
 | Table | Owner Service | Writes | Reads |
 |-------|--------------|--------|-------|
 | `raw_events` | Persister | Insert only (immutable) | Grafana, Trends (for evidence) |
-| `source_checkpoints` | (deprecated) | — | — |
 | `trend_snapshots` | Trends | Insert only (append) | Grafana |
 | `brief_results` | Brief | Insert + idempotent upsert | Grafana |
-| `consumer_lag` | Trends | Upsert (periodic) | Trends (freshness check), Grafana |
+| `consumer_lag` | Persister, Trends | Upsert (periodic) | Trends (freshness check), Grafana |
 | `retention_policies` | Seed script / Admin | Initial seed only | Retention job |
 
 ### Ownership Rules
@@ -215,8 +196,6 @@ We considered routing all Postgres writes through the Persister, but decided aga
 - **Coupling**: Schema changes in one domain (e.g., brief_results) require Persister changes
 
 Instead, each service owns its domain tables and writes directly. The services are still decoupled via Kafka for event flow.
-
-**Note**: The `source_checkpoints` table is no longer used. The Collector service stores checkpoints in local SQLite to maintain zero database dependencies. This table can be removed in a future migration.
 
 ## Retention Enforcement
 
