@@ -104,6 +104,7 @@ interface SourceAdapter {
 async function runAdapter(adapter: SourceAdapter) {
   const producer = await createKafkaProducer();
   const backoff = new BackoffManager(adapter.name);
+  const checkpoints = new CheckpointStore(config.CHECKPOINT_DB_PATH);
 
   while (true) {
     try {
@@ -111,6 +112,12 @@ async function runAdapter(adapter: SourceAdapter) {
       let batchSize = 0;
 
       for await (const { event, checkpoint } of adapter.fetch()) {
+        // Best-effort dedup before publish (SQLite seen cache)
+        if (await checkpoints.hasSeen(event.source, event.event_id)) {
+          metrics.increment('collector_duplicates_skipped_total', { source: event.source });
+          continue;
+        }
+
         // Validate
         const validated = validateRawEvent(event);
         if (!validated.success) {
@@ -124,6 +131,7 @@ async function runAdapter(adapter: SourceAdapter) {
           messages: [{ key: event.event_id, value: serialize(event) }],
         });
 
+        await checkpoints.markSeen(event.source, event.event_id);
         lastCheckpoint = checkpoint;
         batchSize++;
       }
@@ -165,28 +173,74 @@ class CheckpointStore {
     this.db = new Database(path);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS checkpoints (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        source TEXT NOT NULL,
+        checkpoint_key TEXT NOT NULL,
+        checkpoint_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source, checkpoint_key)
       )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS seen_events (
+        source TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        seen_at TEXT NOT NULL,
+        PRIMARY KEY (source, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_seen_events_seen_at ON seen_events(seen_at);
     `);
   }
 
-  get(key: string): string | undefined {
-    const row = this.db.prepare('SELECT value FROM checkpoints WHERE key = ?').get(key);
-    return row?.value;
+  getCheckpoint(source: string, checkpointKey: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT checkpoint_value FROM checkpoints WHERE source = ? AND checkpoint_key = ?')
+      .get(source, checkpointKey);
+    return row?.checkpoint_value;
   }
 
-  set(key: string, value: string): void {
+  setCheckpoint(source: string, checkpointKey: string, checkpointValue: string): void {
     this.db.prepare(`
-      INSERT OR REPLACE INTO checkpoints (key, value, updated_at)
-      VALUES (?, ?, datetime('now'))
-    `).run(key, value);
+      INSERT OR REPLACE INTO checkpoints (source, checkpoint_key, checkpoint_value, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(source, checkpointKey, checkpointValue);
   }
 
-  getAll(prefix: string): Record<string, string> {
-    const rows = this.db.prepare('SELECT key, value FROM checkpoints WHERE key LIKE ?').all(`${prefix}%`);
-    return Object.fromEntries(rows.map(r => [r.key, r.value]));
+  listCheckpoints(sourcePrefix: string): Record<string, Record<string, string>> {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT source, checkpoint_key, checkpoint_value
+          FROM checkpoints
+          WHERE source LIKE ?
+        `,
+      )
+      .all(`${sourcePrefix}%`);
+
+    const result: Record<string, Record<string, string>> = {};
+    for (const row of rows) {
+      result[row.source] ??= {};
+      result[row.source][row.checkpoint_key] = row.checkpoint_value;
+    }
+    return result;
+  }
+
+  hasSeen(source: string, eventId: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 as present FROM seen_events WHERE source = ? AND event_id = ?")
+      .get(source, eventId);
+    return row?.present === 1;
+  }
+
+  markSeen(source: string, eventId: string): void {
+    this.db
+      .prepare(
+        `
+          INSERT OR IGNORE INTO seen_events (source, event_id, seen_at)
+          VALUES (?, ?, datetime('now'))
+        `,
+      )
+      .run(source, eventId);
   }
 }
 ```

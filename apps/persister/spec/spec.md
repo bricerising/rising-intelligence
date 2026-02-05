@@ -25,7 +25,12 @@ The persister does one thing: consume events and write them to storage. It doesn
 
 ### Pre-Enriched Events
 
-Events arrive from `events.raw` with topics already extracted by the Collector. The `tags` field contains canonical topic keys (e.g., `["aws.bedrock", "ai.llm"]`). The Persister writes these directly to `raw_events.topics` without additional processing.
+Events arrive from `events.raw` with topics already extracted by the Collector. The `tags` field contains canonical topic keys (e.g., `["aws.bedrock", "ai.llm"]`). In MVP, the Persister writes these to both:
+
+- `raw_events.tags` (raw tag list, mirror), and
+- `raw_events.topics` (canonical topic keys used for trend computation),
+
+without additional processing.
 
 ### Idempotent Writes
 

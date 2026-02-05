@@ -7,7 +7,7 @@
 
 ## Overview
 
-The Trends Service consumes `RawEvent` from `events.raw`, extracts topics, computes windowed metrics (volume + acceleration), and:
+The Trends Service consumes `RawEvent` from `events.raw`, uses the canonical topic keys provided in `RawEvent.tags` (extracted upstream by Collector), computes windowed metrics (volume + acceleration), and:
 
 1. Publishes ranked `TrendSnapshot` messages to `trends.snapshots`
 2. Persists snapshots to Postgres for dashboards
@@ -43,7 +43,7 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 ### Edge Cases
 
 - High-frequency topics dominate volume ("AI" always-on) → require baseline normalization.
-- Alias collisions ("Bedrock" vs unrelated "bedrock") → require matcher tuning.
+- Alias collisions ("Bedrock" vs unrelated "bedrock") → require allowlist matcher tuning (Collector extraction).
 - Backlog/consumer lag → snapshots become stale.
 - Clock skew in event timestamps → use fetched_at for window assignment.
 
@@ -62,7 +62,7 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 - **FR-002**: Service MUST compute `15m` and `60m` windows in MVP.
 - **FR-003**: Service MUST publish `TrendSnapshot` to `trends.snapshots` (Kafka).
 - **FR-004**: Service MUST persist snapshots to `trend_snapshots` (Postgres).
-- **FR-005**: Service MUST support an allowlist + aliases for topic extraction.
+- **FR-005**: Service MUST load the topics allowlist for validation/suppression/weighting of tracked topic keys (and to ignore unknown tags).
 - **FR-006**: Service SHOULD compute baselines (7-day) once enough data exists.
 - **FR-007 (Daily brief trigger)**: Service MUST publish a daily `SummaryRequest` to `summary.requests` on a configured local schedule, **only if data freshness check passes**.
 - **FR-008 (Threshold trigger, optional)**: Service SHOULD publish a threshold-triggered `SummaryRequest` when a topic spike crosses configured thresholds, **only if data freshness check passes**.
@@ -203,7 +203,10 @@ Before triggering any brief:
 ```typescript
 async function isDataFresh(): Promise<boolean> {
   const lagRecords = await prisma.consumerLag.findMany({
-    where: { consumerGroup: 'trends-processor' },
+    where: {
+      topic: "events.raw",
+      consumerGroup: { in: ["trends-processor", "persister"] },
+    },
   });
 
   // Check 1: Records exist and are recent
@@ -214,11 +217,19 @@ async function isDataFresh(): Promise<boolean> {
     return false;
   }
 
-  // Check 2: Total lag is acceptable
-  const totalLag = lagRecords.reduce((sum, r) => sum + Number(r.lagMessages), 0n);
-  if (totalLag > config.MAX_LAG_MESSAGES) { // default: 100
-    log.warn({ totalLag }, 'Consumer lag exceeds threshold');
-    return false;
+  // Check 2: Each consumer group's total lag is acceptable
+  for (const groupId of ["trends-processor", "persister"] as const) {
+    const groupRecords = lagRecords.filter((r) => r.consumerGroup === groupId);
+    if (groupRecords.length === 0) {
+      log.warn({ groupId }, "Missing consumer lag records");
+      return false;
+    }
+
+    const totalLag = groupRecords.reduce((sum, r) => sum + r.lagMessages, 0n);
+    if (totalLag > BigInt(config.MAX_LAG_MESSAGES)) { // default: 100
+      log.warn({ groupId, totalLag }, "Consumer lag exceeds threshold");
+      return false;
+    }
   }
 
   return true;

@@ -83,7 +83,7 @@ specs/                # thematic system specifications
   - 1 developer community source (e.g., Hacker News, GitHub releases),
   - 1 discussion source (e.g., Reddit).
 - **R-002 (Normalization)**: All ingested items MUST be converted to a shared `RawEvent` schema and published to the stream.
-- **R-003 (Idempotency)**: Ingestion MUST deduplicate by stable `event_id` per source.
+- **R-003 (Idempotency)**: Ingestion MUST emit a stable `event_id` per source item and perform best-effort deduplication within a Collector instance; downstream consumers MUST remain idempotent under at-least-once delivery.
 - **R-004 (Trend Metrics)**: The system MUST compute topic metrics on sliding windows and publish periodic `TrendSnapshot` outputs.
 - **R-005 (Ranking)**: The system MUST output a ranked “Top N Trends” list for a configurable window (e.g., 60m and 24h).
 - **R-006 (Brief Generation)**: The system MUST produce a daily brief (scheduled) from top trends and their supporting items.
@@ -250,7 +250,7 @@ export interface RawEvent {
 
   // Derived at ingestion time (cheap)
   lang?: string;
-  tags?: string[]; // e.g., ["ai", "aws"]
+  tags?: string[]; // MVP: canonical topic keys (e.g., ["aws.bedrock", "ai.llm"]); may include free-form tags in future
   extracted?: {
     hashtags?: string[];
     urls?: string[];
@@ -924,11 +924,15 @@ export interface BriefResult {
 
 Before triggering a brief, the Trends service MUST verify data freshness at **two levels**:
 
-#### Level 1: Consumer Lag Check
+#### Level 1: Consumer Lag Check (Trends + Persister)
 
-1. **Check consumer lag**: Query `consumer_lag` table for the `trends-processor` group
-2. **Freshness threshold**: Total lag across all partitions MUST be < `MAX_BRIEF_LAG_MESSAGES` (default: 100)
+1. **Check consumer lag**: Query `consumer_lag` table for BOTH:
+   - `trends-processor` (trend computation), and
+   - `persister` (Postgres materialization for evidence)
+2. **Freshness threshold**: Total lag across all partitions for EACH group MUST be < `MAX_BRIEF_LAG_MESSAGES` (default: 100)
 3. **Staleness threshold**: `updated_at` for lag records MUST be < `MAX_BRIEF_LAG_AGE_SECONDS` (default: 300)
+
+**Why Persister matters**: The brief pipeline relies on evidence items in Postgres (`raw_events`). If Persister is behind, brief evidence will be incomplete even if Trends lag is low.
 
 #### Level 2: Collector Health Check (NEW)
 
@@ -979,7 +983,7 @@ function validateCollectorHealth(): HealthStatus {
 **If data is stale**:
 - Log a warning with lag details AND unhealthy sources
 - Skip brief generation (do not publish `SummaryRequest`)
-- Emit metric `brief_skipped_stale_data_total{reason="consumer_lag|collector_unhealthy"}`
+- Emit metric `brief_skipped_stale_data_total{reason="consumer_lag|persister_lag|collector_unhealthy"}`
 - Retry on next scheduled trigger
 
 **Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours OR Collector stopped fetching from Reddit) would mislead the operator. It's better to skip and wait for data to catch up.

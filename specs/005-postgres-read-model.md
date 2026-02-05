@@ -12,6 +12,7 @@ Postgres serves as the **primary queryable store** for:
 - **Trend snapshots**: historical trend data for charts/tables
 - **Brief results**: LLM-generated summaries
 - **Consumer lag**: tracking for data freshness validation
+- **Discovery candidates**: emerging unknown terms for operator review
 - **Retention policies**: cleanup configuration
 
 **Note**: Source checkpoints are stored in the Collector's local SQLite (see `apps/collector/spec/data-model.md`), not Postgres. This keeps the Collector decoupled from the database.
@@ -66,10 +67,10 @@ Queryable event archive. Events are **immutable** once written.
 | `author_*` | TEXT? | Denormalized author info |
 | `engagement_*` | INT? | Score, comments, likes, shares |
 | `lang` | TEXT? | Detected language |
-| `tags` | TEXT[] | Free-form tags |
+| `tags` | TEXT[] | Raw tags from ingestion (MVP: mirrors `topics`; future: may include free-form tags) |
 | `extracted_hashtags` | TEXT[] | Parsed from content |
 | `extracted_urls` | TEXT[] | Parsed from content |
-| `topics` | TEXT[] | Canonical topic keys (set by Trends service backfill or Collector) |
+| `topics` | TEXT[] | Canonical topic keys used for trend computation (MVP: copied from `RawEvent.tags` by Persister) |
 | `source_meta` | JSONB? | Per-source metadata |
 
 **Indexes**:
@@ -146,6 +147,27 @@ Tracks Kafka consumer progress for **data freshness validation**.
 
 Used by Trends service to verify data freshness before triggering briefs.
 
+### `discovery_candidates`
+
+Tracks emerging unknown terms that may warrant addition to the allowlist.
+
+Written by Trends when an unknown term exceeds volume/acceleration thresholds; reviewed by the operator.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `term` | TEXT PK | Candidate term |
+| `first_seen_at` | TIMESTAMPTZ | First observed |
+| `last_seen_at` | TIMESTAMPTZ | Most recent observation |
+| `volume_24h` | INT | Count in last 24h |
+| `peak_acceleration` | FLOAT8 | Max acceleration observed |
+| `sample_urls` | TEXT[] | Evidence URLs |
+| `sample_event_ids` | TEXT[] | Evidence event IDs |
+| `sources` | ENUM[] | Sources the term appeared in |
+| `status` | ENUM | pending, added, ignored |
+| `added_to_allowlist_at` | TIMESTAMPTZ? | When accepted |
+| `ignored_at` | TIMESTAMPTZ? | When dismissed |
+| `notes` | TEXT? | Operator notes |
+
 ### `retention_policies`
 
 Configures cleanup for each table.
@@ -162,22 +184,24 @@ Configures cleanup for each table.
 - `trend_snapshots`: 90 days
 - `brief_results`: 180 days
 - `consumer_lag`: 7 days
+- `discovery_candidates`: 30 days
 
 ## Write Responsibilities
 
-Each table has a **single owner service** that is responsible for writes. This prevents coordination issues and race conditions.
+Each table has a **clear write owner**. Most tables are single-writer; `consumer_lag` is a multi-writer table but is **partitioned by `consumer_group`** (each service only writes its own rows).
 
 | Table | Owner Service | Writes | Reads |
 |-------|--------------|--------|-------|
 | `raw_events` | Persister | Insert only (immutable) | Grafana, Trends (for evidence) |
 | `trend_snapshots` | Trends | Insert only (append) | Grafana |
 | `brief_results` | Brief | Insert + idempotent upsert | Grafana |
-| `consumer_lag` | Persister, Trends | Upsert (periodic) | Trends (freshness check), Grafana |
-| `retention_policies` | Seed script / Admin | Initial seed only | Retention job |
+| `consumer_lag` | Persister + Trends | Upsert (periodic, per `consumer_group`) | Trends (freshness check), Grafana |
+| `discovery_candidates` | Trends | Insert + update status | Operator, Grafana |
+| `retention_policies` | Seed script / Admin | Seed + manual edits | Retention job |
 
 ### Ownership Rules
 
-1. **Single writer per table**: Only one service writes to each table. This simplifies reasoning about data consistency.
+1. **Single writer per keyspace**: Only one service writes to a given row keyspace. Most tables are single-writer; `consumer_lag` is shared but partitioned by `consumer_group`.
 
 2. **No cross-service writes**: Services don't write to tables owned by other services. For example:
    - Persister does NOT write to `trend_snapshots`
@@ -208,90 +232,26 @@ A **retention cleanup job** runs daily to enforce retention policies.
 **Implementation**: `packages/db/src/retention-job.ts`
 
 ```typescript
-interface CleanupResult {
-  tableName: string;
-  rowsDeleted: number;
-  durationMs: number;
-  error?: string;
-}
+const CLEANUP_HANDLERS = {
+  raw_events: (cutoff: Date) =>
+    prisma.rawEvent.deleteMany({ where: { fetchedAt: { lt: cutoff } } }),
+  trend_snapshots: (cutoff: Date) =>
+    prisma.trendSnapshot.deleteMany({ where: { generatedAt: { lt: cutoff } } }),
+  brief_results: (cutoff: Date) =>
+    prisma.briefResult.deleteMany({ where: { producedAt: { lt: cutoff } } }),
+  consumer_lag: (cutoff: Date) =>
+    prisma.consumerLag.deleteMany({ where: { updatedAt: { lt: cutoff } } }),
+  discovery_candidates: (cutoff: Date) =>
+    prisma.discoveryCandidate.deleteMany({ where: { lastSeenAt: { lt: cutoff } } }),
+} as const;
 
-async function runRetentionCleanup(): Promise<CleanupResult[]> {
-  const policies = await prisma.retentionPolicy.findMany({
-    where: { enabled: true, retentionDays: { gt: 0 } },
-  });
-
-  const results: CleanupResult[] = [];
-
-  for (const policy of policies) {
-    const start = Date.now();
-    try {
-      const deleted = await cleanupTable(policy.tableName, policy.retentionDays);
-
-      await prisma.retentionPolicy.update({
-        where: { tableName: policy.tableName },
-        data: { lastCleanupAt: new Date() },
-      });
-
-      results.push({
-        tableName: policy.tableName,
-        rowsDeleted: deleted,
-        durationMs: Date.now() - start,
-      });
-
-      log.info({ table: policy.tableName, deleted }, 'Retention cleanup completed');
-    } catch (error) {
-      results.push({
-        tableName: policy.tableName,
-        rowsDeleted: 0,
-        durationMs: Date.now() - start,
-        error: error.message,
-      });
-
-      log.error({ table: policy.tableName, error }, 'Retention cleanup failed');
-    }
-  }
-
-  return results;
-}
-
-async function cleanupTable(tableName: string, retentionDays: number): Promise<number> {
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-
-  // Table-specific cleanup queries
-  switch (tableName) {
-    case 'raw_events':
-      const r1 = await prisma.$executeRaw`
-        DELETE FROM raw_events WHERE fetched_at < ${cutoff}
-      `;
-      return r1;
-
-    case 'trend_snapshots':
-      const r2 = await prisma.$executeRaw`
-        DELETE FROM trend_snapshots WHERE generated_at < ${cutoff}
-      `;
-      return r2;
-
-    case 'brief_results':
-      const r3 = await prisma.$executeRaw`
-        DELETE FROM brief_results WHERE produced_at < ${cutoff}
-      `;
-      return r3;
-
-    case 'consumer_lag':
-      const r4 = await prisma.$executeRaw`
-        DELETE FROM consumer_lag WHERE updated_at < ${cutoff}
-      `;
-      return r4;
-
-    default:
-      throw new Error(`Unknown table: ${tableName}`);
-  }
-}
+// Safety: only tables in CLEANUP_HANDLERS are eligible for deletion.
+// Unknown policies are skipped with a warning (no arbitrary table deletes).
 ```
 
 ### Batch Deletion
 
-For large tables (`raw_events`), delete in batches to avoid long-running transactions:
+For large tables (`raw_events`), consider deleting in batches to avoid long-running transactions and heavy lock contention.
 
 ```typescript
 async function cleanupTableBatched(
@@ -326,9 +286,11 @@ async function cleanupTableBatched(
 
 ### Metrics
 
-- `retention_cleanup_rows_deleted_total{table=...}`
-- `retention_cleanup_duration_seconds{table=...}`
-- `retention_cleanup_errors_total{table=...}`
+MVP behavior is **logs only** (success/failure per table). If/when we run this as a long-lived service, add metrics for:
+
+- `ri_retention_cleanup_rows_deleted_total{table=...}`
+- `ri_retention_cleanup_duration_seconds{table=...}`
+- `ri_retention_cleanup_errors_total{table=...}`
 
 ### Running the Job
 
@@ -354,7 +316,7 @@ spec:
 **Option 2**: Docker Compose with external cron
 ```bash
 # Add to host crontab
-0 3 * * * docker compose run --rm db npm run retention:cleanup >> /var/log/retention.log 2>&1
+0 3 * * * cd /path/to/rising-intelligence && npm run retention:cleanup >> /var/log/retention.log 2>&1
 ```
 
 **Option 3**: In-process scheduler (simpler for MVP)

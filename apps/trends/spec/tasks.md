@@ -14,15 +14,15 @@
 
 - **Acceptance**: `RawEvent` protobuf messages are correctly deserialized.
 
-## Phase 2: Topic Extraction
+## Phase 2: Topic Keys (from RawEvent.tags)
 
 ### T004: Topic allowlist loading
 
 - **Acceptance**: Topics loaded from `TOPICS_ALLOWLIST_PATH`; validation errors logged on startup.
 
-### T005: Topic matching
+### T005: Topic filtering
 
-- **Acceptance**: Events are matched against topic matchers; `topics` array populated.
+- **Acceptance**: `RawEvent.tags` is filtered/validated against the allowlist (muted topics removed; unknown tags ignored) to produce the tracked topic keys.
 
 ### T006: Window deduplication
 
@@ -80,7 +80,7 @@
 
 ### T016: Data freshness check
 
-- **Acceptance**: Brief is skipped if consumer lag exceeds threshold; metric emitted.
+- **Acceptance**: Brief is skipped if consumer lag exceeds threshold for either `trends-processor` or `persister` consumer groups; metric emitted.
 
 ### T017: Threshold alert trigger (optional)
 

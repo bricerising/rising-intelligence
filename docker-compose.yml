@@ -4,7 +4,7 @@
 services:
   # Kafka-compatible broker (single-node local dev).
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:${REDPANDA_VERSION:-v24.3.5}
     command:
       [
         "redpanda",
@@ -196,7 +196,7 @@ services:
     restart: unless-stopped
 
   redpanda-console:
-    image: redpandadata/console:latest
+    image: redpandadata/console:${REDPANDA_CONSOLE_VERSION:-v2.6.1}
     profiles: ["console"]
     depends_on:
       - redpanda
@@ -207,19 +207,19 @@ services:
       KAFKA_SCHEMAREGISTRY_ENABLED: "true"
       KAFKA_SCHEMAREGISTRY_URLS: "http://redpanda:8081"
 
-  # ops-cli: Schema registry publisher (uncomment once packages/ops-cli exists)
-  # ops-cli:
-  #   build:
-  #     context: .
-  #     dockerfile: ./packages/ops-cli/Dockerfile
-  #   depends_on:
-  #     - redpanda
-  #   environment:
-  #     SCHEMA_REGISTRY_URL: "http://redpanda:8081"
-  #     SCHEMA_COMPATIBILITY: "BACKWARD"
-  #     SCHEMA_REGISTRY_RETRIES: "20"
-  #   command: ["schema-registry", "publish-protos"]
-  #   restart: on-failure
+  ops-cli:
+    build:
+      context: .
+      dockerfile: ./packages/ops-cli/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_URL: "http://redpanda:8081"
+      SCHEMA_COMPATIBILITY: "BACKWARD"
+      SCHEMA_REGISTRY_RETRIES: "20"
+    command: ["schema-registry", "publish-protos"]
+    restart: on-failure
 
   # Application services (apps/*) will be added once code exists.
 

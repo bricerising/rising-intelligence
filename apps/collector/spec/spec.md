@@ -36,16 +36,16 @@ The Collector extracts topics from event content **before** publishing to Kafka.
 
 Topic extraction uses the **same allowlist** (`TOPICS_ALLOWLIST_PATH`) as the Trends service, with pre-compiled regexes for performance.
 
-### Checkpoint-Only Deduplication (Option B)
+### SQLite Checkpoints + Best-Effort Dedup (MVP)
 
-The collector uses **source checkpoints** to avoid re-fetching old data, but accepts that some duplicates may enter Kafka:
+The Collector persists minimal local state in SQLite:
 
-- On each poll, fetch items newer than the checkpoint
-- Publish to Kafka
-- Update checkpoint
-- If duplicates slip through (e.g., after restart), downstream consumers handle it
+- **Checkpoints**: per-source cursors to avoid reprocessing the same “recent” items on every poll
+- **Seen cache**: `(source, event_id)` keys to prevent re-emitting the same item across restarts
 
-This is simpler than maintaining a Redis dedup cache in the collector, and aligns with Kafka's at-least-once semantics.
+This keeps the Collector decoupled from Redis/Postgres while satisfying the system’s idempotency goals.
+
+**Note**: Kafka is still at-least-once; downstream consumers MUST remain idempotent (duplicates can still occur in rare crash windows).
 
 ## User Scenarios & Testing
 
@@ -53,7 +53,7 @@ This is simpler than maintaining a Redis dedup cache in the collector, and align
 
 As an operator, I can run the collector continuously so new items from configured sources appear in Kafka quickly and reliably.
 
-**Independent Test**: Start the stack and verify new RSS items and HN stories appear on `events.raw` within 60 seconds.
+**Independent Test**: Start the stack and verify new RSS items and HN stories appear on `events.raw` within the configured poll interval (typically 5–15 minutes).
 
 **Acceptance Scenarios**:
 
@@ -106,7 +106,7 @@ As an operator, I can restart the collector without re-processing large amounts 
 
 ### Non-Functional Requirements
 
-- **NFR-001**: Ingest loop SHOULD make new items available within 60 seconds (best-effort).
+- **NFR-001**: Ingest loop SHOULD make new items available within the configured poll interval (typically 5–15 minutes) and within 60 minutes worst-case.
 - **NFR-002**: Service MUST tolerate upstream downtime without crashing.
 - **NFR-003**: Service MUST have zero database dependencies (no Postgres, no Redis).
 - **NFR-004**: Service MUST be stateless except for checkpoints (can run multiple instances with partitioned sources).

@@ -121,10 +121,10 @@ async function persistToPostgres(event: RawEvent): Promise<boolean> {
         engagementLikes: event.engagement?.likes,
         engagementShares: event.engagement?.shares,
         lang: event.lang,
-        tags: event.tags ?? [],
+        tags: event.tags ?? [], // MVP: mirrors canonical topics
         extractedHashtags: event.extracted?.hashtags ?? [],
         extractedUrls: event.extracted?.urls ?? [],
-        topics: [], // Populated by Trends service later
+        topics: event.tags ?? [], // Canonical topic keys (from Collector extraction)
         sourceMeta: event.source_meta_json ? JSON.parse(event.source_meta_json) : null,
       },
     });
@@ -141,14 +141,15 @@ async function persistToPostgres(event: RawEvent): Promise<boolean> {
 
 function mapSource(source: string): Source {
   const mapping: Record<string, Source> = {
-    'SOURCE_RSS': 'RSS',
-    'SOURCE_NEWS': 'NEWS',
-    'SOURCE_HACKERNEWS': 'HACKERNEWS',
-    'SOURCE_REDDIT': 'REDDIT',
-    'SOURCE_GITHUB': 'GITHUB',
-    'SOURCE_TWITTER': 'TWITTER',
+    SOURCE_RSS: "rss",
+    SOURCE_NEWS: "news",
+    SOURCE_HACKERNEWS: "hackernews",
+    SOURCE_REDDIT: "reddit",
+    SOURCE_GITHUB: "github",
+    SOURCE_BLUESKY: "bluesky",
+    SOURCE_MASTODON: "mastodon",
   };
-  return mapping[source] ?? 'RSS';
+  return mapping[source] ?? "rss";
 }
 ```
 

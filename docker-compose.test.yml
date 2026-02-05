@@ -31,7 +31,7 @@ services:
   # Redpanda for e2e tests only (heavier, slower startup)
   redpanda-test:
     profiles: ["e2e"]
-    image: redpandadata/redpanda:latest
+    image: redpandadata/redpanda:${REDPANDA_VERSION:-v24.3.5}
     command:
       [
         "redpanda",

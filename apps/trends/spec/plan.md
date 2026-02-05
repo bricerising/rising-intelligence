@@ -32,10 +32,10 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 
 ## Phases
 
-### Phase 1: Topic extraction + in-memory windows
+### Phase 1: Topic keys + windowed aggregation
 
 - Kafka consumer setup
-- Allowlist loader + matcher
+- Allowlist loader + tag filtering (`RawEvent.tags`)
 - Windowed counters in Redis (15m/60m)
 - Snapshot publishing to Kafka + Postgres
 - Basic scoring (volume only)
@@ -46,7 +46,7 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 - `src/kafka/consumer.ts` - Kafka consumer
 - `src/kafka/producer.ts` - Kafka producer
 - `src/allowlist.ts` - allowlist loader
-- `src/extractor.ts` - topic extraction
+- `src/extractor.ts` - topic key filtering (from `RawEvent.tags`)
 - `src/redis/windows.ts` - window state management
 - `src/snapshot.ts` - snapshot computation + publishing
 - `src/db/snapshots.ts` - Postgres persistence
@@ -107,7 +107,7 @@ async function run() {
 
 ```typescript
 async function processEvent(event: RawEvent) {
-  const topics = extractTopics(event);
+  const topics = filterTopics(event.tags ?? [], allowlist);
   if (topics.length === 0) return;
 
   const bucket = getBucket(event.fetched_at, '60m');

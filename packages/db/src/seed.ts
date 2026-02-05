@@ -13,6 +13,7 @@ async function main() {
     { tableName: "trend_snapshots", retentionDays: 90 },
     { tableName: "brief_results", retentionDays: 180 },
     { tableName: "consumer_lag", retentionDays: 7 },
+    { tableName: "discovery_candidates", retentionDays: 30 },
     // Note: source_checkpoints is deprecated (collector uses local SQLite)
   ];
 

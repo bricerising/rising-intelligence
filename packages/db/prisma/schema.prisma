@@ -67,7 +67,8 @@ model RawEvent {
   tags              String[]
   extractedHashtags String[] @map("extracted_hashtags")
   extractedUrls     String[] @map("extracted_urls")
-  topics            String[] // Canonical topic keys (set by Trends backfill or Collector)
+  topics            String[] // Canonical topic keys (copied from wire `tags` by Persister in MVP; can be backfilled later)
+  searchVector      Unsupported("tsvector")? @map("search_vector")
 
   // Free-form metadata
   sourceMeta Json? @map("source_meta")

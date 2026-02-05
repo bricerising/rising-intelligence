@@ -7,7 +7,7 @@
     "riops": "./dist/bin.js"
   },
   "dependencies": {
-    "@rising-intelligence/shared": "0.0.0"
+    "@rising-intelligence/shared": "0.1.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

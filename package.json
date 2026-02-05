@@ -16,6 +16,7 @@
     "db:migrate:deploy": "npm run db:migrate:deploy --workspace=@rising-intelligence/db",
     "db:push": "npm run db:push --workspace=@rising-intelligence/db",
     "db:generate": "npm run db:generate --workspace=@rising-intelligence/db",
+    "db:seed": "npm run db:seed --workspace=@rising-intelligence/db",
     "retention:cleanup": "npm run retention:cleanup --workspace=@rising-intelligence/db"
   },
   "engines": {

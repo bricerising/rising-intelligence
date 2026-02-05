@@ -57,8 +57,10 @@ This runbook documents common operational procedures for the Rising Intelligence
 
 2. Check data freshness (common cause):
    ```sql
-   -- Check consumer lag
-   SELECT * FROM consumer_lag WHERE consumer_group = 'trends-processor';
+   -- Check consumer lag (brief freshness depends on BOTH Trends + Persister)
+   SELECT *
+   FROM consumer_lag
+   WHERE consumer_group IN ('trends-processor', 'persister');
    ```
 
 3. Check Brief service logs:

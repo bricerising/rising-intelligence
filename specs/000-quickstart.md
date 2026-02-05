@@ -89,9 +89,9 @@ These ports intentionally mirror `specify-poker` to reduce cognitive load:
 
 ## Contracts (Schema Registry)
 
-**Note**: The `ops-cli` service is currently commented out in `docker-compose.yml` until the package is implemented. Once available, it will automatically publish Protobuf contracts to Schema Registry on startup.
+The `ops-cli` one-shot service runs on stack startup and publishes Protobuf contracts to Schema Registry (idempotent).
 
-Manual schema publishing (once ops-cli exists):
+Manual schema publishing (re-run anytime):
 
 ```bash
 docker compose run --rm ops-cli schema-registry publish-protos

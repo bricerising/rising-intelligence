@@ -36,7 +36,7 @@ datasources:
       derivedFields:
         # Link logs to traces via traceId field
         - name: TraceID
-          matcherRegex: '"traceId":"([a-f0-9]+)"'
+          matcherRegex: '"traceId"\\s*:\\s*"([0-9a-fA-F]{32})"'
           url: '$${__value.raw}'
           datasourceUid: TEMPO
           urlDisplayLabel: View Trace
@@ -80,8 +80,9 @@ datasources:
     access: proxy
     url: postgres:5432
     editable: false
+    database: ${POSTGRES_DB:-rising_intelligence}
+    user: ${POSTGRES_USER:-rising}
     jsonData:
-      database: ${POSTGRES_DB:-rising_intelligence}
       sslmode: disable
       maxOpenConns: 5
       maxIdleConns: 2
@@ -89,5 +90,4 @@ datasources:
       postgresVersion: 1600  # Postgres 16
       timescaledb: false
     secureJsonData:
-      user: ${POSTGRES_USER:-rising}
       password: ${POSTGRES_PASSWORD:-rising}
