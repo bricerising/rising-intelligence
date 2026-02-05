@@ -12,10 +12,13 @@ enum Source {
   SOURCE_HACKERNEWS = 3;
   SOURCE_REDDIT = 4;
   SOURCE_GITHUB = 5;
-  // NOTE: Twitter/X API access requires elevated access or Enterprise tier.
-  // This source is defined for future use but not implemented in MVP.
-  // Consider alternatives like Bluesky or Mastodon firehose if social signal is needed.
-  SOURCE_TWITTER = 6;
+  // DEPRECATED: Twitter/X API requires Enterprise tier ($42K+/year) or Academic access.
+  // Not viable for personal use. Kept for potential future use only.
+  SOURCE_TWITTER = 6 [deprecated = true];
+  // Bluesky: Open AT Protocol with free public API access. Good replacement for Twitter signal.
+  SOURCE_BLUESKY = 7;
+  // Mastodon: ActivityPub federation. Access via instance APIs or relays.
+  SOURCE_MASTODON = 8;
 }
 
 enum TrendWindow {

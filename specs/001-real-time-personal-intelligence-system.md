@@ -96,13 +96,14 @@ specs/                # thematic system specifications
 
 ### Non-functional
 
-- **NFR-001 (Latency)**: Ingested events SHOULD be available for processing within 60 seconds of fetch (excluding upstream API delays).
+- **NFR-001 (Latency)**: Ingested events SHOULD be available for processing within 60 minutes of occurrence. This is a **relaxed target** - trend detection does not require real-time data. Polling intervals of 5-15 minutes per source are acceptable.
 - **NFR-002 (Replay)**: The pipeline MUST support replay/reprocessing for at least 7 days of data.
-- **NFR-003 (Resilience)**: The system MUST tolerate upstream source outages and API rate limiting without data corruption.
+- **NFR-003 (Resilience)**: The system MUST tolerate upstream source outages and API rate limiting without data corruption. On restart after downtime, the Collector resumes normal polling without aggressive catch-up.
 - **NFR-004 (Cost Control)**: LLM usage MUST be bounded (batch + top-trends only) with a configurable daily token/cost budget.
 - **NFR-005 (Local-first Security)**: Secrets MUST be stored out of source control and not logged.
 - **NFR-006 (Auditability)**: Trend scores and briefs MUST link back to source URLs/IDs used as evidence.
 - **NFR-007 (Data Freshness)**: Briefs MUST NOT be generated when consumer lag exceeds configured thresholds.
+- **NFR-008 (Throttled Ingestion)**: Ingestion MUST be throttled with bounded batch sizes per poll cycle. No source should be polled more frequently than every 5 minutes. Missing some posts during high-volume periods is acceptable.
 
 ## Invariants (“Constitution”)
 
@@ -195,6 +196,7 @@ flowchart TD
 |-------|----------|-------------|---------|
 | `events.raw` | Collector | Persister, Trends | Normalized source events |
 | `events.raw.dlq` | Collector | (manual inspection) | Failed parse/normalize |
+| `collector.heartbeat` | Collector | Trends | Per-source health heartbeats |
 | `trends.snapshots` | Trends | (stored to Postgres) | Periodic trend rankings |
 | `summary.requests` | Trends | Brief | Request to generate a brief |
 | `summary.results` | Brief | (stored to Postgres) | Generated briefs |
@@ -227,7 +229,9 @@ export type Source =
   | "hackernews"
   | "reddit"
   | "github"
-  | "twitter";
+  | "bluesky"
+  | "mastodon";
+  // NOTE: "twitter" is deprecated - API requires Enterprise tier ($42K+/year)
 
 export interface RawEvent {
   event_id: string; // stable per-source unique ID (e.g., tweet id, reddit fullname, URL hash)
@@ -289,7 +293,209 @@ MVP topic extraction uses:
 - an **allowlist** of canonical topics with matchers (regex, keyword sets), and
 - lightweight entity hints (hashtags, repo names, product names) extracted from `RawEvent.text/title`.
 
-The allowlist MUST support aliases (e.g., “EC2” → `aws.ec2`, “Bedrock” → `aws.bedrock`).
+The allowlist MUST support aliases (e.g., "EC2" → `aws.ec2`, "Bedrock" → `aws.bedrock`).
+
+### Cross-Source Story Deduplication
+
+**Problem**: The same story (e.g., an AWS announcement) appears across multiple sources:
+- Original blog post (RSS)
+- Reddit posts linking to it (multiple subreddits)
+- Hacker News discussion
+- Social posts referencing it (Bluesky/Mastodon)
+
+Without deduplication, volume metrics over-count because we're measuring "mentions" not "unique stories."
+
+**Solution**: Two-tier approach combining URL clustering and source weighting.
+
+#### Tier 1: URL-based Story Clustering
+
+Events that share a canonical URL are grouped as the same "story":
+
+```typescript
+interface StoryCluster {
+  story_id: string;           // hash of canonical URL
+  canonical_url: string;      // normalized URL (no query params, lowercase)
+  first_seen_at: string;      // earliest fetched_at
+  source_events: string[];    // event_ids that reference this URL
+  sources: Source[];          // unique sources that covered it
+}
+```
+
+**URL normalization**:
+- Remove query parameters (except significant ones like `?id=`)
+- Remove tracking parameters (`utm_*`, `ref`, `source`)
+- Lowercase hostname
+- Remove trailing slashes
+- Handle URL shorteners by following redirects (cache resolved URLs)
+
+**Linking events to stories**:
+- Events with URLs: extract and normalize URL → lookup/create story
+- Events without URLs (social posts): attempt to link via extracted URLs in `text`
+- Events with no extractable URL: treated as standalone (no clustering)
+
+#### Tier 2: Source Weighting
+
+Even with clustering, we want volume to reflect both breadth and depth of coverage. Apply weights by source type:
+
+| Source Type | Weight | Rationale |
+|-------------|--------|-----------|
+| Curated (RSS, News) | 1.0 | Original reporting / announcements |
+| Developer (HN, GitHub) | 0.8 | High-signal discussion |
+| Social (Reddit) | 0.3 | Multiple posts per story, often duplicative |
+| Microblog (Bluesky, Mastodon) | 0.2 | High volume, low signal per post |
+
+**Weighted volume calculation**:
+```typescript
+function calculateWeightedVolume(events: RawEvent[]): number {
+  return events.reduce((sum, e) => sum + SOURCE_WEIGHTS[e.source], 0);
+}
+```
+
+**Story-level volume** (alternative to event-level):
+```typescript
+// Count unique stories, not individual events
+function calculateStoryVolume(stories: StoryCluster[]): number {
+  return stories.length; // Each story counts as 1, regardless of how many events reference it
+}
+```
+
+#### Configuration
+
+```yaml
+# In topics.allowlist.yaml or separate config
+story_dedup:
+  enabled: true
+  url_similarity_threshold: 0.9  # For fuzzy URL matching
+  source_weights:
+    rss: 1.0
+    news: 1.0
+    hackernews: 0.8
+    github: 0.8
+    reddit: 0.3
+    bluesky: 0.2
+    mastodon: 0.2
+  # Use weighted_volume (default) or story_count for trend scoring
+  volume_mode: weighted_volume
+```
+
+#### MVP vs Future
+
+**MVP**: Use source weighting only (simpler, no clustering infrastructure)
+- Apply weights at trend calculation time
+- Dedupe only within single source (already implemented via `seen_events`)
+
+**Future**: Add URL-based story clustering
+- Requires additional Redis structures for story tracking
+- Enables "story view" in dashboards (grouped by canonical URL)
+- Enables richer evidence selection (one item per source per story)
+
+### Topic Discovery (Emerging Terms)
+
+**Problem**: The allowlist only tracks known topics. When AWS announces "Project Cypress" (a new product), the system won't recognize it until manually added.
+
+**Solution**: Track unknown high-frequency terms and surface them for review.
+
+#### How It Works
+
+1. **Extract candidate terms** from each event:
+   - Hashtags (e.g., `#ProjectCypress`)
+   - Capitalized phrases (2-3 words, e.g., "Project Cypress")
+   - @mentions on social platforms
+   - Quoted terms in titles
+
+2. **Filter out known topics**: Remove terms that match existing allowlist matchers
+
+3. **Count unknown terms** in sliding windows (same as topic volumes)
+
+4. **Flag emerging unknowns**: Terms that exceed `DISCOVERY_VOLUME_THRESHOLD` (default: 10 mentions/hour) AND have acceleration > 2x
+
+5. **Surface for review**: Write to `discovery.candidates` table or emit metric
+
+#### Implementation
+
+```typescript
+interface DiscoveryCandidate {
+  term: string;              // The unknown term (normalized)
+  first_seen_at: string;     // When first observed
+  volume_60m: number;        // Current hour volume
+  acceleration: number;      // vs previous hour
+  sample_event_ids: string[]; // 3-5 example events
+  sources: Source[];         // Where it appeared
+}
+```
+
+**Redis keys** (similar to topic windows):
+- `discovery:term:{normalized_term}:{bucket}` - volume counter
+- `discovery:samples:{normalized_term}` - sample event IDs (capped list)
+
+**Extraction heuristics**:
+```typescript
+const TERM_PATTERNS = [
+  // Hashtags
+  /#([A-Za-z][A-Za-z0-9_]{2,30})/g,
+  // Capitalized phrases (2-3 words)
+  /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g,
+  // Product names with version (e.g., "GPT-5", "Claude 4")
+  /\b([A-Z][a-z]*[-\s]?\d+(?:\.\d+)?)\b/g,
+];
+
+function extractCandidateTerms(text: string): string[] {
+  const candidates = new Set<string>();
+  for (const pattern of TERM_PATTERNS) {
+    for (const match of text.matchAll(pattern)) {
+      candidates.add(normalizeTermForDiscovery(match[1]));
+    }
+  }
+  return [...candidates];
+}
+```
+
+**Normalization**:
+- Lowercase
+- Remove leading `#` or `@`
+- Collapse whitespace
+- Skip common words ("The New", "This Week", etc.)
+
+#### Output
+
+**Option A: Postgres table** (queryable in Grafana):
+```sql
+CREATE TABLE discovery_candidates (
+  term TEXT PRIMARY KEY,
+  first_seen_at TIMESTAMPTZ,
+  last_seen_at TIMESTAMPTZ,
+  volume_24h INT,
+  peak_acceleration FLOAT,
+  sample_urls TEXT[],
+  status TEXT DEFAULT 'pending', -- pending, added, ignored
+  added_to_allowlist_at TIMESTAMPTZ
+);
+```
+
+**Option B: Grafana alert** when unknown term spikes:
+- Alert rule: `discovery_candidate_volume > 10 AND discovery_candidate_acceleration > 2`
+- Notification includes term, volume, and sample URLs
+
+#### Workflow
+
+1. System detects "Project Cypress" spiking (unknown term)
+2. Alert fires or dashboard shows candidate
+3. Operator reviews sample events
+4. Operator adds to allowlist (or ignores)
+5. Historical events are NOT reprocessed (term tracked going forward)
+
+#### Configuration
+
+```yaml
+discovery:
+  enabled: true
+  volume_threshold: 10        # Min mentions/hour to surface
+  acceleration_threshold: 2.0 # Min acceleration multiplier
+  max_candidates: 100         # Cap tracked unknowns (LRU eviction)
+  ignore_patterns:            # Skip these even if frequent
+    - "^(the|this|that|new|big)\\s"
+    - "^\\d+$"                # Pure numbers
+```
 
 ### Topics allowlist file (v1)
 
@@ -368,13 +574,23 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 
 - RSS/Blogs:
   - AWS News Blog
-  - AWS “What’s New” RSS
+  - AWS "What's New" RSS
   - A small set of tech/AI outlets you trust (3–10 feeds total)
 - Reddit subreddits:
   - `r/aws`, `r/MachineLearning`, `r/technology`, `r/devops` (tune to taste)
+  - See rate limit budget calculations in `apps/collector/spec/rate-limits.md`
 - Dev/curation:
   - Hacker News top stories (poll)
   - GitHub releases for a curated list of repos (avoid scraping trending in MVP)
+- Social signal (replaces Twitter):
+  - **Bluesky**: Free public API, no rate limits for reads, good tech community adoption
+    - Follow relevant feeds/lists or search hashtags
+    - AT Protocol firehose available for real-time streaming
+  - **Mastodon** (optional): ActivityPub federation
+    - Subscribe to tech-focused instances (hachyderm.io, fosstodon.org)
+    - Use public timelines or relay subscriptions
+
+**NOTE**: Twitter/X is NOT viable for personal use. API access requires Enterprise tier ($42K+/year) or Academic Research access. The free/basic tiers have severe limits (10K reads/month) and no streaming.
 
 ## Trend Detection & Scoring
 
@@ -422,16 +638,143 @@ Trend score SHOULD balance:
 Example (configurable):
 
 - `accel = (volume_60m - prev_volume_60m) / max(prev_volume_60m, 1)`
-- `baseline_delta = (volume_60m - baseline_60m) / max(baseline_60m, 1)` (baseline = 7-day median or mean)
+- `baseline_delta = (volume_60m - baseline_60m) / max(baseline_60m, 1)`
 - `score = clamp01(wv * norm(volume_60m) + wa * norm(accel) + wb * norm(baseline_delta)) * 10`
 
 Where `norm()` maps to 0..1 (e.g., logistic scaling) and weights `wv/wa/wb` are tunable.
 
+### Baseline Computation (30-day with Day-of-Week Adjustment)
+
+**Why 30 days instead of 7?**
+- 7 days is too short for tech news cycles
+- Conferences (re:Invent, WWDC, Google I/O) cause week-long spikes
+- One viral post can skew a 7-day baseline
+
+**Why day-of-week adjustment?**
+- Tech discussion has strong weekly patterns:
+  - Monday: High activity (catch-up from weekend)
+  - Friday: Lower activity (winding down)
+  - Weekend: Significantly lower (50-70% of weekday)
+- Without adjustment, Monday always looks "trending" vs Sunday
+
+**Baseline calculation**:
+
+```typescript
+interface BaselineConfig {
+  lookback_days: 30;           // How far back to look
+  same_day_of_week: true;      // Compare Monday to Mondays, etc.
+  aggregation: 'median';       // median is more robust than mean
+  min_data_points: 3;          // Require at least 3 same-day samples
+}
+
+function calculateBaseline(topic: string, window: TrendWindow, dayOfWeek: number): number {
+  // Query last 30 days of snapshots for this topic + window
+  // Filter to same day of week (0=Sunday, 6=Saturday)
+  // Take median of volumes
+  const samples = querySnapshots({
+    topic,
+    window,
+    dayOfWeek,
+    since: daysAgo(30),
+  });
+
+  if (samples.length < MIN_DATA_POINTS) {
+    // Fallback: use all days if not enough same-day samples
+    return calculateFallbackBaseline(topic, window);
+  }
+
+  return median(samples.map(s => s.volume));
+}
+```
+
+**Fallback for new topics**:
+- If < 3 data points for same day-of-week, use all-days median
+- If < 7 total data points, use raw volume (no baseline adjustment)
+- Log when fallback is used for debugging
+
+**Conference/event awareness** (optional enhancement):
+```yaml
+baseline:
+  event_calendar:
+    - name: "AWS re:Invent"
+      start: "2026-12-01"
+      end: "2026-12-05"
+      affected_topics: ["aws.*"]
+      adjustment: 2.0  # Expect 2x normal volume
+    - name: "Google I/O"
+      start: "2026-05-10"
+      end: "2026-05-12"
+      affected_topics: ["ai.google", "cloud.*"]
+      adjustment: 1.5
+```
+
+During events, baseline is multiplied by adjustment factor to avoid false "trending" signals.
+
+**Caching**:
+- Baselines are computed daily (not per-snapshot)
+- Cached in Redis: `baseline:{topic}:{window}:{dayOfWeek}`
+- TTL: 25 hours (recomputed daily)
+
+**Metrics**:
+- `ri_trends_baseline_computed_total{topic, window}`
+- `ri_trends_baseline_fallback_total{reason}` (insufficient_data, new_topic)
+
 ### Trend detection rules
 
-- A topic is “Trending” if `score >= threshold` OR it is in the current Top N.
-- A topic is “Emerging” if `acceleration >= accel_threshold` AND `volume >= min_volume`.
+- A topic is "Trending" if `score >= threshold` OR it is in the current Top N.
+- A topic is "Emerging" if `acceleration >= accel_threshold` AND `volume >= min_volume`.
 - The system SHOULD support suppression rules (mute topics) to reduce noise.
+
+### Dynamic Topic Weight Adjustment
+
+Users can adjust topic importance without editing the allowlist YAML:
+
+**Use cases**:
+- "I care about Rust a lot this week" → boost `lang.rust` to 1.5x
+- "AI news is overwhelming" → suppress `ai.general` to 0.3x
+- "re:Invent is coming" → boost all `aws.*` topics
+
+**Weight application**:
+```typescript
+function calculateAdjustedScore(topic: string, rawScore: number): number {
+  const weight = getTopicWeight(topic); // 1.0 default
+  return rawScore * weight;
+}
+```
+
+**Override sources** (priority order, highest wins):
+1. **Redis key**: `topic_weight:{key}` - runtime changes, immediate effect
+2. **Environment variable**: `TOPIC_WEIGHT_OVERRIDE=aws.bedrock:2.0,ai.openai:0.5`
+3. **Config file**: `weights.overrides` in `topics.allowlist.yaml`
+4. **Default**: 1.0
+
+**CLI interface** (via `riops`):
+```bash
+# Set a weight override (persists to Redis)
+riops topics set-weight aws.bedrock 2.0
+
+# View current weights
+riops topics list-weights
+
+# Clear an override (reverts to config/default)
+riops topics clear-weight aws.bedrock
+
+# Temporarily boost for N hours
+riops topics set-weight aws.bedrock 2.0 --ttl 24h
+```
+
+**API interface** (optional):
+```
+PUT /api/topics/{key}/weight
+Body: { "weight": 2.0, "ttl_seconds": 86400 }
+
+GET /api/topics/weights
+Response: { "aws.bedrock": 2.0, "ai.general": 0.3, ... }
+```
+
+**Metrics**:
+- `ri_trends_topic_weight{topic}`: Current weight per topic (gauge)
+- `ri_trends_weight_override_count`: Number of active overrides
 
 ## Summarization & Insight Generation (LLM)
 
@@ -477,19 +820,67 @@ export interface BriefResult {
 
 ### Data Freshness Validation
 
-Before triggering a brief, the Trends service MUST verify data freshness:
+Before triggering a brief, the Trends service MUST verify data freshness at **two levels**:
+
+#### Level 1: Consumer Lag Check
 
 1. **Check consumer lag**: Query `consumer_lag` table for the `trends-processor` group
 2. **Freshness threshold**: Total lag across all partitions MUST be < `MAX_BRIEF_LAG_MESSAGES` (default: 100)
 3. **Staleness threshold**: `updated_at` for lag records MUST be < `MAX_BRIEF_LAG_AGE_SECONDS` (default: 300)
 
+#### Level 2: Collector Health Check (NEW)
+
+Consumer lag can be zero even if Collector has stopped fetching. The Trends service MUST also verify:
+
+1. **Check Collector heartbeats**: Query the `collector.heartbeat` Kafka topic or metrics
+2. **Per-source staleness**: Each active source MUST have a heartbeat within `MAX_SOURCE_HEARTBEAT_AGE_SECONDS` (default: 300)
+3. **Minimum sources**: At least `MIN_HEALTHY_SOURCES` (default: 2) must be healthy
+
+**Heartbeat message schema**:
+```typescript
+interface CollectorHeartbeat {
+  source: Source;
+  timestamp: string;        // ISO8601
+  last_fetch_at: string;    // When source was last successfully fetched
+  items_fetched: number;    // Items fetched in last poll (0 is valid)
+  status: 'healthy' | 'degraded' | 'error';
+  error_message?: string;   // If status is error/degraded
+}
+```
+
+**Collector publishes heartbeats**:
+- Every 60 seconds per source
+- After each successful poll cycle
+- On error (with status = 'error')
+
+**Trends service validates**:
+```typescript
+function validateCollectorHealth(): HealthStatus {
+  const heartbeats = getRecentHeartbeats(300); // last 5 minutes
+  const sourceStatus = new Map<Source, boolean>();
+
+  for (const source of CONFIGURED_SOURCES) {
+    const latest = heartbeats.filter(h => h.source === source).sort(byTimestamp).at(-1);
+    sourceStatus.set(source, latest && latest.status !== 'error' &&
+                            ageSeconds(latest.timestamp) < MAX_SOURCE_HEARTBEAT_AGE_SECONDS);
+  }
+
+  const healthyCount = [...sourceStatus.values()].filter(Boolean).length;
+  return {
+    healthy: healthyCount >= MIN_HEALTHY_SOURCES,
+    healthyCount,
+    degradedSources: [...sourceStatus.entries()].filter(([_, healthy]) => !healthy).map(([s]) => s),
+  };
+}
+```
+
 **If data is stale**:
-- Log a warning with lag details
+- Log a warning with lag details AND unhealthy sources
 - Skip brief generation (do not publish `SummaryRequest`)
-- Emit metric `brief_skipped_stale_data_total`
+- Emit metric `brief_skipped_stale_data_total{reason="consumer_lag|collector_unhealthy"}`
 - Retry on next scheduled trigger
 
-**Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours) would mislead the operator. It's better to skip and wait for data to catch up.
+**Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours OR Collector stopped fetching from Reddit) would mislead the operator. It's better to skip and wait for data to catch up.
 
 ### Triggering
 
@@ -559,6 +950,182 @@ Notes:
 - Each ingestion service SHOULD checkpoint "last seen" cursor per source to avoid gaps/duplicates.
 - Consumers MUST be idempotent (store per-window aggregates in a way that tolerates reprocessing).
 - Failures to parse/normalize MUST go to DLQ with enough context to debug.
+
+## Graceful Degradation
+
+The system MUST continue operating (with reduced functionality) when components fail. This section defines expected behavior in degraded states.
+
+### System Health Composite
+
+A single "system health" metric aggregates component status:
+
+```typescript
+enum HealthLevel {
+  HEALTHY = 'healthy',      // All components operational
+  DEGRADED = 'degraded',    // Some components impaired, core functionality works
+  UNHEALTHY = 'unhealthy',  // Critical components down, limited functionality
+  DOWN = 'down',            // System non-functional
+}
+
+interface SystemHealth {
+  level: HealthLevel;
+  components: {
+    kafka: ComponentHealth;
+    postgres: ComponentHealth;
+    redis: ComponentHealth;
+    collector: { [source: string]: ComponentHealth };
+    llm: ComponentHealth;
+  };
+  degraded_features: string[];  // What's not working
+  last_updated: string;
+}
+```
+
+**Exposed as**:
+- Metric: `ri_system_health_level` (0=healthy, 1=degraded, 2=unhealthy, 3=down)
+- Grafana dashboard: "System Health" panel with component breakdown
+- `/health` endpoint on each service
+
+### Degradation Scenarios
+
+#### Scenario 1: Single Source Down (e.g., Reddit API outage)
+
+**Detection**: Collector heartbeat missing or status='error' for > 5 minutes
+
+**Impact**:
+- Reduced data coverage for that source
+- Trend scores may be skewed (missing social signal)
+
+**Behavior**:
+- System level: DEGRADED
+- Continue processing other sources normally
+- Brief generation: CONTINUES with warning
+- Brief includes note: "Reddit data unavailable; trends may not reflect full social signal"
+- Alert: `ri_collector_source_unhealthy{source="reddit"}` fires
+
+**User visibility**:
+- Grafana panel shows Reddit as red/unhealthy
+- Daily brief includes disclaimer
+
+#### Scenario 2: LLM Provider Rate Limited or Down
+
+**Detection**: Circuit breaker opens after 3 consecutive failures
+
+**Impact**:
+- Cannot generate briefs
+
+**Behavior**:
+- System level: DEGRADED
+- Trend calculation: CONTINUES normally
+- Brief generation: SKIPPED (or fallback to cheaper model)
+- Queue: `SummaryRequest` messages remain in Kafka for retry
+- Alert: `ri_brief_circuit_open` fires
+
+**Recovery**:
+- When circuit half-opens, attempt with fallback model (GPT-3.5/Haiku)
+- If fallback succeeds, generate brief with note: "Generated with fallback model due to primary unavailability"
+- If fallback fails, skip this brief cycle
+
+**User visibility**:
+- "Latest Brief" panel shows "Brief generation paused - LLM unavailable"
+- Dashboard shows last successful brief with age indicator
+
+#### Scenario 3: Redis Down
+
+**Detection**: Connection failures or timeouts
+
+**Impact**:
+- Window counters unavailable
+- Deduplication cache unavailable
+- Budget tracking unavailable
+
+**Behavior**:
+- System level: UNHEALTHY (critical for Trends)
+- Collector: CONTINUES (uses SQLite checkpoints, not Redis)
+- Persister: CONTINUES (writes to Postgres)
+- Trends: PAUSED - cannot compute snapshots without window state
+- Brief: PAUSED - no new snapshots to trigger briefs
+
+**Recovery**:
+- On Redis recovery, Trends replays from last Kafka offset
+- Window counts rebuild over one window period (15-60 min)
+- System returns to HEALTHY after one full window cycle
+
+**User visibility**:
+- Dashboard shows "Trend calculation paused - Redis unavailable"
+- Stale data warning on trend panels
+
+#### Scenario 4: Postgres Down or Disk Full
+
+**Detection**: Connection failures or write errors
+
+**Impact**:
+- Cannot persist events, snapshots, or briefs
+- Cannot query evidence for brief generation
+
+**Behavior**:
+- System level: UNHEALTHY
+- Collector: CONTINUES (Kafka is the source of truth)
+- Persister: PAUSED - messages queue in Kafka
+- Trends: DEGRADED - can compute snapshots but not persist or query evidence
+- Brief: SKIPPED - cannot retrieve evidence items
+
+**Recovery**:
+- On Postgres recovery, Persister replays from last committed offset
+- Snapshots and briefs are written once connection restored
+- No data loss (Kafka retention > Postgres retention)
+
+**User visibility**:
+- "Event Explorer" panel shows error
+- Trend data is stale (timestamp shown)
+
+#### Scenario 5: Kafka Down
+
+**Detection**: Producer/consumer connection failures
+
+**Impact**:
+- Complete system halt - Kafka is the central bus
+
+**Behavior**:
+- System level: DOWN
+- All services pause and retry connection
+- No data loss for Collector (buffers locally, retries)
+- No data loss for consumers (will resume from offset on recovery)
+
+**Recovery**:
+- On Kafka recovery, all services reconnect automatically
+- Collector flushes buffered events
+- Consumers resume from last committed offset
+
+**User visibility**:
+- All panels show "Data unavailable - System down"
+- Alert: `ri_kafka_connection_lost` fires
+
+### Degradation Matrix
+
+| Component Down | System Level | Trends | Briefs | Data Loss |
+|----------------|--------------|--------|--------|-----------|
+| 1 source | DEGRADED | ✅ (partial) | ✅ (with note) | None |
+| Multiple sources | DEGRADED | ✅ (limited) | ⚠️ (may skip) | None |
+| LLM | DEGRADED | ✅ | ❌ (queued) | None |
+| Redis | UNHEALTHY | ❌ (paused) | ❌ | None* |
+| Postgres | UNHEALTHY | ⚠️ (no persist) | ❌ | None |
+| Kafka | DOWN | ❌ | ❌ | None |
+
+*Redis data loss is acceptable - ephemeral by design, rebuilt on recovery
+
+### Alerts for Degradation
+
+| Alert | Condition | Severity |
+|-------|-----------|----------|
+| `SourceUnhealthy` | Heartbeat missing > 5min | Warning |
+| `MultipleSourcesUnhealthy` | ≥ 50% sources unhealthy | Critical |
+| `LLMCircuitOpen` | Brief circuit breaker open | Warning |
+| `RedisUnavailable` | Redis connection failed > 1min | Critical |
+| `PostgresUnavailable` | Postgres connection failed > 1min | Critical |
+| `KafkaUnavailable` | Kafka connection failed > 30s | Critical |
+| `BriefStale` | No brief generated in > 36 hours | Warning |
+| `TrendsStale` | No snapshot in > 30 minutes | Warning |
 
 ## Backpressure Strategy
 
@@ -712,11 +1279,14 @@ Once implemented, provide a minimal set of commands/docs to verify locally:
 ## Open Questions / Decisions
 
 - **Kafka vs Redpanda**: is Kafka required, or is API-compatibility sufficient?
-- **Twitter/X access**: do you have API access? If not, which alternate sources cover enough “reaction” signal?
 - **Storage**: Postgres is the read model for trends/briefs (see `specs/005-postgres-read-model.md`); decide retention + indexing strategy once data volume is known.
-- **Baselines**: pick baseline method (7-day mean vs median; day-of-week normalization).
 - **LLM model**: hosted API vs local model; required latency and daily budget.
 - **Schema Registry**: subject naming strategy + compatibility defaults (see `specs/003-contracts-and-schema-registry.md`).
+
+## Resolved Decisions
+
+- **Twitter/X**: NOT viable for personal use. API requires Enterprise tier ($42K+/year). Using Bluesky + Reddit + Hacker News for social signal instead.
+- **Baselines**: 30-day median with day-of-week normalization (handles weekly cycles and conference spikes).
 
 ## References (context only)
 

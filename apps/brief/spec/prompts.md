@@ -175,49 +175,76 @@ Mention in notes: "Some evidence items were filtered as promotional."
 - Total input: ~6-8K tokens + system prompt
 - Target output: ~1.5K tokens
 
-### Response Parsing
+### Response Parsing & Validation
 
-The Brief service MUST validate LLM output:
+The Brief service MUST validate LLM output using **citation validation** as the primary safeguard:
 
 ```typescript
 function validateBriefResponse(response: unknown, evidenceUrls: Set<string>): Brief {
   // 1. Parse JSON (with error handling)
   const parsed = JSON.parse(response);
-  
+
   // 2. Validate schema
   assertValidBriefSchema(parsed);
-  
-  // 3. Validate citations reference actual evidence
+
+  // 3. CRITICAL: Validate all citations reference actual evidence
   for (const highlight of parsed.highlights) {
+    if (highlight.citations.length === 0) {
+      throw new ValidationError(`Highlight for ${highlight.topic} has no citations`);
+    }
     for (const citation of highlight.citations) {
       if (!evidenceUrls.has(citation)) {
-        throw new Error(`Citation not in evidence: ${citation}`);
+        throw new ValidationError(`Citation not in evidence: ${citation}`);
       }
     }
   }
-  
-  // 4. Check for hallucination markers
-  assertNoHallucinationMarkers(parsed);
-  
+
   return parsed;
 }
 ```
 
-### Hallucination Detection
+### Citation Validation (Primary Safeguard)
 
-Flag responses that contain:
-- Specific dates not in evidence
-- Version numbers not in evidence
-- Names/companies not in evidence
-- Claims prefixed with "I think", "probably", "likely" without evidence
+**Why citation validation instead of hallucination detection?**
 
-```typescript
-const HALLUCINATION_PATTERNS = [
-  /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b/,
-  /\bv?\d+\.\d+\.\d+\b/, // version numbers
-  /\b(I think|I believe|probably|likely|might be)\b/i,
-];
+Detecting hallucinations reliably is an unsolved research problem. Pattern-based detection (dates, version numbers, hedging words) produces:
+- **False positives**: Legitimate content flagged (e.g., dates in evidence, valid version numbers)
+- **False negatives**: Hallucinations that don't match patterns
+- **Maintenance burden**: Patterns need constant tuning
+
+**Citation validation is concrete and verifiable**:
+- Every URL in `citations` MUST exist in the evidence provided
+- If an LLM fabricates a URL, validation fails immediately
+- If an LLM makes claims without citations, the prompt instructs it to skip
+
+**Validation rules**:
+1. Every highlight MUST have at least 1 citation
+2. Every citation URL MUST be in the evidence set
+3. URLs are compared after normalization (lowercase, no trailing slash)
+
+**When validation fails**:
+1. Log the violation with details
+2. Retry once with simplified prompt (fewer topics)
+3. If retry fails, generate minimal brief with error note
+4. Emit metric `ri_brief_citation_validation_failed_total`
+
+### Handling Uncertainty
+
+Instead of detecting hedging words, instruct the LLM to handle uncertainty explicitly:
+
+**In the system prompt**:
 ```
+If evidence is insufficient or conflicting:
+- DO NOT guess or speculate
+- State explicitly: "Evidence is limited" or "Sources disagree"
+- Provide a conservative suggested_action: "Monitor for more coverage"
+- Include fewer citations (only the ones that are clearly relevant)
+```
+
+**This shifts the burden**:
+- LLM is instructed to be conservative
+- Validation catches fabricated citations
+- User sees "Evidence is limited" rather than false confidence
 
 ## Fallback Behavior
 

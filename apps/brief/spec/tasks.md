@@ -28,9 +28,9 @@
 
 - **Acceptance**: LLM response is parsed and validated; `Brief` object is created with citations.
 
-### T007: Hallucination detection
+### T007: Citation validation
 
-- **Acceptance**: Responses with hallucination markers are flagged and logged.
+- **Acceptance**: All citation URLs are verified against the evidence set; briefs with fabricated URLs are rejected and retried.
 
 ## Phase 3: Budget & Idempotency
 

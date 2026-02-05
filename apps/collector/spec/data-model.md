@@ -77,3 +77,39 @@ collector:
 ```
 
 This ensures checkpoints survive container restarts.
+
+## Restart & Catch-Up Behavior
+
+**Design decision**: No aggressive catch-up after downtime.
+
+On restart:
+1. Load last checkpoint from SQLite (for dedup, not backfill)
+2. Resume normal polling cadence from current time
+3. Fetch only recent items (bounded batch size)
+4. Dedupe against `seen_events` cache
+
+**What this means**:
+- If Collector was down for 3 hours, we do NOT fetch 3 hours of missed posts
+- We resume at normal pace (e.g., 25 posts per subreddit every 10 min)
+- Some posts during the gap will be missed
+- This is acceptable for trend detection (we care about patterns, not completeness)
+
+**Why no backfill?**
+- Rate limits: Backfilling would exhaust API quotas
+- Complexity: Pagination, dedup across large result sets
+- Diminishing value: Old posts don't affect current trend calculations
+- YAGNI: If we really need historical data, we can import from archives
+
+**Checkpoint purpose**:
+- The checkpoint stores the last-seen ID for **deduplication**, not for "resume from here"
+- It prevents re-emitting the same post if it's still in the API's "recent" results
+- It does NOT trigger "fetch everything since this ID"
+
+```typescript
+// CORRECT: Fetch recent, dedup against checkpoint
+const recent = await api.getRecent({ limit: 25 });
+const unseen = recent.filter(p => !seenCache.has(p.id));
+
+// WRONG: Fetch since checkpoint (don't do this)
+// const since = await api.getSince({ after: checkpoint.lastId });
+```

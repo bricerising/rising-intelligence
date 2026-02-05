@@ -347,3 +347,47 @@ suppression:
   # Example: Mute general AI if it's too noisy
   # muted_topics:
   #   - ai.general
+
+# ===========================================================================
+# Topic Weight Overrides (Dynamic Adjustment)
+# ===========================================================================
+# Adjust topic importance without editing matchers. Useful for:
+# - Boosting topics you care about this week
+# - Suppressing noisy topics temporarily
+# - Adjusting for conferences/events
+#
+# Weights multiply the final score: 1.0 = normal, 2.0 = double, 0.5 = half
+# Set to 0.0 to effectively mute (or add to muted_topics above)
+#
+# These can be overridden at runtime via:
+# - Redis: SET topic_weight:{key} {value}
+# - CLI: riops topics set-weight aws.bedrock 2.0
+# - ENV: TOPIC_WEIGHT_OVERRIDE=aws.bedrock:2.0,ai.openai:0.5
+
+weights:
+  # Default weight for all topics (if not specified)
+  default: 1.0
+
+  # Per-topic overrides (static, from config)
+  overrides: {}
+  # Example: Boost Bedrock, suppress general AI
+  # overrides:
+  #   aws.bedrock: 1.5
+  #   ai.general: 0.3
+
+# ===========================================================================
+# Runtime Override Sources
+# ===========================================================================
+# Priority order for weight resolution (highest wins):
+# 1. Redis key: topic_weight:{key}
+# 2. Environment variable: TOPIC_WEIGHT_OVERRIDE (comma-separated key:value pairs)
+# 3. Config file overrides (above)
+# 4. Default weight (1.0)
+
+runtime:
+  # Enable Redis-based weight overrides
+  redis_overrides_enabled: true
+  # Key pattern for Redis lookups
+  redis_key_pattern: "topic_weight:{key}"
+  # TTL for Redis overrides (0 = no expiry)
+  redis_override_ttl_seconds: 0

@@ -4,6 +4,22 @@
 
 This document specifies the rate limits for each data source and the backoff strategies the Collector MUST implement.
 
+## Design Philosophy: Relaxed Ingestion
+
+**Key insight**: For trend detection, we don't need real-time data. Hourly catch-up is sufficient.
+
+**Principles**:
+1. **No aggressive catch-up**: If the Collector was down for 2 hours, there's no need to fetch everything immediately. Spread it over the next hour.
+2. **Throttled fetching**: Fetch a bounded batch per poll cycle, not "everything since last check."
+3. **Steady state over bursts**: Prefer consistent, predictable load over burst-then-idle patterns.
+4. **Rate limits are friends**: Staying well under limits means fewer errors and simpler code.
+
+**Implications**:
+- Poll intervals are minimums, not targets
+- Batch sizes are capped even if more data is available
+- Missing some posts during high-volume periods is acceptable
+- Freshness target: events available within ~60 minutes, not ~60 seconds
+
 ## Rate Limits by Source
 
 ### Reddit API
@@ -23,6 +39,79 @@ X-Ratelimit-Remaining: 59.0
 X-Ratelimit-Reset: 45
 X-Ratelimit-Used: 1
 ```
+
+#### Reddit Budget Math (Relaxed Approach)
+
+**Guiding principle**: We only need hourly freshness, not real-time. This dramatically reduces API pressure.
+
+**Request cost per subreddit per poll cycle**:
+| Operation | Requests | Notes |
+|-----------|----------|-------|
+| List new posts | 1 | `/r/{sub}/new.json?limit=25` (capped) |
+| **Total per sub** | **1** | No hot posts needed for trend detection |
+
+**Relaxed polling with 6 subreddits (comfortable MVP)**:
+| Metric | Calculation | Result |
+|--------|-------------|--------|
+| Poll interval | 10 min (600s) | Plenty fresh for hourly trends |
+| Polls per hour | 6 | |
+| Requests per poll | 6 subs × 1 req | 6 req/poll |
+| Requests per hour | 6 × 6 | 36 req/hr |
+| Requests per day | 36 × 24 | **864 req/day** |
+
+**✅ Well under 1,000 daily limit** with room for retries and growth.
+
+**Simplified approach** (no priority tiers needed):
+| Subreddits | Poll Interval | Requests/Day | Headroom |
+|------------|---------------|--------------|----------|
+| 4 | 10 min | 576 | 42% |
+| 6 | 10 min | 864 | 14% |
+| 8 | 15 min | 768 | 23% |
+| 10 | 15 min | 960 | 4% |
+
+**Recommendation**: 6 subreddits @ 10 min interval is the sweet spot.
+
+#### Subreddit Configuration (Simplified)
+
+With relaxed polling, priority tiers add unnecessary complexity. Just poll all configured subreddits equally:
+
+```yaml
+reddit:
+  poll_interval_seconds: 600  # 10 minutes
+  posts_per_poll: 25          # Cap per subreddit (don't fetch everything)
+  subreddits:
+    - r/aws
+    - r/MachineLearning
+    - r/devops
+    - r/programming
+    - r/LocalLLaMA
+    - r/typescript
+```
+
+**Why no tiers?**
+- With 10-min intervals, we're well under rate limits
+- All subreddits get equal coverage
+- Simpler code, fewer edge cases
+- If you don't care about a subreddit enough to poll it equally, remove it
+
+#### Budget Exhaustion Handling
+
+Simple approach - just pause and wait:
+
+```typescript
+function shouldPollReddit(remaining: number, resetTimestamp: number): boolean {
+  if (remaining <= 5) {
+    const waitSeconds = resetTimestamp - Date.now() / 1000;
+    log.warn(`Reddit budget low (${remaining}), pausing for ${waitSeconds}s`);
+    return false;
+  }
+  return true;
+}
+```
+
+**Metrics**:
+- `ri_collector_reddit_budget_remaining`: Gauge of remaining daily requests
+- `ri_collector_reddit_paused_total`: Counter of paused poll cycles
 
 ### Hacker News API (Firebase)
 
@@ -77,6 +166,53 @@ X-RateLimit-Reset: 1707177600
 - Use `pageSize=50` to maximize results per request
 - Track daily usage to avoid exceeding quota
 
+### Bluesky (AT Protocol)
+
+**Limits**:
+- Public API: No documented rate limits for reads (be reasonable)
+- Firehose (Jetstream): Unlimited real-time streaming
+- Authenticated: 3000 requests per 5 minutes (very generous)
+
+**Implementation**:
+- Poll interval: minimum 60 seconds for search/feed queries
+- Prefer Jetstream firehose for real-time: `wss://jetstream.atproto.com/subscribe`
+- Filter by hashtags: `#aws`, `#ai`, `#typescript`, etc.
+- No backoff typically needed; implement standard exponential backoff for 5xx
+
+**Relevant headers**:
+```
+RateLimit-Limit: 3000
+RateLimit-Remaining: 2999
+RateLimit-Reset: 1707177600
+```
+
+### Mastodon (ActivityPub)
+
+**Limits** (varies by instance):
+- Typical: 300 requests per 5 minutes per IP
+- Some instances are more restrictive (100/5min)
+
+**Implementation**:
+- Poll interval: minimum 120 seconds per instance
+- Use public timeline endpoint: `/api/v1/timelines/public`
+- Prefer instances with tech focus:
+  - `hachyderm.io` (tech professionals)
+  - `fosstodon.org` (FOSS community)
+  - `infosec.exchange` (security)
+- Backoff: On 429, respect `X-RateLimit-Reset` header
+
+**Relevant headers**:
+```
+X-RateLimit-Limit: 300
+X-RateLimit-Remaining: 299
+X-RateLimit-Reset: 2024-02-06T12:00:00.000Z
+```
+
+**Multi-instance strategy**:
+- Track rate limits per instance separately
+- Round-robin across instances when one is exhausted
+- Consider running your own relay for aggregated access
+
 ## Backoff Strategy
 
 All sources use the same exponential backoff with jitter:
@@ -113,9 +249,47 @@ function calculateBackoff(attempt: number, baseMs: number = 1000): number {
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `POLL_INTERVAL_REDDIT_SECONDS` | 120 | Reddit poll interval |
-| `POLL_INTERVAL_HN_SECONDS` | 60 | Hacker News poll interval |
-| `POLL_INTERVAL_GITHUB_SECONDS` | 300 | GitHub poll interval |
-| `POLL_INTERVAL_RSS_SECONDS` | 300 | RSS feed poll interval |
+| `POLL_INTERVAL_REDDIT_SECONDS` | 600 | Reddit poll interval (10 min) |
+| `POLL_INTERVAL_HN_SECONDS` | 300 | Hacker News poll interval (5 min) |
+| `POLL_INTERVAL_GITHUB_SECONDS` | 900 | GitHub poll interval (15 min) |
+| `POLL_INTERVAL_RSS_SECONDS` | 600 | RSS feed poll interval (10 min) |
+| `POLL_INTERVAL_BLUESKY_SECONDS` | 300 | Bluesky poll interval (5 min) |
+| `POLL_INTERVAL_MASTODON_SECONDS` | 600 | Mastodon poll interval (10 min) |
+| `BATCH_SIZE_REDDIT` | 25 | Max posts per subreddit per poll |
+| `BATCH_SIZE_HN` | 30 | Max stories per poll |
+| `BATCH_SIZE_RSS` | 20 | Max items per feed per poll |
+| `BATCH_SIZE_BLUESKY` | 50 | Max posts per poll |
+| `BATCH_SIZE_MASTODON` | 40 | Max posts per instance per poll |
 | `BACKOFF_MAX_RETRIES` | 5 | Max retries before circuit opens |
 | `BACKOFF_BASE_MS` | 1000 | Base backoff duration |
+| `BLUESKY_FIREHOSE_ENABLED` | false | Use Jetstream firehose instead of polling |
+| `BLUESKY_HASHTAGS` | "aws,ai,typescript,rust" | Comma-separated hashtags to track |
+| `MASTODON_INSTANCES` | "hachyderm.io,fosstodon.org" | Comma-separated instances to poll |
+
+## Catch-Up Behavior
+
+**On restart after downtime**:
+- Do NOT attempt to fetch all missed content immediately
+- Resume normal polling from current time
+- Accept that some posts during downtime may be missed
+- Checkpoint stores "last seen" but doesn't trigger backfill
+
+**Rationale**: For trend detection, a gap of a few hours is acceptable. Aggressive catch-up:
+- Risks rate limit exhaustion
+- Adds complexity (pagination, dedup across batches)
+- Provides marginal value (old posts don't affect current trends much)
+
+**Implementation**:
+```typescript
+async function pollSource(source: Source): Promise<void> {
+  // Always fetch "recent" items, not "since last checkpoint"
+  const items = await fetchRecent(source, BATCH_SIZE[source]);
+
+  // Dedup against seen cache (handles overlap between polls)
+  const newItems = items.filter(item => !seen.has(item.id));
+
+  // Publish and checkpoint
+  await publishToKafka(newItems);
+  await updateCheckpoint(source, items[0]?.id);
+}
+```

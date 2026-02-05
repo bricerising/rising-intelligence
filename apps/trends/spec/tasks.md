@@ -34,6 +34,10 @@
 
 - **Acceptance**: Redis counters track volume per topic per window bucket.
 
+### T007a: Source-weighted volume calculation
+
+- **Acceptance**: Volume calculation applies source weights (RSS=1.0, HN=0.8, Reddit=0.3, etc.) instead of raw counts.
+
 ### T008: Previous window caching
 
 - **Acceptance**: When window closes, current count moves to `prev:*` keys for acceleration calculation.
@@ -41,6 +45,10 @@
 ### T009: Evidence buffer
 
 - **Acceptance**: Top evidence items (by engagement) are tracked per topic per window (Redis sorted set).
+
+### T009a: Evidence source diversity
+
+- **Acceptance**: Evidence selection includes at least one item per source type when available (not all Reddit).
 
 ## Phase 4: Snapshot Generation
 
@@ -82,26 +90,44 @@
 
 ### T018: Baseline calculation
 
-- **Acceptance**: 7-day median volume (same day-of-week) computed from Postgres and cached in Redis.
+- **Acceptance**: 30-day median volume with day-of-week adjustment computed from Postgres and cached in Redis.
 
 ### T019: Baseline refresh
 
 - **Acceptance**: Baselines are recomputed daily and used in score calculation.
 
-## Phase 7: Observability
+## Phase 7: Topic Discovery
 
-### T020: Metrics implementation
+### T020: Candidate term extraction
+
+- **Acceptance**: Unknown terms (hashtags, capitalized phrases) are extracted from events and counted separately.
+
+### T021: Discovery threshold alerting
+
+- **Acceptance**: Terms exceeding volume + acceleration thresholds are written to `discovery_candidates` table.
+
+### T022: Discovery metrics
+
+- **Acceptance**: `ri_trends_discovery_candidates_total` and `ri_trends_discovery_surfaced_total` metrics exported.
+
+## Phase 8: Observability
+
+### T023: Metrics implementation
 
 - **Acceptance**: All metrics from `specs/008-observability-contracts.md` are exported.
 
-### T021: Consumer lag tracking
+### T024: Consumer lag tracking
 
 - **Acceptance**: `consumer_lag` table updated periodically with current lag.
 
-### T022: Structured logging
+### T025: Structured logging
 
 - **Acceptance**: Logs include `traceId`, `spanId`, `kafkaTopic`, `partition`, `offset` as specified.
 
-### T023: Trace spans
+### T026: Trace spans
 
 - **Acceptance**: `trends.process_event`, `trends.compute_snapshot` spans appear in Tempo.
+
+### T027: Collector health validation
+
+- **Acceptance**: Brief triggering validates Collector heartbeats in addition to consumer lag.
