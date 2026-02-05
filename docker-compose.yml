@@ -22,6 +22,10 @@ services:
         "internal://0.0.0.0:9092,external://0.0.0.0:19092",
         "--advertise-kafka-addr",
         "internal://redpanda:9092,external://localhost:9092",
+        "--schema-registry-addr",
+        "internal://0.0.0.0:8081,external://0.0.0.0:18081",
+        "--advertise-schema-registry-addr",
+        "internal://redpanda:8081,external://localhost:8081",
         "--pandaproxy-addr",
         "internal://0.0.0.0:8082,external://0.0.0.0:18082",
         "--advertise-pandaproxy-addr",
@@ -29,8 +33,11 @@ services:
       ]
     ports:
       - "127.0.0.1:9092:19092" # kafka external
+      - "127.0.0.1:8081:18081" # schema registry external
       - "127.0.0.1:8082:18082" # pandaproxy external (optional)
       - "127.0.0.1:9644:9644" # admin
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health --brokers=localhost:9092 >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -59,6 +66,7 @@ services:
       - "127.0.0.1:9009:9009"
     volumes:
       - ./infra/mimir/mimir.yaml:/etc/mimir/mimir.yaml
+      - mimir-data:/tmp/mimir
     healthcheck:
       test: ["CMD-SHELL", "true"]
       interval: 10s
@@ -70,6 +78,8 @@ services:
     ports:
       - "127.0.0.1:3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/loki
     healthcheck:
       test: ["CMD-SHELL", "true"]
       interval: 10s
@@ -78,6 +88,7 @@ services:
 
   promtail:
     image: grafana/promtail:2.9.4
+    profiles: ["promtail"]
     command: -config.file=/etc/promtail/config.yaml
     volumes:
       - ./infra/promtail/promtail.yaml:/etc/promtail/config.yaml
@@ -96,6 +107,7 @@ services:
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./infra/tempo/tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/tmp/tempo
     ports:
       - "127.0.0.1:3200:3200"
       - "127.0.0.1:4317:4317" # otlp grpc
@@ -110,12 +122,18 @@ services:
     image: grafana/grafana:10.3.1
     ports:
       - "127.0.0.1:3001:3000"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rising}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rising}
+      POSTGRES_DB: ${POSTGRES_DB:-rising_intelligence}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
       - ./infra/grafana/dashboards:/etc/grafana/dashboards
+      - grafana-data:/var/lib/grafana
     depends_on:
       - mimir
       - loki
+      - postgres
       - tempo
     healthcheck:
       test: ["CMD-SHELL", "true"]
@@ -131,11 +149,13 @@ services:
         "--save",
         "",
         "--appendonly",
-        "no",
+        "yes",
+        "--appendfsync",
+        "everysec",
         "--dir",
-        "/tmp",
-        "--dbfilename",
-        "rising-intelligence.rdb",
+        "/data",
+        "--appendfilename",
+        "rising-intelligence.aof",
         "--maxmemory",
         "256mb",
         "--maxmemory-policy",
@@ -143,6 +163,8 @@ services:
       ]
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -150,4 +172,60 @@ services:
       retries: 3
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rising}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rising}
+      POSTGRES_DB: ${POSTGRES_DB:-rising_intelligence}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 10s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    profiles: ["console"]
+    depends_on:
+      - redpanda
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: "http://redpanda:8081"
+
+  ops-cli:
+    build:
+      context: .
+      dockerfile: ./packages/ops-cli/Dockerfile
+    depends_on:
+      - redpanda
+    environment:
+      SCHEMA_REGISTRY_URL: "http://redpanda:8081"
+      SCHEMA_COMPATIBILITY: "BACKWARD"
+      SCHEMA_REGISTRY_RETRIES: "20"
+    command: ["schema-registry", "publish-protos"]
+    restart: on-failure
+
   # Application services (apps/*) will be added once code exists.
+
+volumes:
+  redpanda-data:
+  grafana-data:
+  loki-data:
+  mimir-data:
+  tempo-data:
+  redis-data:
+  postgres-data:

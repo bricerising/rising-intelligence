@@ -32,3 +32,17 @@ datasources:
         datasourceUid: PROMETHEUS
       lokiSearch:
         datasourceUid: LOKI
+
+  - name: Postgres
+    uid: POSTGRES
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: ${POSTGRES_USER}
+    database: ${POSTGRES_DB}
+    jsonData:
+      sslmode: "disable"
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}

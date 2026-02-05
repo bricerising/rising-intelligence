@@ -1,0 +1,16 @@
+{
+  "name": "@rising-intelligence/ops-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "riops": "./dist/bin.js"
+  },
+  "dependencies": {
+    "@rising-intelligence/shared": "0.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

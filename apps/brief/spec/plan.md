@@ -7,9 +7,10 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions.
 ## Architecture (High Level)
 
 - Input: `summary.requests` (request includes window + top topics + evidence references)
-- Evidence retrieval: optionally query Loki or consume from Kafka (implementation-specific)
+- Evidence retrieval (MVP): none required; request includes bounded evidence excerpts
 - LLM call: LangChain orchestration (provider/model configurable)
-- Output: `summary.results` (`Brief`)
+- Output: `summary.results` (`BriefResult`)
+- Read model: Postgres (`brief_results`)
 
 ## Phases
 

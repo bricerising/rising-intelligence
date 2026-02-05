@@ -70,9 +70,12 @@ Minimum recommended metrics:
 - Trends:
   - `trend_compute_duration_seconds`
   - `topics_ranked_total`
+  - `trend_score{topic=...,window=...}` (Top N only; bounded cardinality)
+  - `trend_volume{topic=...,window=...}` (Top N only; bounded cardinality)
   - `consumer_lag{group=...}` (or a proxy gauge)
 - Brief:
   - `briefs_generated_total`
+  - `brief_results_total{status=\"success\"|\"failure\"}`
   - `llm_latency_seconds`
   - `llm_tokens_total`
 

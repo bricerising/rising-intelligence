@@ -12,6 +12,23 @@ This document describes how to run the Real-Time Personal Intelligence System lo
 - Docker Desktop (or Docker Engine) with Compose
 - Node.js 20 LTS (planned; for TypeScript services + tools)
 
+## Install repo tooling (once)
+
+```bash
+npm install
+npm run build
+```
+
+## Configure environment (recommended)
+
+Create a local `.env` file (not committed) from the example:
+
+```bash
+cp .env.example .env
+```
+
+At minimum, set `POSTGRES_PASSWORD` to a non-default value.
+
 ## Start the local stack
 
 The default workflow is:
@@ -38,6 +55,17 @@ Reset local state (remove volumes):
 docker compose down -v
 ```
 
+## Optional profiles
+
+This repo uses Compose profiles for optional tooling:
+
+- Redpanda Console (topic + schema browsing):
+  - `docker compose --profile console up -d`
+- Promtail (Linux-only; for scraping Docker container logs):
+  - `docker compose --profile promtail up -d`
+
+On macOS, prefer OTLP logs from services → `otel-collector` → Loki (Promtail host mounts are Linux-specific).
+
 ## Default local URLs
 
 These ports intentionally mirror `specify-poker` to reduce cognitive load:
@@ -48,6 +76,9 @@ These ports intentionally mirror `specify-poker` to reduce cognitive load:
 - Mimir (Prometheus API): `http://localhost:9009`
 - OTLP ingest: `localhost:4317` (gRPC), `localhost:4318` (HTTP)
 - Kafka API (Redpanda or Kafka): `localhost:9092`
+- Schema Registry (Redpanda): `http://localhost:8081`
+- Redpanda Console (optional): `http://localhost:8080`
+- Postgres: `localhost:5432` (db: `$POSTGRES_DB`, user: `$POSTGRES_USER`)
 
 ## First smoke test (planned)
 
@@ -56,7 +87,24 @@ These ports intentionally mirror `specify-poker` to reduce cognitive load:
 3. Confirm Mimir has `up` for expected services (or the collector scrape jobs).
 4. Confirm a `trends.snapshot` (or equivalent) is visible in dashboards once the pipeline runs.
 
+## Contracts (Schema Registry)
+
+On stack startup, the `ops-cli` Compose service publishes Protobuf contracts to Schema Registry.
+
+Verify:
+
+- `docker compose logs ops-cli`
+
+Re-run manually (idempotent):
+
+```bash
+docker compose run --rm ops-cli schema-registry publish-protos
+```
+
 ## Where to look next
 
 - System spec: `specs/001-real-time-personal-intelligence-system.md`
 - Observability: `specs/002-observability-stack.md`
+- Contracts + Schema Registry: `specs/003-contracts-and-schema-registry.md`
+- Config + Secrets: `specs/004-config-and-secrets.md`
+- Postgres read model: `specs/005-postgres-read-model.md`

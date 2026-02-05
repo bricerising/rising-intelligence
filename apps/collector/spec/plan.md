@@ -10,7 +10,7 @@ Build `apps/collector` with modular source adapters producing `RawEvent` to `eve
 - Shared:
   - config + env parsing
   - HTTP client with retry/backoff
-  - checkpoint storage (Redis or local file in dev; TBD)
+  - checkpoint storage (Redis; local Compose)
 - Outputs:
   - Kafka: `events.raw` + `events.raw.dlq`
   - Logs: Loki via OTLP (preferred) or stdout + promtail

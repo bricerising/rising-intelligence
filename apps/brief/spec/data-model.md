@@ -2,14 +2,18 @@
 
 ## Contracts
 
-- Input: `summary.requests` (request envelope; TBD)
-- Output: `Brief` (defined in `specs/001-real-time-personal-intelligence-system.md`)
+- Input: `summary.requests` (`SummaryRequest`)
+- Output: `summary.results` (`BriefResult`)
+
+Canonical wire contracts:
+
+- `packages/shared/contracts/proto/rising_intelligence/v1/contracts.proto`
 
 ## Evidence model (MVP)
 
 Evidence SHOULD be represented as:
 
-- `event_id` references into `events.raw`, and/or
-- URLs to curated sources,
+- bounded per-topic evidence items included in `SummaryRequest`:
+  - `event_id`, `url`, `title`, short `text_excerpt`
 
 so the brief can be audited and replayed.

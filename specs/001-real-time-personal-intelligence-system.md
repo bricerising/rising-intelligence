@@ -61,6 +61,7 @@ packages/
   shared/             # contracts + config + lifecycle + telemetry + kafka helpers
 infra/
   grafana/            # provisioning + dashboards
+  postgres/           # read model init schema (local dev)
   loki/
   mimir/
   tempo/
@@ -86,6 +87,7 @@ specs/                # thematic system specifications
   - trend time series and “Top N” tables,
   - latest brief content.
 - **R-008 (Alerts, Optional MVP)**: The system SHOULD support alerting when a trend crosses a threshold (score or acceleration).
+- **R-009 (Contracts)**: The system MUST publish Kafka topic schemas (and gRPC `.proto` contracts) to the Schema Registry for compatibility-safe evolution.
 
 ### Non-functional
 
@@ -113,7 +115,7 @@ specs/                # thematic system specifications
 - **Storage/observability**:
   - **Loki** for raw event logs (search + ad-hoc LogQL metrics).
   - Optional **Prometheus/Mimir** for first-class metrics.
-  - Optional **Postgres/SQLite** for durable trend snapshots and briefs.
+  - **Postgres** for durable trend snapshots and briefs (Grafana query datasource).
 - **LLM summarizer service** (`apps/brief`, LangChain): consumes summary requests → emits briefs.
 - **Grafana dashboards**: metrics, logs, top trends, and brief display.
 
@@ -134,7 +136,7 @@ flowchart LR
   K[(Kafka / Redpanda)]
   L[(Loki)]
   P[(Prometheus/Mimir\n(optional))]
-  DB[(DB\n(optional))]
+  PG[(Postgres)]
 
   TP[trend-processor]
   SR[summary-requests topic]
@@ -151,10 +153,10 @@ flowchart LR
   C --> L --> G
   K --> TP --> OUT --> G
   TP --> P --> G
-  TP --> DB
+  TP --> PG
 
   TP --> SR --> SS --> OUT
-  SS --> DB
+  SS --> PG
 ```
 
 ## Event & Topic Model
@@ -162,6 +164,8 @@ flowchart LR
 ### RawEvent schema (contract)
 
 MVP uses a single canonical schema for all sources.
+
+Canonical wire contract: `packages/shared/contracts/proto/rising_intelligence/v1/contracts.proto` (`RawEvent`).
 
 ```ts
 export type Source =
@@ -200,6 +204,8 @@ export interface RawEvent {
 
 ### TrendSnapshot schema (contract)
 
+Canonical wire contract: `packages/shared/contracts/proto/rising_intelligence/v1/contracts.proto` (`TrendSnapshot`).
+
 ```ts
 export interface TopicMetrics {
   topic: string; // canonical topic key, e.g. "aws.bedrock"
@@ -232,15 +238,34 @@ MVP topic extraction uses:
 
 The allowlist MUST support aliases (e.g., “EC2” → `aws.ec2`, “Bedrock” → `aws.bedrock`).
 
+### Topics allowlist file (v1)
+
+`TOPICS_ALLOWLIST_PATH` points to a committed, non-secret YAML file (example: `infra/config/topics.allowlist.yaml`) with:
+
+- `topics[]` entries:
+  - `key` (canonical dotted key, e.g. `aws.bedrock`)
+  - `display_name` (human-friendly)
+  - `aliases[]` (strings; used for UX and optional match hints)
+  - `matchers[]`:
+    - `{ type: "keyword", value: "..." }` (token-ish contains match)
+    - `{ type: "regex", pattern: "..." }` (RE2-compatible; default case-insensitive if configured)
+- `suppression.muted_topics[]`: canonical keys to exclude from ranking/alerts
+- `defaults.max_topics_per_event`: upper bound to keep extraction bounded and deterministic
+
+MVP matcher semantics:
+
+- `keyword`: case-insensitive substring match against `title + text`
+- `regex`: applied against `title + text`
+
 ## Streaming & Storage Contracts
 
 ### Kafka topics (suggested)
 
 - `events.raw`: all `RawEvent` messages (partition key: `event_id`).
-- `events.raw.dlq`: failed parse/normalize (includes error context; no secrets).
+- `events.raw.dlq`: failed parse/normalize (`DeadLetterEvent`; includes safe context; no secrets).
 - `trends.snapshots`: periodic `TrendSnapshot`.
-- `summary.requests`: requests to generate a brief (daily or threshold-triggered).
-- `summary.results`: produced briefs (plus metadata/citations).
+- `summary.requests`: requests to generate a brief (`SummaryRequest`; daily or threshold-triggered).
+- `summary.results`: produced brief results (`BriefResult`; success or failure + metadata).
 
 ### Retention
 
@@ -259,6 +284,13 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 - `KAFKA_CONSUMER_GROUP` (per service)
 - `LOKI_URL` (if mirroring raw events to Loki)
 - `TOPICS_ALLOWLIST_PATH` (aliases + matchers)
+- `SCHEMA_REGISTRY_URL` (e.g., `http://localhost:8081`)
+- Postgres:
+  - `POSTGRES_HOST` (e.g., `postgres` in Compose)
+  - `POSTGRES_PORT` (e.g., `5432`)
+  - `POSTGRES_DB`
+  - `POSTGRES_USER`
+  - `POSTGRES_PASSWORD` (or `POSTGRES_PASSWORD_FILE`)
 
 ### Source configuration (suggested)
 
@@ -267,6 +299,11 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 - Hacker News: `HN_MODE` (`top`|`new`) and `HN_POLL_INTERVAL_SECONDS`
 - GitHub: `GITHUB_TRACKED_REPOS` (comma-separated `owner/repo`), `GITHUB_TOKEN`
 - LLM: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_DAILY_BUDGET_USD`, `LLM_MAX_TOPICS_PER_BRIEF`
+
+### Scheduling (suggested)
+
+- `TZ` (e.g., `America/Los_Angeles`)
+- `DAILY_BRIEF_LOCAL_TIME` (e.g., `17:00`)
 
 ### Suggested initial sources (MVP defaults)
 
@@ -321,6 +358,8 @@ The LLM summarizer service MUST:
 
 ### Brief format (contract)
 
+Canonical wire contract: `packages/shared/contracts/proto/rising_intelligence/v1/contracts.proto` (`Brief` and `BriefResult`).
+
 ```ts
 export interface Brief {
   brief_id: string;
@@ -338,12 +377,29 @@ export interface Brief {
 
   notes?: string; // limitations, coverage gaps, etc.
 }
+
+// Kafka topic payload for `summary.results` (success OR failure).
+export interface BriefResult {
+  request_id: string;
+  produced_at: string; // ISO8601
+  brief?: Brief;
+  failure?: { error_code: string; error_message: string; retryable: boolean };
+}
 ```
 
 ### Triggering
 
-- **Daily**: fixed local time (e.g., 17:00) using the last 24h + last 60m context.
-- **Threshold** (optional): if any topic exceeds alert threshold, request a short “flash brief”.
+- **Daily**: Trends service publishes a `summary.requests` message at a fixed local time (e.g., 17:00), including last 24h + last 60m context.
+- **Threshold** (optional): Trends service publishes a request if any topic exceeds alert threshold, requesting a short “flash brief”.
+
+### SummaryRequest format (MVP)
+
+`summary.requests` MUST contain enough information for the Brief service to generate an evidence-grounded brief without doing random-access reads:
+
+- Top topics and their computed metrics (windowed).
+- A bounded, deterministic set of evidence items per topic:
+  - `event_id`, `url`, `title`, and a short `text_excerpt`
+  - engagement (when available)
 
 ### Cost controls
 
@@ -352,6 +408,7 @@ export interface Brief {
   - top-engagement items,
   - diverse sources (at least 1 curated + 1 discussion where available),
   - dedupe near-identical text/URLs.
+- Prefer passing **bounded evidence excerpts** in `summary.requests` so the Brief service does not need random-access reads from Kafka/Loki in MVP.
 
 ## Dashboards & UX
 
@@ -360,7 +417,13 @@ export interface Brief {
 - **Top Trends (60m)**: table of `topic, volume, acceleration, score`.
 - **Mentions Over Time**: time series for top topics (last 24h).
 - **Raw Stream Explorer**: Loki log panel filtering by `source` and `topic`.
-- **Latest Brief**: text/markdown panel showing most recent `Brief`.
+- **Latest Brief**: Postgres-backed panel showing most recent `BriefResult` (rendered from stored JSON/fields).
+
+Notes:
+
+- Trends SHOULD export Prometheus metrics for **Top N topics only** to keep label cardinality bounded (e.g., `trend_score{topic=...,window=...}`).
+- Trend snapshots and brief results MUST be persisted to Postgres to power dashboards.
+- Full snapshots and brief payloads SHOULD also be mirrored to Loki as structured logs for “source of truth” inspection.
 
 ### Alerting (optional MVP)
 
@@ -464,9 +527,10 @@ Once implemented, provide a minimal set of commands/docs to verify locally:
 
 - **Kafka vs Redpanda**: is Kafka required, or is API-compatibility sufficient?
 - **Twitter/X access**: do you have API access? If not, which alternate sources cover enough “reaction” signal?
-- **Storage**: is Loki sufficient for raw events, or do you also want a DB for queryable history and briefs?
+- **Storage**: Postgres is the read model for trends/briefs (see `specs/005-postgres-read-model.md`); decide retention + indexing strategy once data volume is known.
 - **Baselines**: pick baseline method (7-day mean vs median; day-of-week normalization).
 - **LLM model**: hosted API vs local model; required latency and daily budget.
+- **Schema Registry**: subject naming strategy + compatibility defaults (see `specs/003-contracts-and-schema-registry.md`).
 
 ## References (context only)
 

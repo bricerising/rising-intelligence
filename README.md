@@ -9,6 +9,10 @@ This repo intentionally follows the same **spec-first + monorepo + local Compose
 - Quickstart: `specs/000-quickstart.md`
 - System spec: `specs/001-real-time-personal-intelligence-system.md`
 - Observability: `specs/002-observability-stack.md`
+- Contracts + Schema Registry: `specs/003-contracts-and-schema-registry.md`
+- Config + Secrets: `specs/004-config-and-secrets.md`
+- Postgres read model: `specs/005-postgres-read-model.md`
+- Ops CLI (`riops`): `packages/ops-cli`
 
 ## Repository map
 

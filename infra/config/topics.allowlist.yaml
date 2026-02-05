@@ -1,0 +1,52 @@
+version: 1
+
+# Canonical topic allowlist used by the Trends service.
+# - Keep the allowlist intentionally small in MVP (tens, not hundreds).
+# - Prefer specific topics ("aws.bedrock") over always-on generics ("ai").
+
+defaults:
+  case_insensitive: true
+  max_topics_per_event: 8
+
+suppression:
+  muted_topics: []
+
+topics:
+  - key: aws.ec2
+    display_name: AWS EC2
+    aliases:
+      - EC2
+      - "Amazon EC2"
+    matchers:
+      - type: regex
+        pattern: "\\bEC2\\b"
+      - type: keyword
+        value: "ec2"
+
+  - key: aws.bedrock
+    display_name: AWS Bedrock
+    aliases:
+      - Bedrock
+      - "Amazon Bedrock"
+    matchers:
+      - type: regex
+        pattern: "\\bbedrock\\b"
+
+  - key: ai.llm
+    display_name: LLMs
+    aliases:
+      - LLM
+      - "large language model"
+      - "large language models"
+    matchers:
+      - type: regex
+        pattern: "\\bLLM(s)?\\b"
+
+  - key: ai.rag
+    display_name: RAG
+    aliases:
+      - RAG
+      - "retrieval augmented generation"
+    matchers:
+      - type: regex
+        pattern: "\\bRAG\\b"

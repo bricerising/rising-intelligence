@@ -10,7 +10,8 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher.
 - Output: `trends.snapshots` (`TrendSnapshot`)
 - State:
   - window buckets for 15m/60m
-  - optional baseline store (TBD: Redis or DB)
+  - baseline store (Postgres and/or Redis; TBD)
+  - read model output (Postgres: `trend_snapshots`)
 
 ## Phases
 
@@ -27,4 +28,6 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher.
 
 ### Phase 3: Alerts + summary triggers
 
-- Emit `summary.requests` for “flash brief” triggers (optional)
+- Emit `summary.requests`:
+  - daily scheduled request (required)
+  - “flash brief” triggers on spikes (optional)

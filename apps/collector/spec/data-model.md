@@ -17,9 +17,20 @@ Collector is primarily a stateless transformer from “source items” → `RawE
   - error type/code
   - a redacted sample of the raw payload or URL reference
 
-## Checkpoint storage (TBD)
+## Checkpoint storage (MVP)
 
-MVP options (choose one):
+MVP decision:
 
-- Redis keys (recommended if Redis is in the stack)
-- Local file persisted via a bind mount (dev-only)
+- Use Redis keys (local Compose includes Redis with persistence enabled).
+
+### Suggested Redis keys
+
+- `collector:cursor:rss:<feed_url_hash>` → last seen GUID/URL hash + timestamp
+- `collector:cursor:hn` → last seen item id + timestamp
+- `collector:cursor:reddit:<subreddit>` → last seen fullname/cursor + timestamp
+
+### Dedupe cache
+
+To bound duplicates across restarts, the collector SHOULD maintain a TTL cache of recently emitted IDs:
+
+- `collector:seen:<source>:<event_id>` → `1` (TTL 7–14 days)

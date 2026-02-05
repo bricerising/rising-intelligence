@@ -5,7 +5,11 @@ Shared contracts and platform utilities for this monorepo, following the same ph
 This package is intended to be the “boring platform layer” that keeps services consistent:
 
 - **Contracts**: Zod schemas + TypeScript types for `RawEvent`, `TrendSnapshot`, `Brief`, and config shapes.
+- **Protobuf**: canonical wire contracts published to Schema Registry:
+  - `packages/shared/contracts/proto/rising_intelligence/v1/contracts.proto`
+  - `packages/shared/contracts/proto/rising_intelligence/v1/services.proto`
 - **Config**: typed env parsing and config builders.
+- **Secrets**: uniform secret resolution (`FOO` or `FOO_FILE`) and local `.env` loading helpers (see `specs/004-config-and-secrets.md`).
 - **Lifecycle**: service bootstrap and graceful shutdown helpers.
 - **Observability**: structured logger setup + Prometheus metrics server helpers + OTel bootstrap wiring.
 - **Kafka helpers**: safe producers/consumers, DLQ helpers, idempotent consumption patterns.

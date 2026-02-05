@@ -43,6 +43,9 @@ As an operator, I can see the Top N trending topics over a time window so I can 
 - **FR-003**: Service MUST publish `TrendSnapshot` to `trends.snapshots`.
 - **FR-004**: Service MUST support an allowlist + aliases for topic extraction.
 - **FR-005**: Service SHOULD compute baselines (7-day) once enough data exists.
+- **FR-006 (Daily brief trigger)**: Service MUST publish a daily `SummaryRequest` to `summary.requests` on a configured local schedule.
+- **FR-007 (Threshold trigger, optional)**: Service SHOULD publish a threshold-triggered `SummaryRequest` when a topic spike crosses configured thresholds.
+- **FR-008 (Read model)**: Service MUST persist each produced snapshot to Postgres (`trend_snapshots`) for Grafana dashboards.
 
 ### Non-Functional Requirements
 

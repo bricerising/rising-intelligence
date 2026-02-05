@@ -22,3 +22,8 @@ specs/          # System-level specs
 
 - Use OpenTelemetry and the LGTM stack (see `specs/002-observability-stack.md`).
 - Services SHOULD expose `/metrics` and emit logs with `traceId` for correlation.
+
+## Operations CLI
+
+- Infrastructure and LGTM stack interactions SHOULD go through the ops CLI: `packages/ops-cli` (binary: `riops`).
+- Prefer extending `riops` over adding one-off shell scripts.

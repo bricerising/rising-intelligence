@@ -23,7 +23,7 @@ As an operator, I receive a daily brief that explains what happened and what I s
 
 **Acceptance Scenarios**:
 
-1. **Given** Top N trends and evidence, **When** a daily request arrives, **Then** a brief is published to `summary.results`.
+1. **Given** Top N trends and evidence, **When** a daily request arrives, **Then** a success `BriefResult` is published to `summary.results`.
 2. **Given** the LLM call fails, **When** retried within budget, **Then** the service recovers and emits a failure record if it ultimately cannot produce a brief.
 3. **Given** a configured daily budget, **When** multiple requests arrive, **Then** the service enforces the budget (drops/degrades gracefully).
 
@@ -44,9 +44,10 @@ As an operator, I receive a daily brief that explains what happened and what I s
 ### Functional Requirements
 
 - **FR-001**: Service MUST consume `summary.requests`.
-- **FR-002**: Service MUST produce `Brief` messages to `summary.results`.
+- **FR-002**: Service MUST produce `BriefResult` messages to `summary.results` (success or failure).
 - **FR-003**: Service MUST include citations for each highlight.
 - **FR-004**: Service SHOULD store the prompt inputs/metadata for audit (without leaking secrets).
+- **FR-005 (Read model)**: Service MUST persist each produced result to Postgres (`brief_results`) for Grafana dashboards.
 
 ### Non-Functional Requirements
 

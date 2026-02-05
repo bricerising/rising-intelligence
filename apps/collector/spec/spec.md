@@ -46,7 +46,7 @@ As an operator, I can run the collector continuously so new items from configure
 - **FR-002**: Service MUST support ingesting from Hacker News (poll API).
 - **FR-003**: Service MUST support ingesting from Reddit (poll new posts/comments).
 - **FR-004**: Service MUST publish normalized events to `events.raw`.
-- **FR-005**: Service MUST emit parse/normalize failures to `events.raw.dlq` with safe context.
+- **FR-005**: Service MUST emit parse/normalize failures to `events.raw.dlq` (`DeadLetterEvent`) with safe context.
 - **FR-006**: Service SHOULD mirror ingested events to Loki as structured logs for search/debug.
 
 ### Non-Functional Requirements
