@@ -20,7 +20,8 @@ enum Source {
   hackernews
   reddit
   github
-  twitter
+  bluesky
+  mastodon
 }
 
 enum TrendWindow {
@@ -40,36 +41,36 @@ enum BriefStatus {
 
 /// Queryable event archive. Events are immutable once written.
 model RawEvent {
-  id                  BigInt    @id @default(autoincrement())
-  eventId             String    @unique @map("event_id")
-  source              Source
-  fetchedAt           DateTime  @map("fetched_at") @db.Timestamptz
-  publishedAt         DateTime? @map("published_at") @db.Timestamptz
+  id          BigInt    @id @default(autoincrement())
+  eventId     String    @unique @map("event_id")
+  source      Source
+  fetchedAt   DateTime  @map("fetched_at") @db.Timestamptz
+  publishedAt DateTime? @map("published_at") @db.Timestamptz
 
-  url                 String?
-  title               String?
-  text                String
+  url   String?
+  title String?
+  text  String
 
   // Denormalized author info
-  authorId            String?   @map("author_id")
-  authorHandle        String?   @map("author_handle")
-  authorDisplayName   String?   @map("author_display_name")
+  authorId          String? @map("author_id")
+  authorHandle      String? @map("author_handle")
+  authorDisplayName String? @map("author_display_name")
 
   // Engagement metrics
-  engagementScore     Int?      @map("engagement_score")
-  engagementComments  Int?      @map("engagement_comments")
-  engagementLikes     Int?      @map("engagement_likes")
-  engagementShares    Int?      @map("engagement_shares")
+  engagementScore    Int? @map("engagement_score")
+  engagementComments Int? @map("engagement_comments")
+  engagementLikes    Int? @map("engagement_likes")
+  engagementShares   Int? @map("engagement_shares")
 
   // Derived fields
-  lang                String?
-  tags                String[]
-  extractedHashtags   String[]  @map("extracted_hashtags")
-  extractedUrls       String[]  @map("extracted_urls")
-  topics              String[]  // Canonical topic keys (set by Trends backfill or Collector)
+  lang              String?
+  tags              String[]
+  extractedHashtags String[] @map("extracted_hashtags")
+  extractedUrls     String[] @map("extracted_urls")
+  topics            String[] // Canonical topic keys (set by Trends backfill or Collector)
 
   // Free-form metadata
-  sourceMeta          Json?     @map("source_meta")
+  sourceMeta Json? @map("source_meta")
 
   @@index([source, fetchedAt(sort: Desc)], name: "idx_raw_events_source_fetched")
   @@index([fetchedAt(sort: Desc)], name: "idx_raw_events_fetched")
@@ -90,7 +91,7 @@ model TrendSnapshot {
   id          BigInt      @id @default(autoincrement())
   generatedAt DateTime    @map("generated_at") @db.Timestamptz
   window      TrendWindow
-  snapshot    Json        // Full TrendSnapshot protobuf as JSON
+  snapshot    Json // Full TrendSnapshot protobuf as JSON
 
   @@index([generatedAt(sort: Desc)], name: "idx_trend_snapshots_generated")
   @@index([window, generatedAt(sort: Desc)], name: "idx_trend_snapshots_window_generated")
@@ -103,10 +104,10 @@ model TrendSnapshot {
 
 /// Stores both success and failure results for audit.
 model BriefResult {
-  requestId   String      @id @map("request_id")
-  producedAt  DateTime    @map("produced_at") @db.Timestamptz
-  status      BriefStatus
-  result      Json        // Full BriefResult protobuf as JSON
+  requestId  String      @id @map("request_id")
+  producedAt DateTime    @map("produced_at") @db.Timestamptz
+  status     BriefStatus
+  result     Json // Full BriefResult protobuf as JSON
 
   @@index([producedAt(sort: Desc)], name: "idx_brief_results_produced")
   @@map("brief_results")
@@ -142,4 +143,35 @@ model RetentionPolicy {
   lastCleanupAt DateTime? @map("last_cleanup_at") @db.Timestamptz
 
   @@map("retention_policies")
+}
+
+// =============================================================================
+// Discovery Candidates (Trends writes, Operator reviews)
+// =============================================================================
+
+enum DiscoveryStatus {
+  pending // Awaiting review
+  added // Added to allowlist
+  ignored // Operator dismissed
+}
+
+/// Tracks emerging unknown terms that may warrant addition to the allowlist.
+/// Populated by Trends service when unknown terms exceed volume/acceleration thresholds.
+model DiscoveryCandidate {
+  term               String          @id
+  firstSeenAt        DateTime        @map("first_seen_at") @db.Timestamptz
+  lastSeenAt         DateTime        @map("last_seen_at") @db.Timestamptz
+  volume24h          Int             @map("volume_24h")
+  peakAcceleration   Float           @map("peak_acceleration")
+  sampleUrls         String[]        @map("sample_urls")
+  sampleEventIds     String[]        @map("sample_event_ids")
+  sources            Source[] // Which sources this term appeared in
+  status             DiscoveryStatus @default(pending)
+  addedToAllowlistAt DateTime?       @map("added_to_allowlist_at") @db.Timestamptz
+  ignoredAt          DateTime?       @map("ignored_at") @db.Timestamptz
+  notes              String? // Operator notes
+
+  @@index([status, volume24h(sort: Desc)], name: "idx_discovery_candidates_status_volume")
+  @@index([lastSeenAt(sort: Desc)], name: "idx_discovery_candidates_last_seen")
+  @@map("discovery_candidates")
 }

@@ -57,7 +57,7 @@ Queryable event archive. Events are **immutable** once written.
 |--------|------|-------------|
 | `id` | BIGSERIAL | Auto-increment PK |
 | `event_id` | TEXT UNIQUE | Stable per-source unique ID |
-| `source` | ENUM | rss, news, hackernews, reddit, github, twitter |
+| `source` | ENUM | rss, news, hackernews, reddit, github, bluesky, mastodon |
 | `fetched_at` | TIMESTAMPTZ | When collector fetched the item |
 | `published_at` | TIMESTAMPTZ? | Original publish time (if known) |
 | `url` | TEXT? | Source URL |

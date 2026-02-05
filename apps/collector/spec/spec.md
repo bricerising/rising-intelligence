@@ -94,6 +94,8 @@ As an operator, I can restart the collector without re-processing large amounts 
 - **FR-001**: Service MUST support ingesting from RSS/Atom feeds.
 - **FR-002**: Service MUST support ingesting from Hacker News (poll API).
 - **FR-003**: Service MUST support ingesting from Reddit (poll new posts).
+- **FR-003a**: Service MUST support ingesting from Bluesky (poll or firehose). See `social-adapters.md`.
+- **FR-003b**: Service MUST support ingesting from Mastodon (poll public/tag timelines). See `social-adapters.md`.
 - **FR-004**: Service MUST publish normalized events to `events.raw` (Kafka).
 - **FR-005**: Service MUST emit parse/normalize failures to `events.raw.dlq` (`DeadLetterEvent`).
 - **FR-006**: Service MUST persist checkpoints to local storage (file or embedded DB) for restart recovery.
@@ -112,25 +114,27 @@ As an operator, I can restart the collector without re-processing large amounts 
 ## Data Flow
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ RSS Adapter │     │  HN Adapter │     │Reddit Adapt.│
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           ▼
-                   ┌───────────────┐
-                   │  Normalizer   │
-                   │  + Validator  │
-                   └───────┬───────┘
-                           │
-                           ▼
-                   ┌───────────────┐
-                   │    Kafka      │
-                   │  events.raw   │
-                   └───────────────┘
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ RSS Adapter │  │  HN Adapter │  │Reddit Adapt.│  │Bluesky Adpt.│  │Mastodon Apt.│
+└──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+       │                │                │                │                │
+       └────────────────┴────────────────┼────────────────┴────────────────┘
+                                         ▼
+                                 ┌───────────────┐
+                                 │  Normalizer   │
+                                 │  + Validator  │
+                                 └───────┬───────┘
+                                         │
+                                         ▼
+                                 ┌───────────────┐
+                                 │    Kafka      │
+                                 │  events.raw   │
+                                 └───────────────┘
 ```
 
 **No Postgres. No Redis. Just Kafka.**
+
+See `social-adapters.md` for Bluesky and Mastodon implementation details.
 
 ## Topic Extraction
 
@@ -312,13 +316,24 @@ KAFKA_BROKERS=localhost:9092
 # Checkpoint storage
 CHECKPOINT_PATH=/data/checkpoints.db
 
-# Source configuration
+# Source configuration - Traditional
 RSS_FEED_URLS=https://aws.amazon.com/blogs/aws/feed/,...
 REDDIT_SUBREDDITS=aws,MachineLearning,technology
 REDDIT_CLIENT_ID=...
 REDDIT_CLIENT_SECRET=...
 HN_MODE=top
 HN_POLL_INTERVAL_SECONDS=300
+
+# Source configuration - Social (see social-adapters.md for details)
+BLUESKY_ENABLED=true
+BLUESKY_MODE=polling
+BLUESKY_POLL_INTERVAL_SECONDS=300
+BLUESKY_QUERIES=aws,bedrock,ai,llm,typescript,rust,openai,anthropic
+
+MASTODON_ENABLED=true
+MASTODON_POLL_INTERVAL_SECONDS=600
+MASTODON_INSTANCES=hachyderm.io,fosstodon.org,infosec.exchange
+MASTODON_TAGS=aws,ai,machinelearning,typescript,rust,devops
 
 # Optional
 GITHUB_TRACKED_REPOS=vercel/next.js,openai/openai-python

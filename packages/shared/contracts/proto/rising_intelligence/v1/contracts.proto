@@ -201,3 +201,55 @@ message BriefResult {
     BriefFailure failure = 4;
   }
 }
+
+// =============================================================================
+// CollectorHeartbeat - Published to collector.heartbeat
+// =============================================================================
+
+enum CollectorStatus {
+  COLLECTOR_STATUS_UNSPECIFIED = 0;
+  COLLECTOR_STATUS_HEALTHY = 1;
+  COLLECTOR_STATUS_DEGRADED = 2;
+  COLLECTOR_STATUS_ERROR = 3;
+}
+
+// Heartbeat from collector per source, used for data freshness validation.
+// Trends service validates collector health before triggering briefs.
+// See specs/001 "Data Freshness Validation" section.
+message CollectorHeartbeat {
+  Source source = 1;
+  string timestamp = 2;          // ISO8601 - when this heartbeat was generated
+  string last_fetch_at = 3;      // ISO8601 - when source was last successfully fetched
+  int32 items_fetched = 4;       // Items fetched in last poll (0 is valid for quiet sources)
+  CollectorStatus status = 5;
+  string error_message = 6;      // Only set if status is DEGRADED or ERROR
+}
+
+// =============================================================================
+// DiscoveryCandidate (reference only - stored in Postgres, not Kafka)
+// =============================================================================
+
+// Tracks emerging unknown terms that may warrant addition to the allowlist.
+// This message is NOT published to Kafka - it's stored directly in Postgres.
+// Included here for documentation and potential future API use.
+enum DiscoveryStatus {
+  DISCOVERY_STATUS_UNSPECIFIED = 0;
+  DISCOVERY_STATUS_PENDING = 1;   // Awaiting operator review
+  DISCOVERY_STATUS_ADDED = 2;     // Added to allowlist
+  DISCOVERY_STATUS_IGNORED = 3;   // Operator dismissed
+}
+
+message DiscoveryCandidate {
+  string term = 1;
+  string first_seen_at = 2;
+  string last_seen_at = 3;
+  int32 volume_24h = 4;
+  float peak_acceleration = 5;
+  repeated string sample_urls = 6;
+  repeated string sample_event_ids = 7;
+  repeated Source sources = 8;
+  DiscoveryStatus status = 9;
+  string added_to_allowlist_at = 10;  // Only set if status is ADDED
+  string ignored_at = 11;             // Only set if status is IGNORED
+  string notes = 12;                  // Operator notes
+}

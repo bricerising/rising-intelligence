@@ -26,7 +26,7 @@ All metrics follow Prometheus naming conventions:
 | Label | Max Values | Notes |
 |-------|-----------|-------|
 | `service` | 4 | collector, persister, trends, brief |
-| `source` | 6 | rss, news, hackernews, reddit, github, twitter |
+| `source` | 7 | rss, news, hackernews, reddit, github, bluesky, mastodon |
 | `topic` | 30 | Only top topics; use "other" for rest |
 | `window` | 3 | 15m, 60m, 24h |
 | `status` | 3 | success, failure, skipped |
