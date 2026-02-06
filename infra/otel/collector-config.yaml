@@ -8,23 +8,23 @@ receivers:
       global:
         scrape_interval: 15s
       scrape_configs:
-        # These targets will exist once app services are added to docker compose.
+        # App services in docker compose expose /metrics on port 3000.
         - job_name: "collector"
           metrics_path: "/metrics"
           static_configs:
-            - targets: ["collector:9101"]
+            - targets: ["collector:3000"]
         - job_name: "persister"
           metrics_path: "/metrics"
           static_configs:
-            - targets: ["persister:9104"]
+            - targets: ["persister:3000"]
         - job_name: "trends"
           metrics_path: "/metrics"
           static_configs:
-            - targets: ["trends:9102"]
+            - targets: ["trends:3000"]
         - job_name: "brief"
           metrics_path: "/metrics"
           static_configs:
-            - targets: ["brief:9103"]
+            - targets: ["brief:3000"]
 
 connectors:
   servicegraph:

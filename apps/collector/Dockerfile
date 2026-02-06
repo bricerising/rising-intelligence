@@ -13,7 +13,6 @@ COPY package.json package-lock.json* ./
 
 # Copy workspace package files
 COPY packages/shared/package.json ./packages/shared/
-COPY packages/db/package.json ./packages/db/
 COPY apps/collector/package.json ./apps/collector/
 
 # Install dependencies
@@ -29,18 +28,15 @@ WORKDIR /app
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=deps /app/apps/collector/node_modules ./apps/collector/node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
-COPY packages/db ./packages/db
 COPY apps/collector ./apps/collector
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared
-RUN npm run build --workspace=@rising-intelligence/db
 
 # Build the service
 RUN npm run build --workspace=@rising-intelligence/collector
@@ -59,16 +55,15 @@ RUN addgroup --system --gid 1001 nodejs && \
 # Copy built artifacts
 COPY --from=builder --chown=collector:nodejs /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=collector:nodejs /app/packages/shared/package.json ./packages/shared/
-COPY --from=builder --chown=collector:nodejs /app/packages/db/dist ./packages/db/dist
-COPY --from=builder --chown=collector:nodejs /app/packages/db/package.json ./packages/db/
 COPY --from=builder --chown=collector:nodejs /app/apps/collector/dist ./apps/collector/dist
 COPY --from=builder --chown=collector:nodejs /app/apps/collector/package.json ./apps/collector/
 
 # Copy production dependencies only
 COPY --from=deps --chown=collector:nodejs /app/node_modules ./node_modules
 
-# Copy topics allowlist (mounted at runtime typically, but include default)
+# Copy config files (mounted at runtime typically, but include defaults)
 COPY --chown=collector:nodejs infra/config/topics.allowlist.yaml /config/topics.allowlist.yaml
+COPY --chown=collector:nodejs infra/config/feeds.yaml /config/feeds.yaml
 
 # Create checkpoint directory
 RUN mkdir -p /data && chown collector:nodejs /data
@@ -79,6 +74,7 @@ USER collector
 ENV NODE_ENV=production
 ENV CHECKPOINT_PATH=/data/checkpoints.db
 ENV TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
+ENV FEEDS_CONFIG_PATH=/config/feeds.yaml
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -221,7 +221,46 @@ services:
     command: ["schema-registry", "publish-protos"]
     restart: on-failure
 
-  # Application services (apps/*) will be added once code exists.
+  # =============================================================================
+  # Application Services
+  # =============================================================================
+
+  collector:
+    build:
+      context: .
+      dockerfile: ./apps/collector/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ops-cli:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      CHECKPOINT_PATH: "/data/checkpoints.db"
+      TOPICS_ALLOWLIST_PATH: "/config/topics.allowlist.yaml"
+      FEEDS_CONFIG_PATH: "/config/feeds.yaml"
+      LOG_LEVEL: "info"
+      # Source toggles
+      RSS_ENABLED: "true"
+      HN_ENABLED: "true"
+      LOBSTERS_ENABLED: "true"
+      REDDIT_ENABLED: "false"
+      BLUESKY_ENABLED: "false"
+      MASTODON_ENABLED: "false"
+      GITHUB_ENABLED: "false"
+    volumes:
+      - collector-checkpoints:/data
+      - ./infra/config/topics.allowlist.yaml:/config/topics.allowlist.yaml:ro
+      - ./infra/config/feeds.yaml:/config/feeds.yaml:ro
+    ports:
+      - "127.0.0.1:3002:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
 
 volumes:
   redpanda-data:
@@ -231,3 +270,4 @@ volumes:
   tempo-data:
   redis-data:
   postgres-data:
+  collector-checkpoints:
