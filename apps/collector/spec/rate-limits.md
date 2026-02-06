@@ -249,21 +249,17 @@ function calculateBackoff(attempt: number, baseMs: number = 1000): number {
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `POLL_INTERVAL_REDDIT_SECONDS` | 600 | Reddit poll interval (10 min) |
-| `POLL_INTERVAL_HN_SECONDS` | 300 | Hacker News poll interval (5 min) |
-| `POLL_INTERVAL_GITHUB_SECONDS` | 900 | GitHub poll interval (15 min) |
-| `POLL_INTERVAL_RSS_SECONDS` | 600 | RSS feed poll interval (10 min) |
-| `POLL_INTERVAL_BLUESKY_SECONDS` | 300 | Bluesky poll interval (5 min) |
-| `POLL_INTERVAL_MASTODON_SECONDS` | 600 | Mastodon poll interval (10 min) |
-| `BATCH_SIZE_REDDIT` | 25 | Max posts per subreddit per poll |
-| `BATCH_SIZE_HN` | 30 | Max stories per poll |
-| `BATCH_SIZE_RSS` | 20 | Max items per feed per poll |
-| `BATCH_SIZE_BLUESKY` | 50 | Max posts per poll |
-| `BATCH_SIZE_MASTODON` | 40 | Max posts per instance per poll |
-| `BACKOFF_MAX_RETRIES` | 5 | Max retries before circuit opens |
-| `BACKOFF_BASE_MS` | 1000 | Base backoff duration |
-| `BLUESKY_FIREHOSE_ENABLED` | false | Use Jetstream firehose instead of polling |
-| `BLUESKY_HASHTAGS` | "aws,ai,typescript,rust" | Comma-separated hashtags to track |
+| `REDDIT_POLL_INTERVAL_SECONDS` | 300 | Reddit poll interval (5 min) |
+| `HN_POLL_INTERVAL_SECONDS` | 300 | Hacker News poll interval (5 min) |
+| `RSS_POLL_INTERVAL_SECONDS` | 300 | RSS feed poll interval (5 min) |
+| `LOBSTERS_POLL_INTERVAL_SECONDS` | 600 | Lobsters poll interval (10 min) |
+| `BLUESKY_POLL_INTERVAL_SECONDS` | 300 | Bluesky poll interval (5 min) |
+| `MASTODON_POLL_INTERVAL_SECONDS` | 600 | Mastodon poll interval (10 min) |
+| `GITHUB_POLL_INTERVAL_SECONDS` | 3600 | GitHub poll interval (60 min) |
+| `REDDIT_MAX_ITEMS_PER_POLL` | 25 | Max posts per poll |
+| `HN_MAX_ITEMS_PER_POLL` | 30 | Max stories per poll |
+| `LOBSTERS_MAX_ITEMS_PER_POLL` | 25 | Max stories per poll |
+| `BLUESKY_QUERIES` | "aws,bedrock,ai,llm,typescript,rust" | Comma-separated queries to track |
 | `MASTODON_INSTANCES` | "hachyderm.io,fosstodon.org" | Comma-separated instances to poll |
 
 ## Catch-Up Behavior

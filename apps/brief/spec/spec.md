@@ -71,7 +71,7 @@ async function processRequest(request: SummaryRequest): Promise<void> {
 
   if (existing) {
     log.info({ requestId: request.request_id }, 'Duplicate request, skipping');
-    metrics.increment('brief_duplicates_skipped_total');
+    metrics.increment('ri_brief_duplicates_skipped_total');
     return; // Commit offset without processing
   }
 
@@ -353,7 +353,7 @@ function checkForSuspiciousContent(text: string, eventId: string): void {
   for (const pattern of SUSPICIOUS_PATTERNS) {
     if (pattern.test(text)) {
       log.warn({ eventId, pattern: pattern.source }, 'Suspicious content in evidence');
-      metrics.increment('brief_suspicious_content_total');
+      metrics.increment('ri_brief_suspicious_content_total');
       break;
     }
   }
@@ -470,7 +470,7 @@ async function checkBudget(estimatedCost: number): Promise<boolean> {
 
   if (spent + estimatedCost > limit) {
     log.warn({ spent, limit, estimatedCost }, 'Daily budget exceeded');
-    metrics.increment('brief_budget_exceeded_total');
+    metrics.increment('ri_brief_budget_exceeded_total');
     return false;
   }
 
@@ -574,10 +574,10 @@ Brief generation failures MUST be observable and alertable:
 
 ### Metrics
 
-- `brief_generation_failed_total{reason=llm_error|parse_error|budget_exceeded|timeout}`
-- `brief_generation_succeeded_total`
-- `brief_generation_duration_seconds` (histogram)
-- `brief_duplicates_skipped_total`
+- `ri_brief_generation_total{status="success"|"failure"|"skipped"}`
+- `ri_brief_generation_duration_seconds` (histogram)
+- `ri_brief_duplicates_skipped_total`
+- `ri_brief_errors_total{error_type=llm_error|parse_error|budget_exceeded|timeout|postgres_error}`
 
 ### Logs
 
@@ -599,19 +599,19 @@ Configure the following alerts:
 
 | Alert | Condition | Severity |
 |-------|-----------|----------|
-| Brief Generation Failed | `brief_generation_failed_total` increases | Warning |
+| Brief Generation Failed | `increase(ri_brief_generation_total{status="failure"}[1h]) > 0` | Warning |
 | No Brief Today | No successful brief in 24h | Critical |
-| LLM Latency High | P95 `brief_generation_duration_seconds` > 120s | Warning |
-| Budget Exhausted | `brief_budget_exceeded_total` > 0 | Warning |
+| LLM Latency High | P95 `ri_brief_generation_duration_seconds` > 120s | Warning |
+| Budget Exhausted | `ri_brief_budget_exceeded_total` > 0 | Warning |
 
 ### Example Alert Rule (Grafana)
 
 ```yaml
 - alert: NoBriefToday
   expr: |
-    increase(brief_generation_succeeded_total[24h]) == 0
+    increase(ri_brief_generation_total{status="success"}[24h]) == 0
     and
-    increase(brief_generation_failed_total[24h]) > 0
+    increase(ri_brief_generation_total{status="failure"}[24h]) > 0
   for: 1h
   labels:
     severity: critical

@@ -983,7 +983,7 @@ function validateCollectorHealth(): HealthStatus {
 **If data is stale**:
 - Log a warning with lag details AND unhealthy sources
 - Skip brief generation (do not publish `SummaryRequest`)
-- Emit metric `brief_skipped_stale_data_total{reason="consumer_lag|persister_lag|collector_unhealthy"}`
+- Emit metric `ri_trends_brief_skipped_stale_data_total`
 - Retry on next scheduled trigger
 
 **Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours OR Collector stopped fetching from Reddit) would mislead the operator. It's better to skip and wait for data to catch up.
@@ -1023,7 +1023,7 @@ function validateCollectorHealth(): HealthStatus {
 
 Notes:
 
-- Trends SHOULD export Prometheus metrics for **Top N topics only** to keep label cardinality bounded (e.g., `trend_score{topic=...,window=...}`).
+- Trends SHOULD export Prometheus metrics for **Top N topics only** to keep label cardinality bounded (e.g., `ri_trends_topic_score{topic=...,window=...}`).
 - All queryable data (events, snapshots, briefs) is stored in Postgres.
 - Application logs (service debug, errors) go to Loki for operational debugging.
 
@@ -1036,16 +1036,16 @@ Notes:
 
 ### Logs (required fields)
 
-- `service`, `source`, `event_id`, `topic` (if derived), `fetched_at`, `published_at` (if known)
-- `kafka_topic`, `partition`, `offset` (for consumers)
-- `error_code`, `error_message` (no secrets), `retry_count`
+- `service`, `source`, `eventId`, `topic` (if derived), `fetchedAt`, `publishedAt` (if known)
+- `kafkaTopic`, `partition`, `offset` (for consumers)
+- `errorCode`, `error` (no secrets), `retryCount`
 
 ### Metrics (minimum)
 
-- Ingestion: `events_ingested_total{source=...}`, `ingest_failures_total{source=...}`, `ingest_lag_seconds{source=...}`
-- Kafka consumer: `consumer_lag{group=...}`
-- Trend processing: `trend_compute_duration_seconds`, `topics_ranked_total`
-- LLM: `briefs_generated_total`, `llm_latency_seconds`, `llm_tokens_total`, `llm_cost_estimated_usd`
+- Ingestion: `ri_collector_events_ingested_total{source=...}`, `ri_collector_events_failed_total{source=...}`
+- Kafka consumer: `ri_persister_consumer_lag{partition=...}`, `ri_trends_consumer_lag{partition=...}`
+- Trend processing: `ri_trends_snapshot_duration_seconds{window=...}`, `ri_trends_snapshot_published_total{window=...}`, `ri_trends_topic_score{topic=...,window=...}`, `ri_trends_topic_volume{topic=...,window=...}`
+- LLM: `ri_brief_generation_total{status=...}`, `ri_brief_generation_duration_seconds`, `ri_brief_llm_tokens_total`, `ri_brief_llm_cost_usd_total`
 
 ## Resilience
 
@@ -1148,11 +1148,11 @@ interface SystemHealth {
 **Behavior**:
 - System level: **DOWN** (Redis is critical infrastructure)
 - Collector: CONTINUES (uses SQLite checkpoints, not Redis)
-- Persister: CONTINUES (writes to Postgres)
+- Persister: **FAILS** - service is not considered ready without Redis
 - Trends: **FAILS** - service crashes and restarts, cannot operate without Redis
 - Brief: **FAILS** - cannot track budget or process requests
 
-**Design decision**: Redis is required infrastructure, not optional. Services that depend on Redis MUST fail loudly rather than operate in a degraded state that produces incorrect results.
+**Design decision**: Redis is required infrastructure for all downstream services (Persister, Trends, Brief). Services that depend on Redis MUST fail loudly rather than operate in a degraded state that produces incorrect results.
 
 **Recovery**:
 - On Redis recovery, services automatically reconnect

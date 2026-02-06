@@ -13,4 +13,4 @@ docker compose up --build collector
 ## Verify (planned)
 
 - `events.raw` contains `RawEvent` messages from enabled sources.
-- Grafana shows `events_ingested_total{source=...}` increasing.
+- Grafana shows `ri_collector_events_ingested_total{source=...}` increasing.

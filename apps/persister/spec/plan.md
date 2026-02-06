@@ -44,7 +44,7 @@ Kafka (events.raw) → Consumer → [Postgres, Redis]
 
 - Redis client setup
 - Set `seen:{source}:{event_id}` with TTL
-- Handle Redis unavailability gracefully
+- Treat Redis as required: fail readiness and pause processing when unavailable
 
 **Deliverables**:
 - `src/redis/client.ts` - Redis client
@@ -132,7 +132,7 @@ async function persistToPostgres(event: RawEvent): Promise<boolean> {
   } catch (e: any) {
     if (e.code === 'P2002') {
       // Unique constraint violation = duplicate
-      metrics.increment('persister_events_skipped_total', { reason: 'duplicate' });
+      metrics.increment('ri_persister_events_skipped_total', { reason: 'duplicate' });
       return false;
     }
     throw e;
@@ -167,9 +167,9 @@ async function markSeen(event: RawEvent): Promise<void> {
   try {
     await redis.set(key, '1', 'EX', SEEN_TTL_SECONDS);
   } catch (e) {
-    // Redis is optional; log and continue
-    log.warn({ error: e, key }, 'Failed to set seen key in Redis');
-    metrics.increment('persister_errors_total', { type: 'redis' });
+    log.error({ error: e, key }, 'Failed to set seen key in Redis');
+    metrics.increment('ri_persister_errors_total', { error_type: 'redis' });
+    throw e;
   }
 }
 
@@ -193,7 +193,7 @@ async function processMessage(message: KafkaMessage): Promise<void> {
     event = deserialize<RawEvent>(message.value);
   } catch (e) {
     log.error({ error: e }, 'Failed to parse event');
-    metrics.increment('persister_events_skipped_total', { reason: 'malformed' });
+    metrics.increment('ri_persister_events_skipped_total', { reason: 'malformed' });
     return; // Skip malformed events
   }
 
@@ -209,13 +209,13 @@ async function processMessage(message: KafkaMessage): Promise<void> {
     }
   );
 
-  // Write to Redis (best-effort)
+  // Write to Redis (required for readiness)
   await markSeen(event);
 
   // Metrics
   const duration = Date.now() - startTime;
-  metrics.observe('persister_processing_duration_ms', duration);
-  metrics.increment('persister_events_processed_total');
+  metrics.observe('ri_persister_postgres_write_duration_seconds', duration / 1000);
+  metrics.increment('ri_persister_events_processed_total');
 }
 ```
 
@@ -288,7 +288,7 @@ app.listen(config.HEALTH_PORT);
 
 - Full round-trip: Kafka → Postgres → verify row
 - Duplicate handling: same event twice → one row
-- Redis unavailable: continues without error
+- Redis unavailable: service becomes not-ready and pauses processing
 
 ### Acceptance Tests
 
@@ -298,10 +298,9 @@ app.listen(config.HEALTH_PORT);
 
 ## Metrics
 
-- `persister_events_processed_total` - Counter
-- `persister_events_skipped_total{reason=duplicate|malformed}` - Counter
-- `persister_processing_duration_ms` - Histogram
-- `persister_postgres_write_duration_ms` - Histogram
-- `persister_redis_write_duration_ms` - Histogram
-- `persister_errors_total{type=postgres|redis|parse}` - Counter
-- `persister_consumer_lag{partition}` - Gauge
+- `ri_persister_events_processed_total` - Counter
+- `ri_persister_events_skipped_total{reason=duplicate|malformed}` - Counter
+- `ri_persister_postgres_write_duration_seconds` - Histogram
+- `ri_persister_redis_write_duration_seconds` - Histogram
+- `ri_persister_errors_total{error_type=postgres|redis|parse}` - Counter
+- `ri_persister_consumer_lag{partition}` - Gauge

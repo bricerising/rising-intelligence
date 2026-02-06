@@ -11,9 +11,12 @@ Redis provides **ephemeral state** for:
 2. **Deduplication cache**: Short-term seen-event tracking
 3. **Rate limit tracking**: Per-source request budgets
 
-Redis is **not** the source of truth for any data. All durable state lives in Postgres. If Redis is lost, services recover by:
-- Re-reading from Kafka (for window state)
-- Accepting some duplicate processing (bounded by Kafka retention)
+Redis is **not** the source of truth for any data. All durable state lives in Postgres.
+
+Redis is also a **required runtime dependency** for downstream services:
+- `persister`, `trends`, and `brief` MUST fail fast when Redis is unavailable.
+- `collector` does not depend on Redis and can continue independently.
+- On Redis recovery, downstream services resume and rebuild ephemeral state from Kafka/Postgres.
 
 ## Why Redis?
 
@@ -97,9 +100,11 @@ seen:HACKERNEWS:39876543 = 1
 seen:url:sha256:abc123... = 1
 ```
 
-### 5. Rate Limit Tracking (Collector Service)
+### 5. Rate Limit Tracking (Optional Shared Pattern)
 
-Tracks remaining API budget per source to avoid hitting rate limits.
+Tracks remaining API budget per source to avoid hitting rate limits when centralized state is needed.
+
+For current MVP, Collector rate limiting is in-memory (no Redis dependency). This pattern is retained as a future option if multi-instance coordination is required.
 
 **Key pattern**: `ratelimit:{source}:{window_start}`
 
@@ -201,14 +206,14 @@ redis:
 | Trends | Window counters, previous window, baseline cache, evidence buffers |
 | Brief | Budget tracking (`budget:*` keys) |
 
-**Note**: The Collector has no Redis dependency. This keeps ingestion simple and decoupled. The Persister handles the dedup cache as it materializes events from Kafka.
+**Note**: The Collector has no Redis dependency. This keeps ingestion simple and decoupled. All downstream services (Persister, Trends, Brief) require Redis to be healthy for correct operation.
 
 ## Failure Modes
 
 | Scenario | Impact | Recovery |
 |----------|--------|----------|
-| Redis unavailable | Collector may emit duplicates; Trends windows reset | Services continue with degraded dedup; counts recover after one window |
-| Redis data loss | Same as unavailable | Same recovery |
+| Redis unavailable | Persister, Trends, and Brief become unavailable; Collector continues | Restore Redis, then restart/recover downstream services; ephemeral state rebuilds |
+| Redis data loss | Same as unavailable | Same recovery after Redis returns |
 | Memory exhaustion | LRU eviction drops old keys | Acceptable; oldest data evicted first |
 
 ## Monitoring

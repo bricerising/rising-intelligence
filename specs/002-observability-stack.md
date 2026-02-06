@@ -65,9 +65,9 @@ Logs MUST be structured JSON and include:
 
 - `service`
 - `traceId` and `spanId` (for log-to-trace navigation)
-- `event_id` (when logging RawEvent handling)
+- `eventId` (when logging RawEvent handling)
 - `topic` (when logging trend handling)
-- `kafka_topic`, `partition`, `offset` (for consumers)
+- `kafkaTopic`, `partition`, `offset` (for consumers)
 
 ### Metrics (minimum)
 
@@ -76,20 +76,20 @@ All services MUST expose `/metrics` for a local scrape (Prometheus format) OR ex
 Minimum recommended metrics:
 
 - Collector:
-  - `events_ingested_total{source=...}`
-  - `ingest_failures_total{source=...}`
-  - `ingest_lag_seconds{source=...}`
+  - `ri_collector_events_ingested_total{source=...}`
+  - `ri_collector_events_failed_total{source=...}`
+  - `ri_collector_poll_duration_seconds{source=...}`
 - Trends:
-  - `trend_compute_duration_seconds`
-  - `topics_ranked_total`
-  - `trend_score{topic=...,window=...}` (Top N only; bounded cardinality)
-  - `trend_volume{topic=...,window=...}` (Top N only; bounded cardinality)
-  - `consumer_lag{group=...}` (or a proxy gauge)
+  - `ri_trends_snapshot_duration_seconds{window=...}`
+  - `ri_trends_snapshot_published_total{window=...}`
+  - `ri_trends_topic_score{topic=...,window=...}` (Top N only; bounded cardinality)
+  - `ri_trends_topic_volume{topic=...,window=...}` (Top N only; bounded cardinality)
+  - `ri_trends_consumer_lag{partition=...}` (or a proxy gauge)
 - Brief:
-  - `briefs_generated_total`
-  - `brief_results_total{status=\"success\"|\"failure\"}`
-  - `llm_latency_seconds`
-  - `llm_tokens_total`
+  - `ri_brief_generation_total{status=\"success\"|\"failure\"|\"skipped\"}`
+  - `ri_brief_generation_duration_seconds`
+  - `ri_brief_llm_tokens_total{direction=\"input\"|\"output\"}`
+  - `ri_brief_errors_total{error_type=...}`
 
 ### Traces
 

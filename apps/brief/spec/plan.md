@@ -238,7 +238,7 @@ async function checkBudget(estimatedCost: number): Promise<boolean> {
   const spent = parseFloat(state.spentUsd ?? '0');
 
   if (spent + estimatedCost > config.LLM_DAILY_BUDGET_USD) {
-    metrics.increment('brief_budget_exceeded_total');
+    metrics.increment('ri_brief_budget_exceeded_total');
     return false;
   }
 
@@ -253,7 +253,7 @@ async function recordSpend(cost: number): Promise<void> {
   await redis.hincrby(key, 'requestsCount', 1);
   await redis.expire(key, 7 * 86400); // 7 days
 
-  metrics.observe('brief_cost_usd', cost);
+  metrics.increment('ri_brief_llm_cost_usd_total', cost);
 }
 ```
 
@@ -326,13 +326,12 @@ function estimateTokens(request: SummaryRequest): number {
 
 ### Metrics
 
-- `brief_requests_total{status=success|failure}`
-- `brief_cost_usd` (histogram)
-- `brief_latency_seconds` (histogram)
-- `brief_tokens_input` (histogram)
-- `brief_tokens_output` (histogram)
-- `brief_budget_exceeded_total`
-- `brief_validation_errors_total`
+- `ri_brief_generation_total{status=success|failure|skipped}`
+- `ri_brief_llm_cost_usd_total`
+- `ri_brief_generation_duration_seconds`
+- `ri_brief_llm_tokens_total{direction=input|output}`
+- `ri_brief_budget_exceeded_total`
+- `ri_brief_errors_total{error_type=...}`
 
 ### Alerts
 

@@ -25,7 +25,7 @@ docker compose up --build persister
 
 - **Kafka (Redpanda)**: Source of events
 - **Postgres**: Target for materialized events
-- **Redis**: Deduplication cache (optional but recommended)
+- **Redis**: Required deduplication/state dependency
 
 ## Configuration
 

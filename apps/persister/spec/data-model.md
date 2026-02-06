@@ -90,7 +90,7 @@ To optimize throughput:
 | Deserialization failure | Log error, skip event (don't block batch) |
 | Postgres connection error | Retry with backoff, circuit breaker |
 | Postgres constraint violation | Expected (duplicate), continue |
-| Redis connection error | Log warning, continue (cache is optional) |
+| Redis connection error | Fail readiness and pause processing until Redis recovers |
 
 ## Metrics
 

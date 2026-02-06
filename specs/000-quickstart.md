@@ -85,7 +85,7 @@ These ports intentionally mirror `specify-poker` to reduce cognitive load:
 1. Bring up the stack and confirm Grafana loads.
 2. Confirm Loki is receiving logs from at least one service.
 3. Confirm Mimir has `up` for expected services (or the collector scrape jobs).
-4. Confirm a `trends.snapshot` (or equivalent) is visible in dashboards once the pipeline runs.
+4. Confirm a `trends.snapshots` stream (or equivalent dashboard panel) is visible once the pipeline runs.
 
 ## Contracts (Schema Registry)
 

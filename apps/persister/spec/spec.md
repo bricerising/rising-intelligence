@@ -9,7 +9,7 @@
 The Persister Service is a lightweight Kafka consumer that materializes `events.raw` into queryable storage:
 
 - **Postgres**: `raw_events` table for search and Grafana dashboards
-- **Redis**: `seen:{event_id}` cache for cross-service deduplication
+- **Redis**: `seen:{source}:{event_id}` cache for cross-service deduplication
 
 This service exists to decouple ingestion (Collector) from storage writes, following the Kafka-centric architecture principle.
 
@@ -40,7 +40,7 @@ Since Kafka delivers at-least-once, the persister must handle duplicates:
 
 ### Backpressure-Friendly
 
-If Postgres or Redis is slow, the persister falls behind on Kafka. This is visible via consumer lag metrics. The system degrades gracefully — ingestion continues, queries are stale.
+If Postgres or Redis is slow/unavailable, the persister falls behind on Kafka. This is visible via consumer lag metrics and health/readiness signals.
 
 ## User Scenarios & Testing
 
@@ -60,7 +60,7 @@ As an operator, I can query raw events in Postgres within seconds of them appear
 
 As a downstream service, I can check Redis to see if an event has been persisted.
 
-**Independent Test**: Process an event, verify `seen:{event_id}` exists in Redis with TTL.
+**Independent Test**: Process an event, verify `seen:{source}:{event_id}` exists in Redis with TTL.
 
 **Acceptance Scenarios**:
 
@@ -70,7 +70,7 @@ As a downstream service, I can check Redis to see if an event has been persisted
 ## Constitution Requirements
 
 - **Idempotency**: Duplicate events MUST NOT cause errors or duplicate rows.
-- **Consistency**: Every event in Postgres MUST have a corresponding Redis key (best-effort).
+- **Consistency**: Every event in Postgres MUST have a corresponding Redis key.
 - **Observability**: Consumer lag MUST be visible via metrics.
 
 ## Requirements
@@ -138,7 +138,7 @@ async function processMessage(message: KafkaMessage): Promise<void> {
 | Failure | Behavior |
 |---------|----------|
 | Postgres unavailable | Retry with backoff; don't commit offset |
-| Redis unavailable | Log warning; continue (Redis is optional cache) |
+| Redis unavailable | Fail readiness and pause processing until Redis recovers |
 | Malformed event | Log error; skip and commit offset (don't block) |
 | Duplicate event | Silent no-op; commit offset |
 
@@ -168,12 +168,12 @@ POSTGRES_RETRY_DELAY_MS=1000
 
 ## Metrics
 
-- `persister_events_processed_total`
-- `persister_events_skipped_total{reason=duplicate|malformed}`
-- `persister_postgres_write_duration_seconds`
-- `persister_redis_write_duration_seconds`
-- `persister_consumer_lag{partition=...}`
-- `persister_errors_total{type=postgres|redis|parse}`
+- `ri_persister_events_processed_total`
+- `ri_persister_events_skipped_total{reason=duplicate|malformed}`
+- `ri_persister_postgres_write_duration_seconds`
+- `ri_persister_redis_write_duration_seconds`
+- `ri_persister_consumer_lag{partition=...}`
+- `ri_persister_errors_total{error_type=postgres|redis|parse}`
 
 ## Health Check
 
@@ -194,8 +194,8 @@ interface HealthStatus {
 
 **Health criteria**:
 - `healthy`: Kafka, Postgres, Redis all reachable; consumer lag < 1000
-- `degraded`: Redis unavailable (cache miss acceptable) OR lag > 1000
-- `unhealthy`: Kafka OR Postgres unreachable
+- `degraded`: Consumer lag > 1000
+- `unhealthy`: Kafka OR Postgres OR Redis unreachable
 
 **Endpoint**: `GET /health` returns 200 (healthy/degraded) or 503 (unhealthy)
 

@@ -18,6 +18,10 @@ This runbook documents common operational procedures for the Rising Intelligence
 | Schema Registry | http://localhost:8081 |
 | Postgres | localhost:5432 |
 | Redis | localhost:6379 |
+| Collector health | http://localhost:3002/health |
+| Persister health | http://localhost:3003/health |
+| Trends health | http://localhost:3004/health |
+| Brief health | http://localhost:3005/health |
 
 ### Key Dashboards
 
@@ -45,7 +49,7 @@ This runbook documents common operational procedures for the Rising Intelligence
 
 ### Scenario 1: Brief Not Generated
 
-**Symptoms**: No new brief in dashboard; `briefs_generated_total` metric flat.
+**Symptoms**: No new brief in dashboard; `ri_brief_generation_total{status="success"}` flat.
 
 **Investigation**:
 
@@ -96,8 +100,8 @@ This runbook documents common operational procedures for the Rising Intelligence
 
 2. Check service health:
    ```bash
-   curl http://localhost:3002/health  # Persister
-   curl http://localhost:3003/health  # Trends
+   curl http://localhost:3003/health  # Persister
+   curl http://localhost:3004/health  # Trends
    ```
 
 3. Check dependencies:
@@ -201,11 +205,12 @@ This runbook documents common operational procedures for the Rising Intelligence
 
 **Resolution**:
 
-Redis data loss is **expected to be recoverable**:
+Redis data loss requires downstream service recovery:
 
-1. Trends service replays from Kafka offset
-2. After one window period (60m), counts stabilize
-3. No manual intervention needed
+1. Restore Redis health first
+2. Restart downstream services (`persister`, `trends`, `brief`)
+3. Trends replays from Kafka offset and window counts stabilize after one window period (60m)
+4. Verify `ri_persister_up`, `ri_trends_up`, and `ri_brief_up` return to 1
 
 If evictions are frequent:
 - Increase `maxmemory` in Redis config
@@ -215,7 +220,7 @@ If evictions are frequent:
 
 ### Scenario 6: LLM API Failures
 
-**Symptoms**: Briefs fail with "llm_error"; `brief_generation_failed_total` increasing.
+**Symptoms**: Briefs fail with "llm_error"; `ri_brief_generation_total{status="failure"}` and/or `ri_brief_errors_total{error_type="llm_error"}` increasing.
 
 **Investigation**:
 

@@ -18,7 +18,7 @@ Both contracts are defined in `specs/001-real-time-personal-intelligence-system.
 Trends MUST tolerate at-least-once delivery without double-counting:
 
 - primary defense: Collector dedupe by stable `event_id`
-- secondary defense: optional Redis-based `event_id` dedupe with TTL (window + buffer)
+- secondary defense: Redis-based `event_id` dedupe with TTL (window + buffer)
 
 ## Evidence selection (MVP)
 

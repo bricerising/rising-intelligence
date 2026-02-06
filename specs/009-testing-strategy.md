@@ -256,12 +256,12 @@ services:
       - "127.0.0.1:5433:5432"
 
   # Redpanda for e2e tests only
-	  redpanda-test:
-	    profiles: ["e2e"]
-	    image: redpandadata/redpanda:v24.3.5
-	    command: ["redpanda", "start", "--overprovisioned", "--smp", "1", "--memory", "512M"]
-	    ports:
-	      - "127.0.0.1:9093:9092"
+  redpanda-test:
+    profiles: ["e2e"]
+    image: redpandadata/redpanda:v24.3.5
+    command: ["redpanda", "start", "--overprovisioned", "--smp", "1", "--memory", "512M"]
+    ports:
+      - "127.0.0.1:9093:9092"
 ```
 
 ### Test Setup/Teardown
