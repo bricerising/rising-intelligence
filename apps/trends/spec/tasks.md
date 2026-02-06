@@ -1,5 +1,9 @@
 # Tasks: Trends Service
 
+## Progress
+
+- 2026-02-06: Implemented T001-T007 baseline path (service skeleton, Kafka consumer, deserialization, allowlist loading/filtering, window dedup, and Redis window counters with periodic snapshot publishing).
+
 ## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton

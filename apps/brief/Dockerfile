@@ -36,7 +36,7 @@ COPY --from=deps /app/apps/brief/node_modules ./apps/brief/node_modules
 COPY packages/shared ./packages/shared
 COPY packages/db ./packages/db
 COPY apps/brief ./apps/brief
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared

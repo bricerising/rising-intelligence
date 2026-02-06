@@ -293,6 +293,70 @@ services:
       retries: 3
     restart: unless-stopped
 
+  trends:
+    build:
+      context: .
+      dockerfile: ./apps/trends/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ops-cli:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      KAFKA_CLIENT_ID: "trends"
+      KAFKA_CONSUMER_GROUP: "trends-processor"
+      KAFKA_TOPIC_RAW_EVENTS: "events.raw"
+      KAFKA_TOPIC_TRENDS_SNAPSHOTS: "trends.snapshots"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-rising}:${POSTGRES_PASSWORD:-rising}@postgres:5432/${POSTGRES_DB:-rising_intelligence}"
+      REDIS_URL: "redis://redis:6379"
+      TOPICS_ALLOWLIST_PATH: "/config/topics.allowlist.yaml"
+      LOG_LEVEL: "info"
+      TREND_WINDOWS: "15m,60m"
+      SNAPSHOT_INTERVAL_SECONDS: "300"
+      TOP_N_TOPICS: "10"
+      MAX_EVIDENCE_PER_TOPIC: "10"
+    volumes:
+      - ./infra/config/topics.allowlist.yaml:/config/topics.allowlist.yaml:ro
+    ports:
+      - "127.0.0.1:3004:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  brief:
+    build:
+      context: .
+      dockerfile: ./apps/brief/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ops-cli:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      KAFKA_CLIENT_ID: "brief"
+      KAFKA_CONSUMER_GROUP: "brief-generator"
+      KAFKA_TOPIC_SUMMARY_REQUESTS: "summary.requests"
+      LOG_LEVEL: "info"
+    ports:
+      - "127.0.0.1:3005:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   redpanda-data:
   grafana-data:

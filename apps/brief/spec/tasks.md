@@ -1,5 +1,9 @@
 # Tasks: Brief Service
 
+## Progress
+
+- 2026-02-06: Implemented T001-T003 baseline path (service skeleton, Kafka consumer setup, and SummaryRequest deserialization).
+
 ## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton
