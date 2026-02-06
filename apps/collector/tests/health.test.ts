@@ -4,11 +4,13 @@ import {
   createHealthContext,
   createHandlers,
   getHealthStatus,
-  incrementCheckpointsWritten,
-  incrementError,
-  incrementEventsDlq,
-  incrementEventsPublished,
-  recordLastPoll,
+  incrementCheckpointUpdated,
+  incrementEventsFailed,
+  incrementEventsIngested,
+  observePollDuration,
+  observePollItemsCount,
+  incrementRateLimitBackoff,
+  incrementTopicsExtracted,
 } from "../src/health.js";
 
 function createMockRes() {
@@ -35,7 +37,7 @@ describe("health handler", () => {
     ctx.kafkaHealthy = true;
     ctx.checkpointsHealthy = true;
     ctx.allowlistHealthy = true;
-    incrementEventsPublished(ctx, "rss", 2);
+    incrementEventsIngested(ctx, "rss", 2);
 
     const handler = createHealthHandler(createHandlers(ctx));
 
@@ -53,7 +55,7 @@ describe("health handler", () => {
     handler({ method: "GET", url: "/metrics" } as any, metricsRes as any);
     expect(metricsRes.statusCode).toBe(200);
     expect(metricsRes.body).toContain(
-      'ri_collector_events_published_total{source="rss"} 2'
+      'ri_collector_events_ingested_total{source="rss"} 2'
     );
   });
 
@@ -118,11 +120,13 @@ describe("health handler", () => {
     ctx.checkpointsHealthy = true;
     ctx.allowlistHealthy = true;
 
-    incrementEventsPublished(ctx, "rss", 3);
-    incrementEventsDlq(ctx, "rss", 1);
-    incrementError(ctx, "rss", "transient");
-    incrementCheckpointsWritten(ctx, "rss");
-    recordLastPoll(ctx, "rss");
+    incrementEventsIngested(ctx, "rss", 3);
+    incrementEventsFailed(ctx, "rss", "network_error", 1);
+    incrementCheckpointUpdated(ctx, "rss");
+    incrementRateLimitBackoff(ctx, "rss", 1);
+    incrementTopicsExtracted(ctx, "aws.bedrock", 2);
+    observePollDuration(ctx, "rss", 1.2);
+    observePollItemsCount(ctx, "rss", 3);
 
     const handler = createHealthHandler(createHandlers(ctx));
     const metricsRes = createMockRes();
@@ -130,16 +134,18 @@ describe("health handler", () => {
 
     expect(metricsRes.statusCode).toBe(200);
     expect(metricsRes.body).toContain(
-      'ri_collector_events_dlq_total{source="rss"} 1'
+      'ri_collector_events_failed_total{source="rss",error_type="network_error"} 1'
     );
     expect(metricsRes.body).toContain(
-      'ri_collector_errors_total{source="rss",type="transient"} 1'
+      'ri_collector_checkpoint_updated_total{source="rss"} 1'
     );
     expect(metricsRes.body).toContain(
-      'ri_collector_checkpoints_written_total{source="rss"} 1'
+      'ri_collector_rate_limit_backoff_total{source="rss"} 1'
     );
     expect(metricsRes.body).toContain(
-      'ri_collector_last_poll_timestamp_seconds{source="rss"}'
+      'ri_collector_topics_extracted_total{topic="aws.bedrock"} 2'
     );
+    expect(metricsRes.body).toContain("ri_collector_poll_duration_seconds_bucket");
+    expect(metricsRes.body).toContain("ri_collector_poll_items_count_bucket");
   });
 });

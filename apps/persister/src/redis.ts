@@ -18,12 +18,7 @@ function redactRedisUrl(redisUrl: string): string {
 export async function createRedisClient(
   config: Config,
   logger: pino.Logger
-): Promise<Redis | null> {
-  if (!config.REDIS_URL) {
-    logger.warn("REDIS_URL not configured; seen-cache disabled");
-    return null;
-  }
-
+): Promise<Redis> {
   const redis = new Redis(config.REDIS_URL, {
     maxRetriesPerRequest: 1,
   });
@@ -33,9 +28,9 @@ export async function createRedisClient(
     logger.info({ redisUrl: redactRedisUrl(config.REDIS_URL) }, "Redis connected");
     return redis;
   } catch (error) {
-    logger.warn({ err: error }, "Failed to connect to Redis; continuing without cache");
+    logger.error({ error }, "Failed to connect to Redis");
     redis.disconnect();
-    return null;
+    throw error;
   }
 }
 

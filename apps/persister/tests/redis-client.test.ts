@@ -14,20 +14,6 @@ describe("createRedisClient", () => {
     vi.clearAllMocks();
   });
 
-  it("returns null when REDIS_URL is not configured", async () => {
-    const logger = {
-      info: vi.fn(),
-      warn: vi.fn(),
-    } as any;
-
-    const { createRedisClient } = await import("../src/redis.js");
-    const client = await createRedisClient({ REDIS_URL: "" } as any, logger);
-
-    expect(client).toBeNull();
-    expect(redisMocks.Redis).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith("REDIS_URL not configured; seen-cache disabled");
-  });
-
   it("returns connected redis client when ping succeeds", async () => {
     const redisClient = {
       ping: vi.fn().mockResolvedValue("PONG"),
@@ -37,7 +23,7 @@ describe("createRedisClient", () => {
 
     const logger = {
       info: vi.fn(),
-      warn: vi.fn(),
+      error: vi.fn(),
     } as any;
 
     const { createRedisClient } = await import("../src/redis.js");
@@ -63,7 +49,7 @@ describe("createRedisClient", () => {
 
     const logger = {
       info: vi.fn(),
-      warn: vi.fn(),
+      error: vi.fn(),
     } as any;
 
     const { createRedisClient } = await import("../src/redis.js");
@@ -84,7 +70,7 @@ describe("createRedisClient", () => {
 
     const logger = {
       info: vi.fn(),
-      warn: vi.fn(),
+      error: vi.fn(),
     } as any;
 
     const { createRedisClient } = await import("../src/redis.js");
@@ -96,7 +82,7 @@ describe("createRedisClient", () => {
     );
   });
 
-  it("disconnects and returns null when ping fails", async () => {
+  it("disconnects and throws when ping fails", async () => {
     const error = new Error("ECONNREFUSED");
     const redisClient = {
       ping: vi.fn().mockRejectedValue(error),
@@ -106,17 +92,18 @@ describe("createRedisClient", () => {
 
     const logger = {
       info: vi.fn(),
-      warn: vi.fn(),
+      error: vi.fn(),
     } as any;
 
     const { createRedisClient } = await import("../src/redis.js");
-    const client = await createRedisClient({ REDIS_URL: "redis://cache:6379" } as any, logger);
+    await expect(
+      createRedisClient({ REDIS_URL: "redis://cache:6379" } as any, logger)
+    ).rejects.toThrow("ECONNREFUSED");
 
-    expect(client).toBeNull();
     expect(redisClient.disconnect).toHaveBeenCalledOnce();
-    expect(logger.warn).toHaveBeenCalledWith(
-      { err: error },
-      "Failed to connect to Redis; continuing without cache"
+    expect(logger.error).toHaveBeenCalledWith(
+      { error },
+      "Failed to connect to Redis"
     );
   });
 });

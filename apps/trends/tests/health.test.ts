@@ -16,11 +16,14 @@ import {
   incrementEventsProcessed,
   incrementDuplicatesSkipped,
   incrementSnapshotPublished,
+  incrementBriefTriggered,
+  incrementBriefSkippedStaleData,
   incrementError,
   setConsumerLag,
   setTopicMetrics,
   clearTopicMetrics,
   observeSnapshotDuration,
+  observeBaselineComputeDuration,
   type HealthContext,
 } from "../src/health.js";
 
@@ -149,6 +152,16 @@ describe("trends health", () => {
       expect(ctx.metrics.snapshotPublished.get("60m")).toBe(1);
     });
 
+    it("increments brief trigger counters", () => {
+      incrementBriefTriggered(ctx, "daily");
+      incrementBriefTriggered(ctx, "threshold", 2);
+      incrementBriefSkippedStaleData(ctx, 3);
+
+      expect(ctx.metrics.briefTriggered.get("daily")).toBe(1);
+      expect(ctx.metrics.briefTriggered.get("threshold")).toBe(2);
+      expect(ctx.metrics.briefSkippedStaleData).toBe(3);
+    });
+
     it("increments errors by type", () => {
       incrementError(ctx, "parse_error");
       incrementError(ctx, "parse_error");
@@ -192,6 +205,13 @@ describe("trends health", () => {
       expect(hist.sum).toBeCloseTo(1.55);
     });
 
+    it("records baseline compute duration", () => {
+      observeBaselineComputeDuration(ctx, 0.2);
+      observeBaselineComputeDuration(ctx, 0.8);
+
+      expect(ctx.metrics.baselineComputeDurationSeconds.count).toBe(2);
+    });
+
     it("ignores negative values", () => {
       observeSnapshotDuration(ctx, "15m", -1);
 
@@ -204,15 +224,21 @@ describe("trends health", () => {
     it("outputs Prometheus-compatible text", () => {
       incrementEventsProcessed(ctx, 42);
       incrementDuplicatesSkipped(ctx, 3);
+      incrementBriefTriggered(ctx, "daily", 2);
+      incrementBriefSkippedStaleData(ctx, 1);
       incrementError(ctx, "parse_error", 2);
       setConsumerLag(ctx, 0, 100n);
+      observeBaselineComputeDuration(ctx, 0.4);
 
       const output = formatMetrics(ctx);
 
       expect(output).toContain("ri_trends_events_processed_total 42");
       expect(output).toContain("ri_trends_duplicates_skipped_total 3");
+      expect(output).toContain('ri_trends_brief_triggered_total{type="daily"} 2');
+      expect(output).toContain("ri_trends_brief_skipped_stale_data_total 1");
       expect(output).toContain('ri_trends_errors_total{error_type="parse_error"} 2');
       expect(output).toContain('ri_trends_consumer_lag{partition="0"} 100');
+      expect(output).toContain("ri_trends_baseline_compute_duration_seconds_bucket");
       expect(output).toContain("ri_trends_up");
     });
 

@@ -33,16 +33,20 @@ describe("brief config", () => {
     expect(config.SERVICE_NAME).toBe("brief");
     expect(config.KAFKA_TOPIC_SUMMARY_REQUESTS).toBe("summary.requests");
     expect(config.KAFKA_CONSUMER_GROUP).toBe("brief-generator");
+    expect(config.REDIS_URL).toBe("redis://localhost:6379");
+    expect(config.LLM_DAILY_BUDGET_USD).toBe(5);
   });
 
   it("coerces numeric config values", async () => {
     process.env.PORT = "3100";
+    process.env.LLM_DAILY_BUDGET_USD = "7.5";
     process.env.SHUTDOWN_TIMEOUT_MS = "45000";
 
     const { loadConfig } = await import("../src/config.js");
     const config = loadConfig();
 
     expect(config.PORT).toBe(3100);
+    expect(config.LLM_DAILY_BUDGET_USD).toBe(7.5);
     expect(config.SHUTDOWN_TIMEOUT_MS).toBe(45000);
   });
 

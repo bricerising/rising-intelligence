@@ -22,11 +22,13 @@ import {
   createHealthContext,
   startHealthServer,
   HealthContext,
-  incrementEventsPublished,
-  incrementEventsDlq,
-  incrementError,
-  recordLastPoll,
-  incrementCheckpointsWritten,
+  incrementEventsIngested,
+  incrementEventsFailed,
+  observePollDuration,
+  observePollItemsCount,
+  incrementCheckpointUpdated,
+  incrementRateLimitBackoff,
+  incrementTopicsExtracted,
 } from "./health.js";
 import { CheckpointStore } from "./checkpoint.js";
 import { loadAllowlist, extractTopics, CompiledAllowlist } from "./topics/extractor.js";
@@ -95,6 +97,25 @@ const ADAPTER_FACTORIES: ReadonlyArray<AdapterFactory> = [
       ),
   },
 ];
+
+function mapUnknownErrorType(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "parse_error";
+  }
+
+  const normalized = error.message.toLowerCase();
+  if (normalized.includes("kafka")) {
+    return "kafka_error";
+  }
+  if (
+    normalized.includes("auth")
+    || normalized.includes("unauthorized")
+    || normalized.includes("forbidden")
+  ) {
+    return "auth_error";
+  }
+  return "parse_error";
+}
 
 function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger): SourceAdapter[] {
   const adapters: SourceAdapter[] = [];
@@ -175,6 +196,7 @@ async function runAdapter(
   const backoff = new BackoffManager(adapter.name, adapterLogger);
 
   while (!ctx.shutdownRequested) {
+    const pollStartTime = Date.now();
     try {
       let batchCount = 0;
       let lastCheckpointKey: string | null = null;
@@ -196,6 +218,9 @@ async function runAdapter(
           allowlist
         );
         event.tags = topics;
+        for (const topic of topics) {
+          incrementTopicsExtracted(healthContext, topic);
+        }
 
         if (!event.event_id || !event.text) {
           const dlqEvent: DeadLetterEvent = {
@@ -214,7 +239,7 @@ async function runAdapter(
             serializeDeadLetterEvent(dlqEvent),
             adapterLogger
           );
-          incrementEventsDlq(healthContext, adapter.source);
+          incrementEventsFailed(healthContext, adapter.source, "parse_error");
           continue;
         }
 
@@ -227,7 +252,7 @@ async function runAdapter(
         );
 
         checkpointStore.markSeen(adapter.source, event.event_id);
-        incrementEventsPublished(healthContext, adapter.source);
+        incrementEventsIngested(healthContext, adapter.source);
         healthContext.lastEventAt = new Date();
 
         batchCount++;
@@ -239,7 +264,7 @@ async function runAdapter(
           lastCheckpointKey,
           lastCheckpointValue
         );
-        incrementCheckpointsWritten(healthContext, adapter.source);
+        incrementCheckpointUpdated(healthContext, adapter.source);
       }
 
       healthContext.sourceHealth.set(adapter.name, {
@@ -247,7 +272,8 @@ async function runAdapter(
         last_poll_at: new Date().toISOString(),
         items_fetched: batchCount,
       });
-      recordLastPoll(healthContext, adapter.source);
+      observePollDuration(healthContext, adapter.source, (Date.now() - pollStartTime) / 1000);
+      observePollItemsCount(healthContext, adapter.source, batchCount);
 
       const now = Date.now();
       if (now - ctx.lastSeenCleanupAt > 60 * 60 * 1000) {
@@ -308,13 +334,18 @@ async function runAdapter(
 
       if (ctx.shutdownRequested) break;
       if (isRateLimitError(error)) {
-        incrementError(healthContext, adapter.source, "rate_limit");
+        incrementEventsFailed(healthContext, adapter.source, "rate_limit");
+        incrementRateLimitBackoff(healthContext, adapter.source);
         await backoff.waitRateLimit();
       } else if (isTransientError(error)) {
-        incrementError(healthContext, adapter.source, "transient");
+        incrementEventsFailed(healthContext, adapter.source, "network_error");
         await backoff.waitTransient();
       } else {
-        incrementError(healthContext, adapter.source, "unknown");
+        incrementEventsFailed(
+          healthContext,
+          adapter.source,
+          mapUnknownErrorType(error)
+        );
         await backoff.waitTransient();
       }
     }

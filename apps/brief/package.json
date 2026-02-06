@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@rising-intelligence/shared": "*",
+    "ioredis": "^5.6.1",
     "kafkajs": "^2.2.4",
     "pino": "^9.6.0",
     "zod": "^3.24.1"

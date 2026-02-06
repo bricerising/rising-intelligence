@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import type { Redis } from "ioredis";
 import {
   closeServer,
   serializeError,
@@ -9,9 +10,10 @@ import type pino from "pino";
 import { getConfig } from "./config.js";
 import {
   createHealthContext,
-  incrementConsumed,
+  incrementGeneration,
+  observeGenerationDuration,
   incrementError,
-  incrementMalformed,
+  setBudgetRemainingUsd,
   startHealthServer,
   type HealthContext,
 } from "./health.js";
@@ -21,6 +23,7 @@ import {
   type KafkaConsumerContext,
 } from "./kafka/consumer.js";
 import { deserializeSummaryRequest } from "./deserialize.js";
+import { createRedisClient, disconnectRedis } from "./redis.js";
 
 interface RuntimeContext {
   config: ReturnType<typeof getConfig>;
@@ -28,6 +31,7 @@ interface RuntimeContext {
   healthContext: HealthContext;
   healthServer: Server;
   kafkaContext: KafkaConsumerContext;
+  redis: Redis;
 }
 
 async function initialize(): Promise<RuntimeContext> {
@@ -35,8 +39,15 @@ async function initialize(): Promise<RuntimeContext> {
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
   logger.info({ service: config.SERVICE_NAME }, "Starting brief service");
 
-  const healthContext = createHealthContext();
+  const healthContext = createHealthContext(config.LLM_DAILY_BUDGET_USD);
   const healthServer = startHealthServer(healthContext, logger);
+  setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
+
+  const redis = await createRedisClient(
+    config.REDIS_URL,
+    logger.child({ component: "redis" })
+  );
+  healthContext.redisHealthy = true;
 
   const kafkaContext = await createKafkaConsumer(logger);
   await kafkaContext.consumer.subscribe({
@@ -56,15 +67,18 @@ async function initialize(): Promise<RuntimeContext> {
     healthContext,
     healthServer,
     kafkaContext,
+    redis,
   };
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
   await ctx.kafkaContext.consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
+      const startTime = Date.now();
       if (!message.value) {
-        incrementMalformed(ctx.healthContext);
         incrementError(ctx.healthContext, "parse_error");
+        incrementGeneration(ctx.healthContext, "failure");
+        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         ctx.logger.warn(
           {
             kafkaTopic: topic,
@@ -78,7 +92,8 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
 
       try {
         const request = deserializeSummaryRequest(message.value);
-        incrementConsumed(ctx.healthContext);
+        incrementGeneration(ctx.healthContext, "skipped");
+        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         ctx.logger.info(
           {
             requestId: request.requestId,
@@ -91,8 +106,9 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
           "Summary request consumed"
         );
       } catch (error) {
-        incrementMalformed(ctx.healthContext);
         incrementError(ctx.healthContext, "parse_error");
+        incrementGeneration(ctx.healthContext, "failure");
+        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         ctx.logger.warn(
           {
             kafkaTopic: topic,
@@ -113,6 +129,13 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
     ctx.healthContext.kafkaHealthy = false;
   } catch (error) {
     ctx.logger.warn({ error: serializeError(error) }, "Kafka consumer disconnect failed");
+  }
+
+  try {
+    await disconnectRedis(ctx.redis, ctx.logger);
+    ctx.healthContext.redisHealthy = false;
+  } catch (error) {
+    ctx.logger.warn({ error: serializeError(error) }, "Redis disconnect failed");
   }
 
   try {

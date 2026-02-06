@@ -16,16 +16,21 @@ import { getConfig } from "./config.js";
 import type { TrendWindow } from "./types.js";
 
 const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
+const BRIEF_TRIGGER_TYPES = ["daily", "threshold"] as const;
+export type BriefTriggerType = (typeof BRIEF_TRIGGER_TYPES)[number];
 
 export interface Metrics {
   eventsProcessed: number;
   duplicatesSkipped: number;
   snapshotPublished: Map<TrendWindow, number>;
+  briefTriggered: Map<BriefTriggerType, number>;
+  briefSkippedStaleData: number;
   errors: Map<string, number>;
   consumerLag: Map<number, bigint>;
   topicVolume: Map<string, number>;
   topicScore: Map<string, number>;
   snapshotDurationSeconds: Map<TrendWindow, HistogramState>;
+  baselineComputeDurationSeconds: HistogramState;
 }
 
 export interface HealthContext {
@@ -68,6 +73,8 @@ export function createMetrics(): Metrics {
     eventsProcessed: 0,
     duplicatesSkipped: 0,
     snapshotPublished: new Map(),
+    briefTriggered: new Map(),
+    briefSkippedStaleData: 0,
     errors: new Map(),
     consumerLag: new Map(),
     topicVolume: new Map(),
@@ -76,6 +83,7 @@ export function createMetrics(): Metrics {
       ["15m", createHistogram(DURATION_BUCKETS_SECONDS)],
       ["60m", createHistogram(DURATION_BUCKETS_SECONDS)],
     ]),
+    baselineComputeDurationSeconds: createHistogram(DURATION_BUCKETS_SECONDS),
   };
 }
 
@@ -101,6 +109,19 @@ export function incrementDuplicatesSkipped(ctx: HealthContext, count = 1): void 
 export function incrementSnapshotPublished(ctx: HealthContext, window: TrendWindow, count = 1): void {
   const current = ctx.metrics.snapshotPublished.get(window) ?? 0;
   ctx.metrics.snapshotPublished.set(window, current + count);
+}
+
+export function incrementBriefTriggered(
+  ctx: HealthContext,
+  type: BriefTriggerType,
+  count = 1
+): void {
+  const current = ctx.metrics.briefTriggered.get(type) ?? 0;
+  ctx.metrics.briefTriggered.set(type, current + count);
+}
+
+export function incrementBriefSkippedStaleData(ctx: HealthContext, count = 1): void {
+  ctx.metrics.briefSkippedStaleData += count;
 }
 
 export function incrementError(ctx: HealthContext, errorType: string, count = 1): void {
@@ -150,6 +171,13 @@ export function observeSnapshotDuration(
   observeHistogram(histogram, durationSeconds);
 }
 
+export function observeBaselineComputeDuration(
+  ctx: HealthContext,
+  durationSeconds: number
+): void {
+  observeHistogram(ctx.metrics.baselineComputeDurationSeconds, durationSeconds);
+}
+
 export function getHealthStatus(ctx: HealthContext): HealthStatus {
   const maxLag = getMaxConsumerLag(ctx.metrics.consumerLag);
   const hasLagIssue = maxLag > 5000n;
@@ -194,6 +222,18 @@ export function formatMetrics(ctx: HealthContext): string {
     lines.push(`ri_trends_snapshot_published_total{window="${window}"} ${count}`);
   }
 
+  lines.push("# HELP ri_trends_brief_triggered_total Brief trigger events by type");
+  lines.push("# TYPE ri_trends_brief_triggered_total counter");
+  for (const type of BRIEF_TRIGGER_TYPES) {
+    lines.push(
+      `ri_trends_brief_triggered_total{type="${type}"} ${ctx.metrics.briefTriggered.get(type) ?? 0}`
+    );
+  }
+
+  lines.push("# HELP ri_trends_brief_skipped_stale_data_total Brief triggers skipped due to stale data");
+  lines.push("# TYPE ri_trends_brief_skipped_stale_data_total counter");
+  lines.push(`ri_trends_brief_skipped_stale_data_total ${ctx.metrics.briefSkippedStaleData}`);
+
   lines.push("# HELP ri_trends_errors_total Errors by category");
   lines.push("# TYPE ri_trends_errors_total counter");
   for (const [errorType, count] of ctx.metrics.errors) {
@@ -237,6 +277,14 @@ export function formatMetrics(ctx: HealthContext): string {
     );
     wroteSnapshotDurationMetadata = true;
   }
+
+  lines.push(
+    ...formatHistogram(
+      "ri_trends_baseline_compute_duration_seconds",
+      "Baseline computation duration in seconds",
+      ctx.metrics.baselineComputeDurationSeconds
+    )
+  );
 
   lines.push("# HELP ri_trends_up 1 when service dependencies are healthy");
   lines.push("# TYPE ri_trends_up gauge");

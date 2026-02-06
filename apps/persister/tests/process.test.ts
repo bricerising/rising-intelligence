@@ -467,22 +467,7 @@ describe("persistAndMarkSeen", () => {
     expect(ctx.healthContext.metrics.eventsSkipped.get("duplicate")).toBe(2);
   });
 
-  it("skips Redis when redis is null", async () => {
-    persistMocks.persistBatch.mockResolvedValue({
-      attempted: 1,
-      inserted: 1,
-      duplicates: 0,
-      insertedBySource: new Map([[Source.rss, 1]]),
-    });
-
-    const ctx = createMockContext({ redis: null });
-
-    await persistAndMarkSeen(ctx, [createEvent("rss:1")]);
-
-    expect(redisMocks.markEventsSeen).not.toHaveBeenCalled();
-  });
-
-  it("continues when Redis write fails", async () => {
+  it("throws when Redis write fails", async () => {
     persistMocks.persistBatch.mockResolvedValue({
       attempted: 1,
       inserted: 1,
@@ -493,14 +478,15 @@ describe("persistAndMarkSeen", () => {
 
     const ctx = createMockContext();
 
-    // Should not throw
-    await persistAndMarkSeen(ctx, [createEvent("rss:1")]);
+    await expect(persistAndMarkSeen(ctx, [createEvent("rss:1")])).rejects.toThrow(
+      "Failed to write seen keys to Redis"
+    );
 
     expect(ctx.healthContext.redisHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("redis_error")).toBe(1);
-    expect(ctx.logger.warn).toHaveBeenCalledWith(
+    expect(ctx.logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ error: expect.objectContaining({ message: "READONLY" }) }),
-      "Failed to write seen keys to Redis; continuing"
+      "Failed to write seen keys to Redis"
     );
   });
 

@@ -24,7 +24,7 @@ const ConfigSchema = z.object({
   POSTGRES_USER: z.string().default("rising"),
   POSTGRES_PASSWORD: z.string().optional(),
 
-  REDIS_URL: z.string().optional().default("redis://localhost:6379"),
+  REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
   SEEN_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
 
   CONSUMER_LAG_UPDATE_INTERVAL_MS: z.coerce.number().int().positive().default(15000),

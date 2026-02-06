@@ -81,14 +81,14 @@ describe("persister health", () => {
     expect(metricsRes.body).toContain("ri_persister_batch_size_bucket");
   });
 
-  it("returns degraded when redis is unavailable", () => {
+  it("returns unhealthy when redis is unavailable", () => {
     const ctx = createHealthContext();
     ctx.kafkaHealthy = true;
     ctx.postgresHealthy = true;
     ctx.redisHealthy = false;
 
     const status = getHealthStatus(ctx);
-    expect(status.status).toBe("degraded");
+    expect(status.status).toBe("unhealthy");
     expect(status.checks.redis).toBe("error");
   });
 

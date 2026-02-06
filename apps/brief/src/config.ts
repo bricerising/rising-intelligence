@@ -13,6 +13,9 @@ const ConfigSchema = z.object({
   KAFKA_CONSUMER_GROUP: z.string().default("brief-generator"),
   KAFKA_TOPIC_SUMMARY_REQUESTS: z.string().default("summary.requests"),
 
+  REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
+  LLM_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
+
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
 });
 

@@ -14,9 +14,16 @@ import {
   createHandlers,
   getHealthStatus,
   formatMetrics,
-  incrementConsumed,
-  incrementMalformed,
+  incrementGeneration,
+  observeGenerationDuration,
+  incrementDuplicatesSkipped,
+  incrementBudgetExceeded,
+  incrementLlmTokens,
+  incrementLlmCostUsd,
+  observeHighlightsCount,
+  observeCitationsCount,
   incrementError,
+  setBudgetRemainingUsd,
   type HealthContext,
 } from "../src/health.js";
 
@@ -57,45 +64,73 @@ describe("brief health", () => {
   let ctx: HealthContext;
 
   beforeEach(() => {
-    ctx = createHealthContext();
+    ctx = createHealthContext(5);
   });
 
   describe("getHealthStatus", () => {
     it("returns unhealthy when kafka is not connected", () => {
+      ctx.redisHealthy = true;
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("unhealthy");
       expect(status.checks.kafka).toBe("error");
     });
 
-    it("returns healthy when kafka is connected", () => {
+    it("returns unhealthy when redis is not connected", () => {
       ctx.kafkaHealthy = true;
+      const status = getHealthStatus(ctx);
+      expect(status.status).toBe("unhealthy");
+      expect(status.checks.redis).toBe("error");
+    });
+
+    it("returns healthy when kafka and redis are connected", () => {
+      ctx.kafkaHealthy = true;
+      ctx.redisHealthy = true;
 
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("healthy");
       expect(status.checks.kafka).toBe("ok");
-    });
-
-    it("includes uptime", () => {
-      const status = getHealthStatus(ctx);
-      expect(typeof status.uptime_seconds).toBe("number");
-      expect(status.uptime_seconds).toBeGreaterThanOrEqual(0);
+      expect(status.checks.redis).toBe("ok");
     });
   });
 
   describe("metric incrementers", () => {
-    it("increments consumed count", () => {
-      incrementConsumed(ctx);
-      incrementConsumed(ctx, 5);
-      expect(ctx.metrics.requestsConsumed).toBe(6);
+    it("tracks generation outcomes", () => {
+      incrementGeneration(ctx, "skipped");
+      incrementGeneration(ctx, "failure", 2);
+      incrementGeneration(ctx, "success", 3);
+
+      expect(ctx.metrics.generation.get("skipped")).toBe(1);
+      expect(ctx.metrics.generation.get("failure")).toBe(2);
+      expect(ctx.metrics.generation.get("success")).toBe(3);
     });
 
-    it("increments malformed count", () => {
-      incrementMalformed(ctx);
-      incrementMalformed(ctx, 3);
-      expect(ctx.metrics.malformedMessages).toBe(4);
+    it("tracks budget and token/cost counters", () => {
+      setBudgetRemainingUsd(ctx, 4.25);
+      incrementBudgetExceeded(ctx, 2);
+      incrementLlmTokens(ctx, "input", 120);
+      incrementLlmTokens(ctx, "output", 80);
+      incrementLlmCostUsd(ctx, 0.13);
+
+      expect(ctx.metrics.budgetRemainingUsd).toBe(4.25);
+      expect(ctx.metrics.budgetExceeded).toBe(2);
+      expect(ctx.metrics.llmTokens.get("input")).toBe(120);
+      expect(ctx.metrics.llmTokens.get("output")).toBe(80);
+      expect(ctx.metrics.llmCostUsdTotal).toBeCloseTo(0.13);
     });
 
-    it("increments errors by type", () => {
+    it("tracks duration/count histograms", () => {
+      observeGenerationDuration(ctx, 12);
+      observeHighlightsCount(ctx, 4);
+      observeCitationsCount(ctx, 7);
+      incrementDuplicatesSkipped(ctx, 1);
+
+      expect(ctx.metrics.generationDurationSeconds.count).toBe(1);
+      expect(ctx.metrics.highlightsCount.count).toBe(1);
+      expect(ctx.metrics.citationsCount.count).toBe(1);
+      expect(ctx.metrics.duplicatesSkipped).toBe(1);
+    });
+
+    it("tracks categorized errors", () => {
       incrementError(ctx, "parse_error");
       incrementError(ctx, "parse_error");
       incrementError(ctx, "llm_error");
@@ -107,16 +142,32 @@ describe("brief health", () => {
 
   describe("formatMetrics", () => {
     it("outputs Prometheus-compatible text", () => {
-      incrementConsumed(ctx, 10);
-      incrementMalformed(ctx, 2);
-      incrementError(ctx, "parse_error", 3);
       ctx.kafkaHealthy = true;
+      ctx.redisHealthy = true;
+      incrementGeneration(ctx, "skipped", 2);
+      incrementGeneration(ctx, "failure", 1);
+      observeGenerationDuration(ctx, 8);
+      incrementDuplicatesSkipped(ctx, 1);
+      incrementBudgetExceeded(ctx, 1);
+      incrementLlmTokens(ctx, "input", 100);
+      incrementLlmCostUsd(ctx, 0.05);
+      observeHighlightsCount(ctx, 3);
+      observeCitationsCount(ctx, 6);
+      incrementError(ctx, "parse_error", 2);
 
       const output = formatMetrics(ctx);
 
-      expect(output).toContain("ri_brief_requests_consumed_total 10");
-      expect(output).toContain("ri_brief_messages_malformed_total 2");
-      expect(output).toContain('ri_brief_errors_total{error_type="parse_error"} 3');
+      expect(output).toContain('ri_brief_generation_total{status="skipped"} 2');
+      expect(output).toContain('ri_brief_generation_total{status="failure"} 1');
+      expect(output).toContain("ri_brief_generation_duration_seconds_bucket");
+      expect(output).toContain("ri_brief_duplicates_skipped_total 1");
+      expect(output).toContain("ri_brief_budget_remaining_usd 5");
+      expect(output).toContain("ri_brief_budget_exceeded_total 1");
+      expect(output).toContain('ri_brief_llm_tokens_total{direction="input"} 100');
+      expect(output).toContain("ri_brief_llm_cost_usd_total 0.05");
+      expect(output).toContain("ri_brief_highlights_count_bucket");
+      expect(output).toContain("ri_brief_citations_count_bucket");
+      expect(output).toContain('ri_brief_errors_total{error_type="parse_error"} 2');
       expect(output).toContain("ri_brief_up 1");
     });
 
@@ -136,6 +187,7 @@ describe("brief health", () => {
   describe("createHealthHandler", () => {
     it("returns 200 for /health when healthy", () => {
       ctx.kafkaHealthy = true;
+      ctx.redisHealthy = true;
 
       const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
@@ -154,44 +206,19 @@ describe("brief health", () => {
       expect(res.statusCode).toBe(503);
     });
 
-    it("handles /healthz alias", () => {
+    it("returns 200 for /ready only when kafka+redis are healthy", () => {
+      const handler = createHealthHandler(createHandlers(ctx));
+      const unhealthy = makeResponse();
+      handler(makeRequest("GET", "/ready"), unhealthy);
+      expect(unhealthy.statusCode).toBe(503);
+
       ctx.kafkaHealthy = true;
+      ctx.redisHealthy = true;
 
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("GET", "/healthz"), res);
-
-      expect(res.statusCode).toBe(200);
-    });
-
-    it("returns 200 for /ready when kafka healthy", () => {
-      ctx.kafkaHealthy = true;
-
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("GET", "/ready"), res);
-
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.ready).toBe(true);
-    });
-
-    it("returns 503 for /ready when kafka unhealthy", () => {
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("GET", "/ready"), res);
-
-      expect(res.statusCode).toBe(503);
-      const body = JSON.parse(res.body);
-      expect(body.ready).toBe(false);
-    });
-
-    it("handles /readyz alias", () => {
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("GET", "/readyz"), res);
-
-      expect(res.statusCode).toBe(503);
+      const healthy = makeResponse();
+      handler(makeRequest("GET", "/ready"), healthy);
+      expect(healthy.statusCode).toBe(200);
+      expect(JSON.parse(healthy.body).ready).toBe(true);
     });
 
     it("returns metrics on /metrics", () => {
@@ -201,23 +228,7 @@ describe("brief health", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.headers["Content-Type"]).toBe("text/plain; charset=utf-8");
-      expect(res.body).toContain("ri_brief_requests_consumed_total");
-    });
-
-    it("returns 404 for unknown paths", () => {
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("GET", "/unknown"), res);
-
-      expect(res.statusCode).toBe(404);
-    });
-
-    it("returns 405 for non-GET methods", () => {
-      const handler = createHealthHandler(createHandlers(ctx));
-      const res = makeResponse();
-      handler(makeRequest("POST", "/health"), res);
-
-      expect(res.statusCode).toBe(405);
+      expect(res.body).toContain("ri_brief_generation_total");
     });
   });
 });

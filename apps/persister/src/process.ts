@@ -26,6 +26,16 @@ import { nowSeconds, toBigInt } from "./utils.js";
 
 const CIRCUIT_PAUSE_HEARTBEAT_INTERVAL_MS = 2000;
 
+class RedisWriteFailure extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Failed to write seen keys to Redis");
+    this.name = "RedisWriteFailure";
+    this.cause = cause;
+  }
+}
+
 async function waitWithHeartbeats(
   waitMs: number,
   heartbeat: () => Promise<void>
@@ -46,7 +56,7 @@ export interface PersisterContext {
   healthContext: HealthContext;
   healthServer: Server;
   prisma: PrismaClient;
-  redis: Redis | null;
+  redis: Redis;
   kafkaContext: KafkaConsumerContext;
   circuitBreaker: PostgresCircuitBreaker;
   lagWriteTimestamps: Map<string, number>;
@@ -68,10 +78,6 @@ export async function persistAndMarkSeen(
     incrementEventsSkipped(ctx.healthContext, "duplicate", result.duplicates);
   }
 
-  if (!ctx.redis) {
-    return;
-  }
-
   const redisStart = Date.now();
   try {
     await markEventsSeen(ctx.redis, events, ctx.config.SEEN_TTL_SECONDS);
@@ -80,10 +86,11 @@ export async function persistAndMarkSeen(
   } catch (error) {
     incrementError(ctx.healthContext, "redis_error");
     ctx.healthContext.redisHealthy = false;
-    ctx.logger.warn(
+    ctx.logger.error(
       { error: serializeError(error) },
-      "Failed to write seen keys to Redis; continuing"
+      "Failed to write seen keys to Redis"
     );
+    throw new RedisWriteFailure(error);
   }
 }
 
@@ -194,6 +201,15 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
 
     ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
   } catch (error) {
+    if (error instanceof RedisWriteFailure) {
+      // Postgres succeeded before Redis failed, so keep the circuit closed.
+      ctx.circuitBreaker.recordSuccess();
+      ctx.healthContext.postgresHealthy = true;
+      ctx.healthContext.redisHealthy = false;
+      ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
+      throw error;
+    }
+
     const opened = ctx.circuitBreaker.recordFailure();
     ctx.healthContext.postgresHealthy = false;
     ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();

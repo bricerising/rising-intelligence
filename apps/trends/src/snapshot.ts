@@ -9,6 +9,7 @@ import type { HealthContext } from "./health.js";
 import {
   clearTopicMetrics,
   incrementSnapshotPublished,
+  observeBaselineComputeDuration,
   observeSnapshotDuration,
   setTopicMetrics,
 } from "./health.js";
@@ -22,6 +23,7 @@ import {
 import { publishSnapshot } from "./kafka/producer.js";
 
 const TOPIC_METRIC_LIMIT = 30;
+const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
 function mapWindowToProto(window: TrendWindow): number {
   switch (window) {
@@ -52,6 +54,10 @@ function parseCount(value: string | null): number {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getDayOfWeekKey(timestamp: Date): string {
+  return DOW[timestamp.getUTCDay()];
 }
 
 function computeAcceleration(volume: number, prevVolume: number): number {
@@ -104,16 +110,20 @@ async function computeWindowMetrics(
 ): Promise<{ metrics: TopicSnapshotMetric[]; countsByTopic: Map<string, number> }> {
   const metrics: TopicSnapshotMetric[] = [];
   const countsByTopic = new Map<string, number>();
+  const dayOfWeek = getDayOfWeekKey(new Date(bucket));
 
   for (const topic of allowlist.topics) {
-    const [currentRaw, previousRaw, evidenceEventIds] = await Promise.all([
+    const [currentRaw, previousRaw, baselineRaw, evidenceEventIds] = await Promise.all([
       redis.get(getCounterKey(window, topic.key, bucket)),
       redis.get(getPreviousCounterKey(window, topic.key)),
+      redis.get(`baseline:${window}:${topic.key}:${dayOfWeek}`),
       redis.zrevrange(getEvidenceKey(window, topic.key), 0, maxEvidencePerTopic - 1),
     ]);
 
     const volume = parseCount(currentRaw);
     const prevVolume = parseCount(previousRaw);
+    const baselineVolume = parseCount(baselineRaw);
+    const baselineDelta = baselineVolume > 0 ? (volume - baselineVolume) / baselineVolume : 0;
     const acceleration = computeAcceleration(volume, prevVolume);
     const score = computeScore(volume, acceleration);
 
@@ -124,8 +134,8 @@ async function computeWindowMetrics(
       volume,
       prevVolume,
       acceleration,
-      baselineVolume: 0,
-      baselineDelta: 0,
+      baselineVolume,
+      baselineDelta,
       score,
       evidenceEventIds,
     });
@@ -146,12 +156,17 @@ async function publishWindowSnapshot(
   const generatedAtIso = generatedAt.toISOString();
   const bucket = getBucketStart(generatedAt, window);
 
+  const baselineComputeStart = Date.now();
   const { metrics, countsByTopic } = await computeWindowMetrics(
     ctx.redis,
     ctx.allowlist,
     window,
     bucket,
     ctx.config.MAX_EVIDENCE_PER_TOPIC
+  );
+  observeBaselineComputeDuration(
+    ctx.healthContext,
+    (Date.now() - baselineComputeStart) / 1000
   );
 
   metrics.sort((left, right) => {

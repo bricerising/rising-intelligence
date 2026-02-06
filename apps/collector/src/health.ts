@@ -2,10 +2,17 @@ import type { Server } from "node:http";
 import type { Logger } from "pino";
 import {
   startHealthServer as startSharedHealthServer,
+  createHistogram,
+  observeHistogram,
+  formatHistogram,
   quoteMetricLabelValue,
   type HealthHandlers,
+  type HistogramState,
 } from "@rising-intelligence/shared";
 import { getConfig } from "./config.js";
+
+const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
+const COUNT_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
 
 export interface HealthStatus {
   status: "healthy" | "degraded" | "unhealthy";
@@ -27,22 +34,24 @@ export interface SourceHealth {
 }
 
 export interface Metrics {
-  eventsPublished: Map<string, number>;
-  eventsDlq: Map<string, number>;
-  pollDuration: Map<string, number[]>;
-  errors: Map<string, Map<string, number>>;
-  lastPollTimestamp: Map<string, number>;
-  checkpointsWritten: Map<string, number>;
+  eventsIngested: Map<string, number>;
+  eventsFailed: Map<string, Map<string, number>>;
+  pollDurationSeconds: Map<string, HistogramState>;
+  pollItemsCount: Map<string, HistogramState>;
+  checkpointUpdated: Map<string, number>;
+  rateLimitBackoff: Map<string, number>;
+  topicsExtracted: Map<string, number>;
 }
 
 export function createMetrics(): Metrics {
   return {
-    eventsPublished: new Map(),
-    eventsDlq: new Map(),
-    pollDuration: new Map(),
-    errors: new Map(),
-    lastPollTimestamp: new Map(),
-    checkpointsWritten: new Map(),
+    eventsIngested: new Map(),
+    eventsFailed: new Map(),
+    pollDurationSeconds: new Map(),
+    pollItemsCount: new Map(),
+    checkpointUpdated: new Map(),
+    rateLimitBackoff: new Map(),
+    topicsExtracted: new Map(),
   };
 }
 
@@ -65,6 +74,21 @@ export function createHealthContext(): HealthContext {
     sourceHealth: new Map(),
     metrics: createMetrics(),
   };
+}
+
+function getOrCreateHistogram(
+  map: Map<string, HistogramState>,
+  source: string,
+  buckets: number[]
+): HistogramState {
+  const existing = map.get(source);
+  if (existing) {
+    return existing;
+  }
+
+  const created = createHistogram(buckets);
+  map.set(source, created);
+  return created;
 }
 
 export function getHealthStatus(ctx: HealthContext): HealthStatus {
@@ -101,43 +125,81 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
 export function formatMetrics(ctx: HealthContext): string {
   const lines: string[] = [];
 
-  lines.push("# HELP ri_collector_events_published_total Events published to Kafka");
-  lines.push("# TYPE ri_collector_events_published_total counter");
-  for (const [source, count] of ctx.metrics.eventsPublished) {
-    lines.push(`ri_collector_events_published_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
+  lines.push("# HELP ri_collector_events_ingested_total Events successfully published to Kafka");
+  lines.push("# TYPE ri_collector_events_ingested_total counter");
+  for (const [source, count] of ctx.metrics.eventsIngested) {
+    lines.push(
+      `ri_collector_events_ingested_total{source="${quoteMetricLabelValue(source)}"} ${count}`
+    );
   }
 
-  lines.push("# HELP ri_collector_events_dlq_total Events sent to DLQ");
-  lines.push("# TYPE ri_collector_events_dlq_total counter");
-  for (const [source, count] of ctx.metrics.eventsDlq) {
-    lines.push(`ri_collector_events_dlq_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
-  }
-
-  lines.push("# HELP ri_collector_errors_total Errors by source and type");
-  lines.push("# TYPE ri_collector_errors_total counter");
-  for (const [source, errorMap] of ctx.metrics.errors) {
+  lines.push("# HELP ri_collector_events_failed_total Events that failed to ingest");
+  lines.push("# TYPE ri_collector_events_failed_total counter");
+  for (const [source, errorMap] of ctx.metrics.eventsFailed) {
     for (const [errorType, count] of errorMap) {
-      lines.push(`ri_collector_errors_total{source="${quoteMetricLabelValue(source)}",type="${quoteMetricLabelValue(errorType)}"} ${count}`);
+      lines.push(
+        `ri_collector_events_failed_total{source="${quoteMetricLabelValue(source)}",error_type="${quoteMetricLabelValue(errorType)}"} ${count}`
+      );
     }
   }
 
-  lines.push("# HELP ri_collector_last_poll_timestamp_seconds Unix timestamp of last successful poll");
-  lines.push("# TYPE ri_collector_last_poll_timestamp_seconds gauge");
-  for (const [source, timestamp] of ctx.metrics.lastPollTimestamp) {
-    lines.push(`ri_collector_last_poll_timestamp_seconds{source="${quoteMetricLabelValue(source)}"} ${Math.floor(timestamp / 1000)}`);
+  let wrotePollDurationMetadata = false;
+  for (const [source, histogram] of ctx.metrics.pollDurationSeconds) {
+    lines.push(
+      ...formatHistogram(
+        "ri_collector_poll_duration_seconds",
+        "Poll cycle duration in seconds",
+        histogram,
+        { source },
+        !wrotePollDurationMetadata
+      )
+    );
+    wrotePollDurationMetadata = true;
   }
 
-  lines.push("# HELP ri_collector_checkpoints_written_total Checkpoint writes");
-  lines.push("# TYPE ri_collector_checkpoints_written_total counter");
-  for (const [source, count] of ctx.metrics.checkpointsWritten) {
-    lines.push(`ri_collector_checkpoints_written_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
+  let wrotePollItemsMetadata = false;
+  for (const [source, histogram] of ctx.metrics.pollItemsCount) {
+    lines.push(
+      ...formatHistogram(
+        "ri_collector_poll_items_count",
+        "Items returned per poll cycle",
+        histogram,
+        { source },
+        !wrotePollItemsMetadata
+      )
+    );
+    wrotePollItemsMetadata = true;
   }
 
-  lines.push("# HELP ri_collector_uptime_seconds Service uptime in seconds");
-  lines.push("# TYPE ri_collector_uptime_seconds gauge");
-  lines.push(`ri_collector_uptime_seconds ${Math.floor((Date.now() - ctx.startTime) / 1000)}`);
+  lines.push("# HELP ri_collector_checkpoint_updated_total Checkpoint updates");
+  lines.push("# TYPE ri_collector_checkpoint_updated_total counter");
+  for (const [source, count] of ctx.metrics.checkpointUpdated) {
+    lines.push(
+      `ri_collector_checkpoint_updated_total{source="${quoteMetricLabelValue(source)}"} ${count}`
+    );
+  }
 
-  return lines.join("\n") + "\n";
+  lines.push("# HELP ri_collector_rate_limit_backoff_total Times rate limits triggered backoff");
+  lines.push("# TYPE ri_collector_rate_limit_backoff_total counter");
+  for (const [source, count] of ctx.metrics.rateLimitBackoff) {
+    lines.push(
+      `ri_collector_rate_limit_backoff_total{source="${quoteMetricLabelValue(source)}"} ${count}`
+    );
+  }
+
+  lines.push("# HELP ri_collector_topics_extracted_total Topics extracted by key");
+  lines.push("# TYPE ri_collector_topics_extracted_total counter");
+  for (const [topic, count] of ctx.metrics.topicsExtracted) {
+    lines.push(
+      `ri_collector_topics_extracted_total{topic="${quoteMetricLabelValue(topic)}"} ${count}`
+    );
+  }
+
+  lines.push("# HELP ri_collector_up 1 when service dependencies are healthy");
+  lines.push("# TYPE ri_collector_up gauge");
+  lines.push(`ri_collector_up ${getHealthStatus(ctx).status === "unhealthy" ? 0 : 1}`);
+
+  return `${lines.join("\n")}\n`;
 }
 
 export function createHandlers(ctx: HealthContext): HealthHandlers {
@@ -160,32 +222,59 @@ export function startHealthServer(ctx: HealthContext, logger: Logger): Server {
   return startSharedHealthServer(config.PORT, createHandlers(ctx), logger);
 }
 
-// Metric helpers
-export function incrementEventsPublished(ctx: HealthContext, source: string, count = 1): void {
-  const current = ctx.metrics.eventsPublished.get(source) ?? 0;
-  ctx.metrics.eventsPublished.set(source, current + count);
+export function incrementEventsIngested(ctx: HealthContext, source: string, count = 1): void {
+  const current = ctx.metrics.eventsIngested.get(source) ?? 0;
+  ctx.metrics.eventsIngested.set(source, current + count);
 }
 
-export function incrementEventsDlq(ctx: HealthContext, source: string, count = 1): void {
-  const current = ctx.metrics.eventsDlq.get(source) ?? 0;
-  ctx.metrics.eventsDlq.set(source, current + count);
-}
-
-export function incrementError(ctx: HealthContext, source: string, errorType: string): void {
-  let errorMap = ctx.metrics.errors.get(source);
+export function incrementEventsFailed(
+  ctx: HealthContext,
+  source: string,
+  errorType: string,
+  count = 1
+): void {
+  let errorMap = ctx.metrics.eventsFailed.get(source);
   if (!errorMap) {
     errorMap = new Map();
-    ctx.metrics.errors.set(source, errorMap);
+    ctx.metrics.eventsFailed.set(source, errorMap);
   }
   const current = errorMap.get(errorType) ?? 0;
-  errorMap.set(errorType, current + 1);
+  errorMap.set(errorType, current + count);
 }
 
-export function recordLastPoll(ctx: HealthContext, source: string): void {
-  ctx.metrics.lastPollTimestamp.set(source, Date.now());
+export function observePollDuration(
+  ctx: HealthContext,
+  source: string,
+  durationSeconds: number
+): void {
+  const histogram = getOrCreateHistogram(
+    ctx.metrics.pollDurationSeconds,
+    source,
+    DURATION_BUCKETS_SECONDS
+  );
+  observeHistogram(histogram, durationSeconds);
 }
 
-export function incrementCheckpointsWritten(ctx: HealthContext, source: string): void {
-  const current = ctx.metrics.checkpointsWritten.get(source) ?? 0;
-  ctx.metrics.checkpointsWritten.set(source, current + 1);
+export function observePollItemsCount(ctx: HealthContext, source: string, count: number): void {
+  const histogram = getOrCreateHistogram(
+    ctx.metrics.pollItemsCount,
+    source,
+    COUNT_BUCKETS
+  );
+  observeHistogram(histogram, count);
+}
+
+export function incrementCheckpointUpdated(ctx: HealthContext, source: string, count = 1): void {
+  const current = ctx.metrics.checkpointUpdated.get(source) ?? 0;
+  ctx.metrics.checkpointUpdated.set(source, current + count);
+}
+
+export function incrementRateLimitBackoff(ctx: HealthContext, source: string, count = 1): void {
+  const current = ctx.metrics.rateLimitBackoff.get(source) ?? 0;
+  ctx.metrics.rateLimitBackoff.set(source, current + count);
+}
+
+export function incrementTopicsExtracted(ctx: HealthContext, topic: string, count = 1): void {
+  const current = ctx.metrics.topicsExtracted.get(topic) ?? 0;
+  ctx.metrics.topicsExtracted.set(topic, current + count);
 }

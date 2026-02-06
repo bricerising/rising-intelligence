@@ -38,7 +38,7 @@ async function initialize(): Promise<PersisterContext> {
   logger.info("Postgres connected");
 
   const redis = await createRedisClient(config, logger.child({ component: "redis" }));
-  healthContext.redisHealthy = redis !== null;
+  healthContext.redisHealthy = true;
 
   const kafkaContext = await createKafkaConsumer(logger.child({ component: "kafka" }));
   await kafkaContext.consumer.subscribe({

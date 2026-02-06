@@ -107,9 +107,9 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
   const hasLagIssue = maxLag > 1000n;
 
   let status: "healthy" | "degraded" | "unhealthy";
-  if (!ctx.kafkaHealthy || !ctx.postgresHealthy) {
+  if (!ctx.kafkaHealthy || !ctx.postgresHealthy || !ctx.redisHealthy) {
     status = "unhealthy";
-  } else if (!ctx.redisHealthy || hasLagIssue || ctx.circuitOpen) {
+  } else if (hasLagIssue || ctx.circuitOpen) {
     status = "degraded";
   } else {
     status = "healthy";
@@ -194,7 +194,7 @@ export function createHandlers(ctx: HealthContext): HealthHandlers {
       return { status: health.status, body: health };
     },
     isReady() {
-      const ready = ctx.kafkaHealthy && ctx.postgresHealthy && !ctx.circuitOpen;
+      const ready = ctx.kafkaHealthy && ctx.postgresHealthy && ctx.redisHealthy && !ctx.circuitOpen;
       return {
         ready,
         body: {
@@ -202,6 +202,7 @@ export function createHandlers(ctx: HealthContext): HealthHandlers {
           circuit_open: ctx.circuitOpen,
           kafka: ctx.kafkaHealthy,
           postgres: ctx.postgresHealthy,
+          redis: ctx.redisHealthy,
         },
       };
     },
