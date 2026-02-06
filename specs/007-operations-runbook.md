@@ -311,7 +311,7 @@ docker compose exec redis redis-cli KEYS "dedup:*" | xargs docker compose exec r
 ### Run Retention Cleanup Manually
 
 ```bash
-docker compose run --rm db npm run retention:cleanup
+npm run retention:cleanup
 ```
 
 Or directly in Postgres:

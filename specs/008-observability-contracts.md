@@ -256,7 +256,7 @@ All services instrument these operations:
 
 | Alert | Condition | For |
 |-------|-----------|-----|
-| ServiceDown | `ri_{service}_up == 0` | 5m |
+| ServiceDown | `ri_collector_up == 0 OR ri_persister_up == 0 OR ri_trends_up == 0 OR ri_brief_up == 0` | 5m |
 | KafkaUnavailable | Kafka connection errors > 0 for all services | 2m |
 | PostgresUnavailable | Postgres connection errors > 0 for Persister/Trends/Brief | 2m |
 | NoBriefToday | No successful brief in 24h AND failures > 0 | 1h |
@@ -265,9 +265,9 @@ All services instrument these operations:
 
 | Alert | Condition | For |
 |-------|-----------|-----|
-| HighConsumerLag | `ri_{service}_consumer_lag > 5000` | 15m |
+| HighConsumerLag | `ri_persister_consumer_lag > 5000 OR ri_trends_consumer_lag > 5000` | 15m |
 | BriefGenerationFailed | `increase(ri_brief_generation_total{status="failure"}[1h]) > 0` | 0m |
-| HighErrorRate | `rate(ri_{service}_errors_total[5m]) > 0.1` | 10m |
+| HighErrorRate | `rate(ri_collector_events_failed_total[5m]) > 0.1 OR rate(ri_persister_errors_total[5m]) > 0.1 OR rate(ri_trends_errors_total[5m]) > 0.1 OR rate(ri_brief_errors_total[5m]) > 0.1` | 10m |
 | LLMBudgetLow | `ri_brief_budget_remaining_usd < 0.10` | 0m |
 | RetentionCleanupFailed | No cleanup in 48h | 0m |
 | RedisMemoryHigh | Redis used_memory > 80% maxmemory | 5m |
@@ -284,8 +284,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Service {{ $labels.service }} is down"
-          description: "Service has been unhealthy for more than 5 minutes"
+          summary: "One or more services are down"
+          description: "At least one service has been unhealthy for more than 5 minutes"
 
       - alert: HighConsumerLag
         expr: ri_persister_consumer_lag > 5000 or ri_trends_consumer_lag > 5000
@@ -293,8 +293,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "High consumer lag for {{ $labels.job }}"
-          description: "Consumer lag is {{ $value }} messages"
+          summary: "High consumer lag detected"
+          description: "Persister or Trends lag has exceeded the threshold"
 
       - alert: BriefGenerationFailed
         expr: increase(ri_brief_generation_total{status="failure"}[1h]) > 0

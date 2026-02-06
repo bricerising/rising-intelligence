@@ -52,7 +52,7 @@ Test service logic with real Redis/Postgres but mocked Kafka and external APIs.
 
 ### Level 3: End-to-End Tests
 
-Full pipeline tests with all infrastructure. Verify data flows correctly from ingestion to brief.
+Planned full-pipeline tests with all infrastructure. Verify data flows correctly from ingestion to brief once the dedicated E2E suite lands.
 
 | Scenario | What to Verify |
 |----------|----------------|
@@ -63,9 +63,9 @@ Full pipeline tests with all infrastructure. Verify data flows correctly from in
 
 **Infrastructure**: Full Docker Compose stack.
 
-**Location**: `tests/e2e/`
+**Location**: `tests/e2e/` (planned; create alongside first pipeline scenario)
 
-**Run**: `npm run test:e2e`
+**Run**: `docker compose -f docker-compose.test.yml --profile e2e up -d && npm test --workspaces --if-present`
 
 ## Test Harness Architecture
 
@@ -390,7 +390,7 @@ jobs:
       - uses: actions/setup-node@v4
       - run: docker compose -f docker-compose.test.yml --profile e2e up -d
       - run: npm ci
-      - run: npm run test:e2e
+      - run: npm test --workspaces --if-present
       - run: docker compose -f docker-compose.test.yml down
 ```
 

@@ -63,12 +63,12 @@ prev:60m:aws.bedrock = 156
 
 ### 3. Baseline Cache (Optional)
 
-Caches 7-day baseline values computed from Postgres to avoid repeated queries.
+Caches 30-day baseline values (day-of-week + hour aware) computed from Postgres to avoid repeated queries.
 
-**Key pattern**: `baseline:{window}:{topic}:{day_of_week}`
+**Key pattern**: `baseline:{window}:{topic}:{day_of_week}:{hour_utc}`
 
 ```
-baseline:60m:aws.bedrock:wed = 145
+baseline:60m:aws.bedrock:3:14 = 145
 ```
 
 **TTL**: 24 hours (recomputed daily from Postgres)

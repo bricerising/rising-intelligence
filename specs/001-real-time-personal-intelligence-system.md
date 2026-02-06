@@ -274,7 +274,7 @@ export interface TopicMetrics {
   volume: number; // count in window
   prev_volume?: number; // previous equal-sized window
   acceleration?: number; // e.g., (volume - prev_volume) / max(prev_volume, 1)
-  baseline_volume?: number; // e.g., 7d moving average for that window slot
+  baseline_volume?: number; // e.g., 30d day-of-week/hour median for that window slot
   baseline_delta?: number; // e.g., (volume - baseline) / max(baseline, 1)
 
   score: number; // normalized 0..10 (or 0..100), configurable
@@ -555,11 +555,11 @@ discovery:
 3. New events are tagged with the new topic
 4. Historical events in Postgres remain unchanged
 5. Trend baseline starts accumulating from day 1 of the new topic
-6. After 7+ days, baselines become meaningful
+6. After 30+ days, baselines become robust (with day-of-week/hour coverage)
 
 **What this means for briefs**:
 - A newly added topic may spike immediately (no baseline to compare against)
-- The Brief service should note when a topic has < 7 days of data: "New topic, limited historical context"
+- The Brief service should note when a topic has < 30 days of data: "New topic, limited historical context"
 
 **Optional: Query-Time Topic Matching**
 
@@ -708,7 +708,7 @@ The system uses **event time** (from `fetched_at`) for window assignment, not pr
 **Window alignment**: Buckets align to clock time:
 - 15m windows: :00, :15, :30, :45
 - 60m windows: :00
-- 24h windows: midnight UTC (or configured timezone)
+- 24h windows: midnight UTC
 
 **Late arrivals**: Events arriving after their window has closed are counted in the window they belong to, but may not affect already-published snapshots. The next snapshot will include them.
 
@@ -814,7 +814,7 @@ During events, baseline is multiplied by adjustment factor to avoid false "trend
 
 **Caching**:
 - Baselines are computed daily (not per-snapshot)
-- Cached in Redis: `baseline:{topic}:{window}:{dayOfWeek}`
+- Cached in Redis: `baseline:{window}:{topic}:{day_of_week}:{hour_utc}`
 - TTL: 25 hours (recomputed daily)
 
 **Metrics**:
@@ -990,7 +990,7 @@ function validateCollectorHealth(): HealthStatus {
 
 ### Triggering
 
-- **Daily**: Trends service publishes a `summary.requests` message at a fixed local time (e.g., 17:00), including last 24h + last 60m context. **Only if data freshness check passes.**
+- **Daily**: Trends service publishes a `summary.requests` message at a fixed UTC time (e.g., 17:00 UTC), including last 24h + last 60m context. **Only if data freshness check passes.**
 - **Threshold** (optional): Trends service publishes a request if any topic exceeds alert threshold, requesting a short "flash brief". **Only if data freshness check passes.**
 
 ### SummaryRequest format (MVP)
@@ -1383,10 +1383,10 @@ Once implemented, provide a minimal set of commands/docs to verify locally:
 ## Milestones (suggested)
 
 - **M0 (Local infra)**: Docker Compose brings up Kafka/Redpanda + Grafana + Loki.
-- **M1 (MVP ingestion)**: RSS + Hacker News + Reddit → `events.raw` (+ Loki mirror).
+- **M1 (MVP ingestion)**: RSS + Hacker News + Reddit → `events.raw`.
 - **M2 (MVP trends)**: allowlist topics + `15m/60m` windows + `trends.snapshots` output.
 - **M3 (MVP daily brief)**: LLM summarizer consumes top trends and outputs a `Brief`.
-- **M4 (Alerts + baselines)**: 7-day baseline, alert rules, and “flash brief” on spikes.
+- **M4 (Alerts + baselines)**: 30-day baseline, alert rules, and “flash brief” on spikes.
 - **M5 (Quality upgrades)**: better entity extraction, topic aliasing, suppression rules, and source diversity in evidence selection.
 
 ## Open Questions / Decisions

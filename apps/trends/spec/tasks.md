@@ -76,7 +76,7 @@
 
 ### T014: Daily brief trigger
 
-- **Acceptance**: At configured local time, check freshness and publish `SummaryRequest`.
+- **Acceptance**: At configured UTC time, check freshness and publish `SummaryRequest`.
 
 ### T015: Evidence retrieval
 

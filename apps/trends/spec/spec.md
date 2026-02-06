@@ -63,8 +63,8 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 - **FR-003**: Service MUST publish `TrendSnapshot` to `trends.snapshots` (Kafka).
 - **FR-004**: Service MUST persist snapshots to `trend_snapshots` (Postgres).
 - **FR-005**: Service MUST load the topics allowlist for validation/suppression/weighting of tracked topic keys (and to ignore unknown tags).
-- **FR-006**: Service SHOULD compute baselines (7-day) once enough data exists.
-- **FR-007 (Daily brief trigger)**: Service MUST publish a daily `SummaryRequest` to `summary.requests` on a configured local schedule, **only if data freshness check passes**.
+- **FR-006**: Service SHOULD compute baselines (30-day, day-of-week/hour aware) once enough data exists.
+- **FR-007 (Daily brief trigger)**: Service MUST publish a daily `SummaryRequest` to `summary.requests` on a configured UTC schedule, **only if data freshness check passes**.
 - **FR-008 (Threshold trigger, optional)**: Service SHOULD publish a threshold-triggered `SummaryRequest` when a topic spike crosses configured thresholds, **only if data freshness check passes**.
 - **FR-009 (Consumer lag tracking)**: Service MUST periodically update `consumer_lag` table in Postgres.
 - **FR-010 (Window state)**: Service MUST maintain window state in Redis for fast aggregation.
@@ -86,7 +86,7 @@ Window state is maintained in Redis for speed (see `specs/006`):
 | `window:{window}:{topic}:{bucket}` | Story count for topic in bucket | 3 × window |
 | `prev:{window}:{topic}` | Previous window count | 2 × window |
 | `evidence:{window}:{topic}` | Sorted set of top event IDs | 2 × window |
-| `baseline:{window}:{topic}:{dow}` | 30-day baseline cache | 24h |
+| `baseline:{window}:{topic}:{day_of_week}:{hour_utc}` | 30-day baseline cache | 24h |
 | `dedup:{window}:{bucket}` | Set of processed event_ids | 3 × window |
 | `story:{window}:{topic}:{bucket}:{url_hash}` | Story cluster data | 3 × window |
 | `story_urls:{window}:{topic}:{bucket}` | Set of canonical URL hashes | 3 × window |
