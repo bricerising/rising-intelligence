@@ -1,0 +1,323 @@
+import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Logger } from "pino";
+import { getConfig } from "./config.js";
+
+const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
+const COUNT_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
+
+interface HistogramState {
+  buckets: number[];
+  bucketCounts: number[];
+  overflowCount: number;
+  count: number;
+  sum: number;
+}
+
+export interface Metrics {
+  eventsProcessed: Map<string, number>;
+  eventsSkipped: Map<string, number>;
+  errors: Map<string, number>;
+  consumerLag: Map<number, bigint>;
+  postgresWriteDurationSeconds: HistogramState;
+  redisWriteDurationSeconds: HistogramState;
+  batchSize: HistogramState;
+}
+
+export interface HealthContext {
+  startTime: number;
+  kafkaHealthy: boolean;
+  postgresHealthy: boolean;
+  redisHealthy: boolean;
+  circuitOpen: boolean;
+  lastEventAt?: Date;
+  metrics: Metrics;
+}
+
+export interface HealthStatus {
+  status: "healthy" | "degraded" | "unhealthy";
+  checks: {
+    kafka: "ok" | "error";
+    postgres: "ok" | "error";
+    redis: "ok" | "error";
+    circuit: "closed" | "open";
+  };
+  uptime_seconds: number;
+  max_consumer_lag: string;
+  last_event_at?: string;
+}
+
+function createHistogram(buckets: number[]): HistogramState {
+  return {
+    buckets,
+    bucketCounts: new Array(buckets.length).fill(0),
+    overflowCount: 0,
+    count: 0,
+    sum: 0,
+  };
+}
+
+function observeHistogram(histogram: HistogramState, value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    return;
+  }
+
+  histogram.count++;
+  histogram.sum += value;
+
+  for (let i = 0; i < histogram.buckets.length; i++) {
+    if (value <= histogram.buckets[i]) {
+      histogram.bucketCounts[i]++;
+      return;
+    }
+  }
+
+  histogram.overflowCount++;
+}
+
+function getMaxConsumerLag(lagMap: Map<number, bigint>): bigint {
+  let maxLag = 0n;
+
+  for (const lag of lagMap.values()) {
+    if (lag > maxLag) {
+      maxLag = lag;
+    }
+  }
+
+  return maxLag;
+}
+
+function quoteMetricLabelValue(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\"", "\\\"")
+    .replaceAll("\n", "\\n");
+}
+
+function formatMetricLabels(labels: Record<string, string>): string {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) {
+    return "";
+  }
+
+  return `{${entries
+    .map(([name, value]) => `${name}="${quoteMetricLabelValue(value)}"`)
+    .join(",")}}`;
+}
+
+function formatHistogram(
+  name: string,
+  help: string,
+  histogram: HistogramState,
+  extraLabels: Record<string, string> = {}
+): string[] {
+  const lines: string[] = [];
+  lines.push(`# HELP ${name} ${help}`);
+  lines.push(`# TYPE ${name} histogram`);
+
+  let cumulativeCount = 0;
+  for (let i = 0; i < histogram.buckets.length; i++) {
+    cumulativeCount += histogram.bucketCounts[i];
+    const labels = formatMetricLabels({ ...extraLabels, le: histogram.buckets[i].toString() });
+    lines.push(`${name}_bucket${labels} ${cumulativeCount}`);
+  }
+
+  const infLabels = formatMetricLabels({ ...extraLabels, le: "+Inf" });
+  lines.push(`${name}_bucket${infLabels} ${histogram.count}`);
+
+  const countLabels = formatMetricLabels(extraLabels);
+  lines.push(`${name}_sum${countLabels} ${histogram.sum}`);
+  lines.push(`${name}_count${countLabels} ${histogram.count}`);
+
+  return lines;
+}
+
+export function createMetrics(): Metrics {
+  return {
+    eventsProcessed: new Map(),
+    eventsSkipped: new Map(),
+    errors: new Map(),
+    consumerLag: new Map(),
+    postgresWriteDurationSeconds: createHistogram(DURATION_BUCKETS_SECONDS),
+    redisWriteDurationSeconds: createHistogram(DURATION_BUCKETS_SECONDS),
+    batchSize: createHistogram(COUNT_BUCKETS),
+  };
+}
+
+export function createHealthContext(): HealthContext {
+  return {
+    startTime: Date.now(),
+    kafkaHealthy: false,
+    postgresHealthy: false,
+    redisHealthy: false,
+    circuitOpen: false,
+    metrics: createMetrics(),
+  };
+}
+
+export function incrementEventsProcessed(ctx: HealthContext, source: string, count = 1): void {
+  const current = ctx.metrics.eventsProcessed.get(source) ?? 0;
+  ctx.metrics.eventsProcessed.set(source, current + count);
+}
+
+export function incrementEventsSkipped(ctx: HealthContext, reason: string, count = 1): void {
+  const current = ctx.metrics.eventsSkipped.get(reason) ?? 0;
+  ctx.metrics.eventsSkipped.set(reason, current + count);
+}
+
+export function incrementError(ctx: HealthContext, errorType: string, count = 1): void {
+  const current = ctx.metrics.errors.get(errorType) ?? 0;
+  ctx.metrics.errors.set(errorType, current + count);
+}
+
+export function observePostgresWriteDuration(ctx: HealthContext, durationSeconds: number): void {
+  observeHistogram(ctx.metrics.postgresWriteDurationSeconds, durationSeconds);
+}
+
+export function observeRedisWriteDuration(ctx: HealthContext, durationSeconds: number): void {
+  observeHistogram(ctx.metrics.redisWriteDurationSeconds, durationSeconds);
+}
+
+export function observeBatchSize(ctx: HealthContext, size: number): void {
+  observeHistogram(ctx.metrics.batchSize, size);
+}
+
+export function setConsumerLag(ctx: HealthContext, partition: number, lag: bigint): void {
+  ctx.metrics.consumerLag.set(partition, lag);
+}
+
+export function getHealthStatus(ctx: HealthContext): HealthStatus {
+  const maxLag = getMaxConsumerLag(ctx.metrics.consumerLag);
+  const hasLagIssue = maxLag > 1000n;
+
+  let status: "healthy" | "degraded" | "unhealthy";
+  if (!ctx.kafkaHealthy || !ctx.postgresHealthy) {
+    status = "unhealthy";
+  } else if (!ctx.redisHealthy || hasLagIssue || ctx.circuitOpen) {
+    status = "degraded";
+  } else {
+    status = "healthy";
+  }
+
+  return {
+    status,
+    checks: {
+      kafka: ctx.kafkaHealthy ? "ok" : "error",
+      postgres: ctx.postgresHealthy ? "ok" : "error",
+      redis: ctx.redisHealthy ? "ok" : "error",
+      circuit: ctx.circuitOpen ? "open" : "closed",
+    },
+    uptime_seconds: Math.floor((Date.now() - ctx.startTime) / 1000),
+    max_consumer_lag: maxLag.toString(),
+    last_event_at: ctx.lastEventAt?.toISOString(),
+  };
+}
+
+export function formatMetrics(ctx: HealthContext): string {
+  const lines: string[] = [];
+
+  lines.push("# HELP ri_persister_events_processed_total Events written to Postgres");
+  lines.push("# TYPE ri_persister_events_processed_total counter");
+  for (const [source, count] of ctx.metrics.eventsProcessed) {
+    lines.push(`ri_persister_events_processed_total{source=\"${quoteMetricLabelValue(source)}\"} ${count}`);
+  }
+
+  lines.push("# HELP ri_persister_events_skipped_total Events skipped by reason");
+  lines.push("# TYPE ri_persister_events_skipped_total counter");
+  for (const [reason, count] of ctx.metrics.eventsSkipped) {
+    lines.push(`ri_persister_events_skipped_total{reason=\"${quoteMetricLabelValue(reason)}\"} ${count}`);
+  }
+
+  lines.push("# HELP ri_persister_errors_total Errors by category");
+  lines.push("# TYPE ri_persister_errors_total counter");
+  for (const [errorType, count] of ctx.metrics.errors) {
+    lines.push(`ri_persister_errors_total{error_type=\"${quoteMetricLabelValue(errorType)}\"} ${count}`);
+  }
+
+  lines.push("# HELP ri_persister_consumer_lag Messages behind latest by partition");
+  lines.push("# TYPE ri_persister_consumer_lag gauge");
+  for (const [partition, lag] of ctx.metrics.consumerLag) {
+    lines.push(`ri_persister_consumer_lag{partition=\"${partition}\"} ${lag.toString()}`);
+  }
+
+  lines.push(
+    ...formatHistogram(
+      "ri_persister_postgres_write_duration_seconds",
+      "Postgres write duration in seconds",
+      ctx.metrics.postgresWriteDurationSeconds
+    )
+  );
+
+  lines.push(
+    ...formatHistogram(
+      "ri_persister_redis_write_duration_seconds",
+      "Redis write duration in seconds",
+      ctx.metrics.redisWriteDurationSeconds
+    )
+  );
+
+  lines.push(
+    ...formatHistogram(
+      "ri_persister_batch_size",
+      "Kafka batch size",
+      ctx.metrics.batchSize
+    )
+  );
+
+  lines.push("# HELP ri_persister_up 1 when service dependencies are healthy");
+  lines.push("# TYPE ri_persister_up gauge");
+  lines.push(`ri_persister_up ${getHealthStatus(ctx).status === "unhealthy" ? 0 : 1}`);
+
+  return `${lines.join("\n")}\n`;
+}
+
+export function createHealthHandler(ctx: HealthContext) {
+  return (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method !== "GET") {
+      res.writeHead(405);
+      res.end("Method not allowed");
+      return;
+    }
+
+    if (req.url === "/health" || req.url === "/healthz") {
+      const health = getHealthStatus(ctx);
+      const statusCode = health.status === "unhealthy" ? 503 : 200;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(health, null, 2));
+      return;
+    }
+
+    if (req.url === "/ready" || req.url === "/readyz") {
+      const ready = ctx.kafkaHealthy && ctx.postgresHealthy && !ctx.circuitOpen;
+      res.writeHead(ready ? 200 : 503, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ready,
+          circuit_open: ctx.circuitOpen,
+          kafka: ctx.kafkaHealthy,
+          postgres: ctx.postgresHealthy,
+        })
+      );
+      return;
+    }
+
+    if (req.url === "/metrics") {
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(formatMetrics(ctx));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end("Not found");
+  };
+}
+
+export function startHealthServer(ctx: HealthContext, logger: Logger): Server {
+  const config = getConfig();
+  const server = createServer(createHealthHandler(ctx));
+
+  server.listen(config.PORT, () => {
+    logger.info({ port: config.PORT }, "Health server started");
+  });
+
+  return server;
+}

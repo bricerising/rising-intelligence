@@ -262,6 +262,37 @@ services:
       retries: 3
     restart: unless-stopped
 
+  persister:
+    build:
+      context: .
+      dockerfile: ./apps/persister/Dockerfile
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ops-cli:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      KAFKA_CLIENT_ID: "persister"
+      KAFKA_CONSUMER_GROUP: "persister"
+      KAFKA_TOPIC_RAW_EVENTS: "events.raw"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-rising}:${POSTGRES_PASSWORD:-rising}@postgres:5432/${POSTGRES_DB:-rising_intelligence}"
+      REDIS_URL: "redis://redis:6379"
+      LOG_LEVEL: "info"
+    ports:
+      - "127.0.0.1:3003:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   redpanda-data:
   grafana-data:

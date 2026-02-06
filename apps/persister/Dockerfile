@@ -36,7 +36,7 @@ COPY --from=deps /app/apps/persister/node_modules ./apps/persister/node_modules
 COPY packages/shared ./packages/shared
 COPY packages/db ./packages/db
 COPY apps/persister ./apps/persister
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared

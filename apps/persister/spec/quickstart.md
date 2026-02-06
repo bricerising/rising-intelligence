@@ -8,13 +8,13 @@ The Persister service consumes events from Kafka (`events.raw`) and materializes
 
 This service is the bridge between the append-only event log (Kafka) and the queryable read model (Postgres).
 
-## Run (planned)
+## Run
 
 ```bash
 docker compose up --build persister
 ```
 
-## Verify (planned)
+## Verify
 
 - `raw_events` table in Postgres contains events from `events.raw` topic
 - `ri_persister_events_processed_total` metric increasing in Grafana
@@ -31,13 +31,18 @@ docker compose up --build persister
 
 | Env Var | Required | Default | Description |
 |---------|----------|---------|-------------|
-| `KAFKA_BROKERS` | Yes | — | Kafka broker addresses |
-| `KAFKA_CONSUMER_GROUP` | Yes | `persister` | Consumer group ID |
-| `POSTGRES_HOST` | Yes | — | Postgres host |
-| `POSTGRES_PORT` | No | `5432` | Postgres port |
-| `POSTGRES_DB` | Yes | — | Database name |
-| `POSTGRES_USER` | Yes | — | Database user |
-| `POSTGRES_PASSWORD` | Yes | — | Database password |
-| `REDIS_URL` | No | — | Redis URL for dedup cache |
-| `BATCH_SIZE` | No | `100` | Events per batch insert |
-| `BATCH_TIMEOUT_MS` | No | `1000` | Max wait before flushing batch |
+| `KAFKA_BROKERS` | No | `localhost:9092` | Kafka broker addresses |
+| `KAFKA_CLIENT_ID` | No | `persister` | Kafka client ID |
+| `KAFKA_CONSUMER_GROUP` | No | `persister` | Consumer group ID |
+| `KAFKA_TOPIC_RAW_EVENTS` | No | `events.raw` | Input topic |
+| `DATABASE_URL` | No | derived from `POSTGRES_*` | Postgres connection string |
+| `POSTGRES_HOST` | No | `localhost` | Fallback host when `DATABASE_URL` is unset |
+| `POSTGRES_PORT` | No | `5432` | Fallback port when `DATABASE_URL` is unset |
+| `POSTGRES_DB` | No | `rising_intelligence` | Fallback database when `DATABASE_URL` is unset |
+| `POSTGRES_USER` | No | `rising` | Fallback user when `DATABASE_URL` is unset |
+| `POSTGRES_PASSWORD` | No | `rising` | Fallback password when `DATABASE_URL` is unset |
+| `REDIS_URL` | No | `redis://localhost:6379` | Redis URL for dedup cache |
+| `SEEN_TTL_SECONDS` | No | `86400` | Redis TTL for `seen:*` keys |
+| `CONSUMER_LAG_UPDATE_INTERVAL_MS` | No | `15000` | Lag write interval to `consumer_lag` |
+| `POSTGRES_CIRCUIT_FAILURE_THRESHOLD` | No | `5` | Failures before opening circuit |
+| `POSTGRES_CIRCUIT_OPEN_MS` | No | `30000` | Pause duration while circuit is open |
