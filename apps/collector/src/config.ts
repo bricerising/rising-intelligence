@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getSecretValue } from "@rising-intelligence/shared";
+import { getSecretValue, loadDotEnv, parseConfig, zBooleanEnv } from "@rising-intelligence/shared";
 
 const ConfigSchema = z.object({
   // Service
@@ -21,27 +21,18 @@ const ConfigSchema = z.object({
   FEEDS_CONFIG_PATH: z.string().default("./config/feeds.yaml"),
 
   // Hacker News
-  HN_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("true"),
+  HN_ENABLED: zBooleanEnv("true"),
   HN_MODE: z.enum(["top", "new", "best"]).default("top"),
   HN_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
   HN_MAX_ITEMS_PER_POLL: z.coerce.number().default(30),
 
   // Lobsters
-  LOBSTERS_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("true"),
+  LOBSTERS_ENABLED: zBooleanEnv("true"),
   LOBSTERS_POLL_INTERVAL_SECONDS: z.coerce.number().default(600),
   LOBSTERS_MAX_ITEMS_PER_POLL: z.coerce.number().default(25),
 
   // Reddit
-  REDDIT_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
+  REDDIT_ENABLED: zBooleanEnv("false"),
   REDDIT_CLIENT_ID: z.string().optional(),
   REDDIT_CLIENT_SECRET: z.string().optional(),
   REDDIT_SUBREDDITS: z.string().default("aws,MachineLearning,programming"),
@@ -49,34 +40,22 @@ const ConfigSchema = z.object({
   REDDIT_MAX_ITEMS_PER_POLL: z.coerce.number().default(25),
 
   // RSS
-  RSS_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("true"),
+  RSS_ENABLED: zBooleanEnv("true"),
   RSS_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
 
   // Bluesky
-  BLUESKY_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
+  BLUESKY_ENABLED: zBooleanEnv("false"),
   BLUESKY_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
   BLUESKY_QUERIES: z.string().default("aws,bedrock,ai,llm,typescript,rust"),
 
   // Mastodon
-  MASTODON_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
+  MASTODON_ENABLED: zBooleanEnv("false"),
   MASTODON_POLL_INTERVAL_SECONDS: z.coerce.number().default(600),
   MASTODON_INSTANCES: z.string().default("hachyderm.io,fosstodon.org"),
   MASTODON_TAGS: z.string().default("aws,ai,machinelearning,typescript,rust"),
 
   // GitHub
-  GITHUB_ENABLED: z
-    .string()
-    .transform((v) => v === "true")
-    .default("false"),
+  GITHUB_ENABLED: zBooleanEnv("false"),
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_POLL_INTERVAL_SECONDS: z.coerce.number().default(3600),
 
@@ -87,6 +66,8 @@ const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema>;
 
 export function loadConfig(): Config {
+  loadDotEnv();
+
   const env: Record<string, string | undefined> = { ...process.env };
 
   // Resolve secrets from _FILE variants
@@ -99,16 +80,7 @@ export function loadConfig(): Config {
     }
   }
 
-  const result = ConfigSchema.safeParse(env);
-  if (!result.success) {
-    console.error("Configuration validation failed:");
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join(".")}: ${issue.message}`);
-    }
-    process.exit(1);
-  }
-
-  return result.data;
+  return parseConfig(ConfigSchema, env);
 }
 
 let _config: Config | null = null;

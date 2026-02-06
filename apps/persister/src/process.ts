@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import type { PrismaClient } from "@rising-intelligence/db";
+import { serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { KafkaConsumerContext } from "./kafka/consumer.js";
@@ -21,7 +22,7 @@ import { persistBatch, upsertConsumerLag } from "./persist.js";
 import { markEventsSeen } from "./redis.js";
 import type { PostgresCircuitBreaker } from "./circuit-breaker.js";
 import type { ParsedRawEvent } from "./types.js";
-import { nowSeconds, serializeError, toBigInt } from "./utils.js";
+import { nowSeconds, toBigInt } from "./utils.js";
 
 const CIRCUIT_PAUSE_HEARTBEAT_INTERVAL_MS = 2000;
 
@@ -80,7 +81,7 @@ export async function persistAndMarkSeen(
     incrementError(ctx.healthContext, "redis_error");
     ctx.healthContext.redisHealthy = false;
     ctx.logger.warn(
-      { error: serializeError(error).message },
+      { error: serializeError(error) },
       "Failed to write seen keys to Redis; continuing"
     );
   }
@@ -176,7 +177,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
           kafkaTopic: batch.topic,
           partition: batch.partition,
           offset: message.offset,
-          error: serializeError(error).message,
+          error: serializeError(error),
         },
         "Failed to deserialize event"
       );
@@ -204,7 +205,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
         partition: batch.partition,
         batchSize: batch.messages.length,
         openedCircuit: opened,
-        error: serializeError(error).message,
+        error: serializeError(error),
       },
       "Failed to persist Kafka batch"
     );
@@ -240,7 +241,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
       {
         kafkaTopic: batch.topic,
         partition: batch.partition,
-        error: serializeError(error).message,
+        error: serializeError(error),
       },
       "Failed to update consumer lag"
     );

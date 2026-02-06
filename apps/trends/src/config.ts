@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { getSecretValue, loadDotEnv } from "@rising-intelligence/shared";
+import {
+  loadDotEnv,
+  parseConfig,
+  resolvePostgresPassword,
+  resolveDatabaseUrl,
+} from "@rising-intelligence/shared";
 import type { TrendWindow } from "./types.js";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
@@ -41,27 +46,6 @@ export type Config = Omit<RawConfig, "DATABASE_URL" | "TREND_WINDOWS"> & {
   WINDOWS: TrendWindow[];
 };
 
-function resolvePostgresPassword(env: Record<string, string | undefined>): string {
-  if (env.POSTGRES_PASSWORD && env.POSTGRES_PASSWORD.trim().length > 0) {
-    return env.POSTGRES_PASSWORD;
-  }
-
-  const secret = getSecretValue("POSTGRES_PASSWORD");
-  if (secret && secret.trim().length > 0) {
-    return secret;
-  }
-
-  return "rising";
-}
-
-function buildDatabaseUrl(parsed: RawConfig, password: string): string {
-  const username = encodeURIComponent(parsed.POSTGRES_USER);
-  const encodedPassword = encodeURIComponent(password);
-  const database = encodeURIComponent(parsed.POSTGRES_DB);
-
-  return `postgresql://${username}:${encodedPassword}@${parsed.POSTGRES_HOST}:${parsed.POSTGRES_PORT}/${database}`;
-}
-
 function parseWindows(raw: string): TrendWindow[] {
   const parsed = raw
     .split(",")
@@ -87,28 +71,15 @@ export function loadConfig(): Config {
   loadDotEnv();
 
   const env: Record<string, string | undefined> = { ...process.env };
-  if (!env.POSTGRES_PASSWORD) {
-    const secret = getSecretValue("POSTGRES_PASSWORD");
-    if (secret) {
-      env.POSTGRES_PASSWORD = secret;
-    }
-  }
-
-  const result = ConfigSchema.safeParse(env);
-  if (!result.success) {
-    console.error("Configuration validation failed:");
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join(".")}: ${issue.message}`);
-    }
-    process.exit(1);
-  }
-
-  const parsed = result.data;
+  const parsed = parseConfig(ConfigSchema, env);
   const password = resolvePostgresPassword(env);
-  const databaseUrl =
-    parsed.DATABASE_URL && parsed.DATABASE_URL.trim().length > 0
-      ? parsed.DATABASE_URL
-      : buildDatabaseUrl(parsed, password);
+  const databaseUrl = resolveDatabaseUrl(parsed.DATABASE_URL, {
+    host: parsed.POSTGRES_HOST,
+    port: parsed.POSTGRES_PORT,
+    db: parsed.POSTGRES_DB,
+    user: parsed.POSTGRES_USER,
+    password,
+  });
 
   let windows: TrendWindow[];
   try {

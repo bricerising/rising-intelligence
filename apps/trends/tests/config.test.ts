@@ -5,10 +5,14 @@ const sharedMocks = vi.hoisted(() => ({
   getSecretValue: vi.fn(),
 }));
 
-vi.mock("@rising-intelligence/shared", () => ({
-  loadDotEnv: sharedMocks.loadDotEnv,
-  getSecretValue: sharedMocks.getSecretValue,
-}));
+vi.mock("@rising-intelligence/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared")>();
+  return {
+    ...actual,
+    loadDotEnv: sharedMocks.loadDotEnv,
+    getSecretValue: sharedMocks.getSecretValue,
+  };
+});
 
 describe("trends config", () => {
   const originalEnv = process.env;
@@ -47,12 +51,7 @@ describe("trends config", () => {
   });
 
   it("uses secret password when postgres password env is missing", async () => {
-    sharedMocks.getSecretValue.mockImplementation((key: string) => {
-      if (key === "POSTGRES_PASSWORD") {
-        return "secret-pass";
-      }
-      return undefined;
-    });
+    process.env.POSTGRES_PASSWORD = "secret-pass";
     process.env.POSTGRES_USER = "svc";
     process.env.POSTGRES_DB = "ri";
     process.env.POSTGRES_HOST = "postgres";

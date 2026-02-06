@@ -1,6 +1,12 @@
 import { PrismaClient } from "@rising-intelligence/db";
-import { getConfig } from "./config.js";
-import { getLogger, createChildLogger } from "./logger.js";
+import {
+  closeServer,
+  serializeError,
+  runService,
+  createServiceLogger,
+} from "@rising-intelligence/shared";
+import type pino from "pino";
+import { loadConfig } from "./config.js";
 import {
   createKafkaConsumer,
   disconnectKafkaConsumer,
@@ -12,11 +18,10 @@ import {
 import { createRedisClient, disconnectRedis } from "./redis.js";
 import { PostgresCircuitBreaker } from "./circuit-breaker.js";
 import { processBatch, type PersisterContext } from "./process.js";
-import { serializeError } from "./utils.js";
 
 async function initialize(): Promise<PersisterContext> {
-  const config = getConfig();
-  const logger = getLogger();
+  const config = loadConfig();
+  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
   logger.info({ service: config.SERVICE_NAME }, "Starting persister service");
 
@@ -32,10 +37,10 @@ async function initialize(): Promise<PersisterContext> {
   healthContext.postgresHealthy = true;
   logger.info("Postgres connected");
 
-  const redis = await createRedisClient(config, createChildLogger({ component: "redis" }));
+  const redis = await createRedisClient(config, logger.child({ component: "redis" }));
   healthContext.redisHealthy = redis !== null;
 
-  const kafkaContext = await createKafkaConsumer(createChildLogger({ component: "kafka" }));
+  const kafkaContext = await createKafkaConsumer(logger.child({ component: "kafka" }));
   await kafkaContext.consumer.subscribe({
     topic: config.KAFKA_TOPIC_RAW_EVENTS,
     fromBeginning: false,
@@ -71,103 +76,57 @@ async function runConsumer(ctx: PersisterContext): Promise<void> {
   });
 }
 
-async function closeServer(server: import("node:http").Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-async function shutdown(ctx: PersisterContext | null, exitCode: number): Promise<never> {
-  if (!ctx) {
-    process.exit(exitCode);
-  }
-
+async function shutdown(ctx: PersisterContext): Promise<void> {
   const logger = ctx.logger;
-  logger.info("Shutting down persister service");
-
-  const timeout = setTimeout(() => {
-    logger.error({ timeoutMs: ctx.config.SHUTDOWN_TIMEOUT_MS }, "Shutdown timeout reached");
-    process.exit(1);
-  }, ctx.config.SHUTDOWN_TIMEOUT_MS);
 
   try {
     await disconnectKafkaConsumer(ctx.kafkaContext.consumer, logger);
     ctx.healthContext.kafkaHealthy = false;
   } catch (error) {
-    logger.warn({ error: serializeError(error).message }, "Kafka disconnect failed during shutdown");
+    logger.warn({ error: serializeError(error) }, "Kafka disconnect failed during shutdown");
   }
 
   try {
     await disconnectRedis(ctx.redis);
     ctx.healthContext.redisHealthy = false;
   } catch (error) {
-    logger.warn({ error: serializeError(error).message }, "Redis disconnect failed during shutdown");
+    logger.warn({ error: serializeError(error) }, "Redis disconnect failed during shutdown");
   }
 
   try {
     await ctx.prisma.$disconnect();
     ctx.healthContext.postgresHealthy = false;
   } catch (error) {
-    logger.warn({ error: serializeError(error).message }, "Postgres disconnect failed during shutdown");
+    logger.warn({ error: serializeError(error) }, "Postgres disconnect failed during shutdown");
   }
 
   try {
     await closeServer(ctx.healthServer);
   } catch (error) {
-    logger.warn({ error: serializeError(error).message }, "Health server close failed during shutdown");
+    logger.warn({ error: serializeError(error) }, "Health server close failed during shutdown");
   }
-
-  clearTimeout(timeout);
-  process.exit(exitCode);
 }
 
-let shuttingDown = false;
+let _logger: pino.Logger | null = null;
 
-async function start(): Promise<void> {
-  let context: PersisterContext | null = null;
-
-  const requestShutdown = async (exitCode: number) => {
-    if (shuttingDown) {
-      return;
+runService<PersisterContext>({
+  name: "persister",
+  shutdownTimeoutMs: 30000,
+  getLogger() {
+    if (!_logger) {
+      _logger = createServiceLogger("persister", "info");
     }
-
-    shuttingDown = true;
-    await shutdown(context, exitCode);
-  };
-
-  process.on("SIGTERM", () => {
-    void requestShutdown(0);
-  });
-
-  process.on("SIGINT", () => {
-    void requestShutdown(0);
-  });
-
-  process.on("uncaughtException", (error) => {
-    getLogger().error({ error: serializeError(error).message }, "Uncaught exception");
-    void requestShutdown(1);
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    getLogger().error({ error: serializeError(reason).message }, "Unhandled rejection");
-    void requestShutdown(1);
-  });
-
-  try {
-    context = await initialize();
-    await runConsumer(context);
-  } catch (error) {
-    getLogger().error({ error: serializeError(error).message }, "Persister crashed");
-    await requestShutdown(1);
-  }
-}
-
-void start();
-
-export {};
+    return _logger;
+  },
+  async initialize() {
+    const ctx = await initialize();
+    _logger = ctx.logger;
+    return ctx;
+  },
+  async run(ctx) {
+    await runConsumer(ctx);
+  },
+  async shutdown(ctx) {
+    await shutdown(ctx);
+  },
+});

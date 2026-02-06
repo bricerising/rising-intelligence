@@ -1,4 +1,5 @@
-import { Kafka, Producer, CompressionTypes, logLevel } from "kafkajs";
+import { Kafka, Producer, CompressionTypes } from "kafkajs";
+import { connectKafkaProducer } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -17,36 +18,18 @@ export interface KafkaProducerContext {
 
 export async function createKafkaProducer(logger: Logger): Promise<KafkaProducerContext> {
   const config = getConfig();
-  const brokers = config.KAFKA_BROKERS.split(",").map((b) => b.trim());
-
-  const kafka = new Kafka({
+  const connection = await connectKafkaProducer({
+    brokers: config.KAFKA_BROKERS,
     clientId: config.KAFKA_CLIENT_ID,
-    brokers,
-    logLevel: logLevel.WARN,
-    logCreator: () => {
-      return ({ level, log }) => {
-        const { message, ...extra } = log;
-        const pinoLevel = {
-          [logLevel.ERROR]: "error",
-          [logLevel.WARN]: "warn",
-          [logLevel.INFO]: "info",
-          [logLevel.DEBUG]: "debug",
-          [logLevel.NOTHING]: "silent",
-        }[level] as "error" | "warn" | "info" | "debug" | "silent";
-        logger[pinoLevel]({ ...extra, kafkajs: true }, message);
-      };
-    },
+    logger,
+    allowAutoTopicCreation: false,
   });
+  logger.info({ brokers: connection.brokers }, "Kafka producer connected");
 
-  const producer = kafka.producer({
-    allowAutoTopicCreation: true,
-    transactionTimeout: 30000,
-  });
-
-  await producer.connect();
-  logger.info({ brokers }, "Kafka producer connected");
-
-  return { producer, kafka };
+  return {
+    producer: connection.producer,
+    kafka: connection.kafka,
+  };
 }
 
 export async function publishEvent(

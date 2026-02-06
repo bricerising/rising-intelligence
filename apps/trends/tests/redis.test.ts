@@ -85,11 +85,9 @@ describe("trends redis key helpers", () => {
   });
 
   describe("applyEventToWindows", () => {
-    it("returns duplicate and skips pipeline work when event already exists in dedup set", async () => {
+    it("returns duplicate when event already exists in dedup set", async () => {
       const redis = {
-        sadd: vi.fn().mockResolvedValue(0),
-        expire: vi.fn().mockResolvedValue(1),
-        pipeline: vi.fn(),
+        eval: vi.fn().mockResolvedValue(0),
       };
 
       const result = await applyEventToWindows(
@@ -111,23 +109,29 @@ describe("trends redis key helpers", () => {
       );
 
       expect(result.duplicate).toBe(true);
-      expect(redis.sadd).toHaveBeenCalledWith("dedup:60m:2026-02-06T10:00:00.000Z", "rss:1");
-      expect(redis.expire).toHaveBeenCalledWith("dedup:60m:2026-02-06T10:00:00.000Z", 10800);
-      expect(redis.pipeline).not.toHaveBeenCalled();
+      expect(redis.eval).toHaveBeenCalledWith(
+        expect.any(String),
+        1,
+        "dedup:60m:2026-02-06T10:00:00.000Z",
+        "rss:1",
+        10800,
+        10,
+        7,
+        2,
+        "window:15m:aws.bedrock:2026-02-06T10:00:00.000Z",
+        2700,
+        "evidence:15m:aws.bedrock",
+        1800,
+        "window:60m:aws.bedrock:2026-02-06T10:00:00.000Z",
+        10800,
+        "evidence:60m:aws.bedrock",
+        7200
+      );
     });
 
     it("updates counters and evidence for non-duplicate events", async () => {
-      const pipeline = {
-        incr: vi.fn().mockReturnThis(),
-        expire: vi.fn().mockReturnThis(),
-        zadd: vi.fn().mockReturnThis(),
-        zremrangebyrank: vi.fn().mockReturnThis(),
-        exec: vi.fn().mockResolvedValue([]),
-      };
       const redis = {
-        sadd: vi.fn().mockResolvedValue(1),
-        expire: vi.fn().mockResolvedValue(1),
-        pipeline: vi.fn(() => pipeline),
+        eval: vi.fn().mockResolvedValue(1),
       };
 
       const result = await applyEventToWindows(
@@ -149,14 +153,24 @@ describe("trends redis key helpers", () => {
       );
 
       expect(result.duplicate).toBe(false);
-      expect(redis.sadd).toHaveBeenCalledWith("dedup:15m:2026-02-06T10:00:00.000Z", "rss:2");
-      expect(redis.expire).toHaveBeenCalledWith("dedup:15m:2026-02-06T10:00:00.000Z", 2700);
-      expect(pipeline.incr).toHaveBeenCalledTimes(2);
-      expect(pipeline.zadd).toHaveBeenCalledWith("evidence:15m:aws.bedrock", 11, "rss:2");
-      expect(pipeline.zadd).toHaveBeenCalledWith("evidence:15m:ai.openai", 11, "rss:2");
-      expect(pipeline.zremrangebyrank).toHaveBeenCalledWith("evidence:15m:aws.bedrock", 0, -3);
-      expect(pipeline.zremrangebyrank).toHaveBeenCalledWith("evidence:15m:ai.openai", 0, -3);
-      expect(pipeline.exec).toHaveBeenCalledOnce();
+      expect(redis.eval).toHaveBeenCalledWith(
+        expect.any(String),
+        1,
+        "dedup:15m:2026-02-06T10:00:00.000Z",
+        "rss:2",
+        2700,
+        2,
+        11,
+        2,
+        "window:15m:aws.bedrock:2026-02-06T10:00:00.000Z",
+        2700,
+        "evidence:15m:aws.bedrock",
+        1800,
+        "window:15m:ai.openai:2026-02-06T10:00:00.000Z",
+        2700,
+        "evidence:15m:ai.openai",
+        1800
+      );
     });
   });
 

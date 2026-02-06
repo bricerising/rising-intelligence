@@ -9,11 +9,3 @@ export function toBigInt(value: string, fallback: bigint): bigint {
     return fallback;
   }
 }
-
-export function serializeError(error: unknown): { message: string } {
-  if (error instanceof Error) {
-    return { message: error.message };
-  }
-
-  return { message: String(error) };
-}

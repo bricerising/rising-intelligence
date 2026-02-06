@@ -1,11 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock the shared package
-vi.mock("@rising-intelligence/shared", () => ({
+// Mock the shared package - pass through real implementations for zod helpers
+const sharedMocks = vi.hoisted(() => ({
   getSecretValue: vi.fn(),
+  loadDotEnv: vi.fn(),
 }));
 
-import { getSecretValue } from "@rising-intelligence/shared";
+vi.mock("@rising-intelligence/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared")>();
+  return {
+    ...actual,
+    getSecretValue: sharedMocks.getSecretValue,
+    loadDotEnv: sharedMocks.loadDotEnv,
+  };
+});
+
+const { getSecretValue, loadDotEnv } = sharedMocks;
 
 describe("config", () => {
   const originalEnv = process.env;
@@ -27,6 +37,7 @@ describe("config", () => {
 
       const config = loadConfig();
 
+      expect(loadDotEnv).toHaveBeenCalledTimes(1);
       expect(config.SERVICE_NAME).toBe("collector");
       expect(config.PORT).toBe(3000);
       expect(config.LOG_LEVEL).toBe("info");

@@ -1,27 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serializeError, toBigInt, nowSeconds } from "../src/utils.js";
-
-describe("serializeError", () => {
-  it("extracts message from Error instances", () => {
-    expect(serializeError(new Error("boom"))).toEqual({ message: "boom" });
-  });
-
-  it("converts string to message", () => {
-    expect(serializeError("something broke")).toEqual({ message: "something broke" });
-  });
-
-  it("converts number to message", () => {
-    expect(serializeError(42)).toEqual({ message: "42" });
-  });
-
-  it("converts null to message", () => {
-    expect(serializeError(null)).toEqual({ message: "null" });
-  });
-
-  it("converts undefined to message", () => {
-    expect(serializeError(undefined)).toEqual({ message: "undefined" });
-  });
-});
+import { toBigInt, nowSeconds } from "../src/utils.js";
 
 describe("toBigInt", () => {
   it("converts valid numeric string", () => {

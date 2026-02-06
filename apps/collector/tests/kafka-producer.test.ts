@@ -73,7 +73,7 @@ describe("kafka producer", () => {
     );
     expect(kafkaMocks.producerFactory).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowAutoTopicCreation: true,
+        allowAutoTopicCreation: false,
         transactionTimeout: 30000,
       })
     );

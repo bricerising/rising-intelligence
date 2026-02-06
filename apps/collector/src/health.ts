@@ -1,5 +1,10 @@
-import { createServer, IncomingMessage, ServerResponse, Server } from "node:http";
+import type { Server } from "node:http";
 import type { Logger } from "pino";
+import {
+  startHealthServer as startSharedHealthServer,
+  quoteMetricLabelValue,
+  type HealthHandlers,
+} from "@rising-intelligence/shared";
 import { getConfig } from "./config.js";
 
 export interface HealthStatus {
@@ -68,22 +73,16 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
     sources[name] = health;
   }
 
-  const allChecksOk =
-    ctx.kafkaHealthy && ctx.checkpointsHealthy && ctx.allowlistHealthy;
-  const anythingFailed =
-    !ctx.kafkaHealthy || !ctx.checkpointsHealthy || !ctx.allowlistHealthy;
-
   let status: "healthy" | "degraded" | "unhealthy";
-  if (allChecksOk) {
-    // Check if any source is unhealthy
+  if (!ctx.kafkaHealthy || !ctx.checkpointsHealthy) {
+    status = "unhealthy";
+  } else if (!ctx.allowlistHealthy) {
+    status = "degraded";
+  } else {
     const unhealthySources = Array.from(ctx.sourceHealth.values()).filter(
       (s) => s.status === "error"
     );
     status = unhealthySources.length > 0 ? "degraded" : "healthy";
-  } else if (!ctx.kafkaHealthy || !ctx.checkpointsHealthy) {
-    status = "unhealthy";
-  } else {
-    status = "degraded";
   }
 
   return {
@@ -102,44 +101,38 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
 export function formatMetrics(ctx: HealthContext): string {
   const lines: string[] = [];
 
-  // Events published
   lines.push("# HELP ri_collector_events_published_total Events published to Kafka");
   lines.push("# TYPE ri_collector_events_published_total counter");
   for (const [source, count] of ctx.metrics.eventsPublished) {
-    lines.push(`ri_collector_events_published_total{source="${source}"} ${count}`);
+    lines.push(`ri_collector_events_published_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
   }
 
-  // DLQ events
   lines.push("# HELP ri_collector_events_dlq_total Events sent to DLQ");
   lines.push("# TYPE ri_collector_events_dlq_total counter");
   for (const [source, count] of ctx.metrics.eventsDlq) {
-    lines.push(`ri_collector_events_dlq_total{source="${source}"} ${count}`);
+    lines.push(`ri_collector_events_dlq_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
   }
 
-  // Errors
   lines.push("# HELP ri_collector_errors_total Errors by source and type");
   lines.push("# TYPE ri_collector_errors_total counter");
   for (const [source, errorMap] of ctx.metrics.errors) {
     for (const [errorType, count] of errorMap) {
-      lines.push(`ri_collector_errors_total{source="${source}",type="${errorType}"} ${count}`);
+      lines.push(`ri_collector_errors_total{source="${quoteMetricLabelValue(source)}",type="${quoteMetricLabelValue(errorType)}"} ${count}`);
     }
   }
 
-  // Last poll timestamp
   lines.push("# HELP ri_collector_last_poll_timestamp_seconds Unix timestamp of last successful poll");
   lines.push("# TYPE ri_collector_last_poll_timestamp_seconds gauge");
   for (const [source, timestamp] of ctx.metrics.lastPollTimestamp) {
-    lines.push(`ri_collector_last_poll_timestamp_seconds{source="${source}"} ${Math.floor(timestamp / 1000)}`);
+    lines.push(`ri_collector_last_poll_timestamp_seconds{source="${quoteMetricLabelValue(source)}"} ${Math.floor(timestamp / 1000)}`);
   }
 
-  // Checkpoints written
   lines.push("# HELP ri_collector_checkpoints_written_total Checkpoint writes");
   lines.push("# TYPE ri_collector_checkpoints_written_total counter");
   for (const [source, count] of ctx.metrics.checkpointsWritten) {
-    lines.push(`ri_collector_checkpoints_written_total{source="${source}"} ${count}`);
+    lines.push(`ri_collector_checkpoints_written_total{source="${quoteMetricLabelValue(source)}"} ${count}`);
   }
 
-  // Uptime
   lines.push("# HELP ri_collector_uptime_seconds Service uptime in seconds");
   lines.push("# TYPE ri_collector_uptime_seconds gauge");
   lines.push(`ri_collector_uptime_seconds ${Math.floor((Date.now() - ctx.startTime) / 1000)}`);
@@ -147,55 +140,24 @@ export function formatMetrics(ctx: HealthContext): string {
   return lines.join("\n") + "\n";
 }
 
-export function createHealthHandler(ctx: HealthContext) {
-  return (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method !== "GET") {
-      res.writeHead(405);
-      res.end("Method not allowed");
-      return;
-    }
-
-    if (req.url === "/health" || req.url === "/healthz") {
+export function createHandlers(ctx: HealthContext): HealthHandlers {
+  return {
+    getHealth() {
       const health = getHealthStatus(ctx);
-      const statusCode = health.status === "unhealthy" ? 503 : 200;
-      res.writeHead(statusCode, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(health, null, 2));
-      return;
-    }
-
-    if (req.url === "/ready" || req.url === "/readyz") {
+      return { status: health.status, body: health };
+    },
+    isReady() {
+      const ready = ctx.kafkaHealthy && ctx.checkpointsHealthy && ctx.allowlistHealthy;
       const health = getHealthStatus(ctx);
-      const ready =
-        ctx.kafkaHealthy && ctx.checkpointsHealthy && ctx.allowlistHealthy;
-      res.writeHead(ready ? 200 : 503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ready, status: health.status }));
-      return;
-    }
-
-    if (req.url === "/metrics") {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(formatMetrics(ctx));
-      return;
-    }
-
-    res.writeHead(404);
-    res.end("Not found");
+      return { ready, body: { ready, status: health.status } };
+    },
+    formatMetrics: () => formatMetrics(ctx),
   };
 }
 
-export function startHealthServer(
-  ctx: HealthContext,
-  logger: Logger
-): Server {
+export function startHealthServer(ctx: HealthContext, logger: Logger): Server {
   const config = getConfig();
-
-  const server = createServer(createHealthHandler(ctx));
-
-  server.listen(config.PORT, () => {
-    logger.info({ port: config.PORT }, "Health server started");
-  });
-
-  return server;
+  return startSharedHealthServer(config.PORT, createHandlers(ctx), logger);
 }
 
 // Metric helpers

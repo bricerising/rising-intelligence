@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createHealthHandler } from "@rising-intelligence/shared";
 import {
   createHealthContext,
-  createHealthHandler,
+  createHandlers,
   getHealthStatus,
   incrementError,
   incrementEventsProcessed,
@@ -30,6 +31,10 @@ function createMockRes() {
   return res;
 }
 
+function makeHandler(ctx: ReturnType<typeof createHealthContext>) {
+  return createHealthHandler(createHandlers(ctx));
+}
+
 describe("persister health", () => {
   it("serves /health /ready /metrics", () => {
     const ctx = createHealthContext();
@@ -45,7 +50,7 @@ describe("persister health", () => {
     observeRedisWriteDuration(ctx, 0.03);
     observeBatchSize(ctx, 5);
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
 
     const healthRes = createMockRes();
     handler({ method: "GET", url: "/health" } as any, healthRes as any);
@@ -99,7 +104,7 @@ describe("persister health", () => {
   });
 
   it("returns 405 for non-GET methods and 404 for unknown routes", () => {
-    const handler = createHealthHandler(createHealthContext());
+    const handler = makeHandler(createHealthContext());
 
     const methodRes = createMockRes();
     handler({ method: "POST", url: "/health" } as any, methodRes as any);
@@ -117,7 +122,7 @@ describe("persister health", () => {
     ctx.redisHealthy = true;
     ctx.circuitOpen = true;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const readyRes = createMockRes();
     handler({ method: "GET", url: "/ready" } as any, readyRes as any);
 
@@ -182,7 +187,7 @@ describe("persister health", () => {
     ctx.postgresHealthy = true;
     ctx.redisHealthy = true;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
 
     const healthzRes = createMockRes();
     handler({ method: "GET", url: "/healthz" } as any, healthzRes as any);
@@ -200,7 +205,7 @@ describe("persister health", () => {
     ctx.kafkaHealthy = false;
     ctx.postgresHealthy = false;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const res = createMockRes();
     handler({ method: "GET", url: "/health" } as any, res as any);
 
@@ -214,7 +219,7 @@ describe("persister health", () => {
     ctx.postgresHealthy = true;
     ctx.redisHealthy = true;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const res = createMockRes();
     handler({ method: "GET", url: "/metrics" } as any, res as any);
 
@@ -226,7 +231,7 @@ describe("persister health", () => {
     ctx.kafkaHealthy = false;
     ctx.postgresHealthy = false;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const res = createMockRes();
     handler({ method: "GET", url: "/metrics" } as any, res as any);
 
@@ -243,7 +248,7 @@ describe("persister health", () => {
     observePostgresWriteDuration(ctx, 0.12);
     observePostgresWriteDuration(ctx, 0.8);
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const res = createMockRes();
     handler({ method: "GET", url: "/metrics" } as any, res as any);
 
@@ -296,7 +301,7 @@ describe("persister health", () => {
     ctx.postgresHealthy = true;
     ctx.redisHealthy = true;
 
-    const handler = createHealthHandler(ctx);
+    const handler = makeHandler(ctx);
     const res = createMockRes();
     handler({ method: "GET", url: "/metrics" } as any, res as any);
 

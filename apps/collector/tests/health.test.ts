@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { createHealthHandler } from "@rising-intelligence/shared";
 import {
   createHealthContext,
-  createHealthHandler,
+  createHandlers,
   getHealthStatus,
   incrementCheckpointsWritten,
   incrementError,
@@ -36,7 +37,7 @@ describe("health handler", () => {
     ctx.allowlistHealthy = true;
     incrementEventsPublished(ctx, "rss", 2);
 
-    const handler = createHealthHandler(ctx);
+    const handler = createHealthHandler(createHandlers(ctx));
 
     const healthRes = createMockRes();
     handler({ method: "GET", url: "/health" } as any, healthRes as any);
@@ -57,7 +58,7 @@ describe("health handler", () => {
   });
 
   it("returns 405 for non-GET methods and 404 for unknown routes", () => {
-    const handler = createHealthHandler(createHealthContext());
+    const handler = createHealthHandler(createHandlers(createHealthContext()));
 
     const methodRes = createMockRes();
     handler({ method: "POST", url: "/health" } as any, methodRes as any);
@@ -102,7 +103,7 @@ describe("health handler", () => {
     ctx.kafkaHealthy = true;
     ctx.checkpointsHealthy = false;
     ctx.allowlistHealthy = true;
-    const handler = createHealthHandler(ctx);
+    const handler = createHealthHandler(createHandlers(ctx));
 
     const readyRes = createMockRes();
     handler({ method: "GET", url: "/ready" } as any, readyRes as any);
@@ -123,7 +124,7 @@ describe("health handler", () => {
     incrementCheckpointsWritten(ctx, "rss");
     recordLastPoll(ctx, "rss");
 
-    const handler = createHealthHandler(ctx);
+    const handler = createHealthHandler(createHandlers(ctx));
     const metricsRes = createMockRes();
     handler({ method: "GET", url: "/metrics" } as any, metricsRes as any);
 

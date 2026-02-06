@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { loadDotEnv } from "@rising-intelligence/shared";
+import { loadDotEnv, parseConfig } from "@rising-intelligence/shared";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 
@@ -20,17 +20,7 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 export function loadConfig(): Config {
   loadDotEnv();
-
-  const result = ConfigSchema.safeParse(process.env);
-  if (!result.success) {
-    console.error("Configuration validation failed:");
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join(".")}: ${issue.message}`);
-    }
-    process.exit(1);
-  }
-
-  return result.data;
+  return parseConfig(ConfigSchema);
 }
 
 let cachedConfig: Config | null = null;

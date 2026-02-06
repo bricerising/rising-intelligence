@@ -1,6 +1,7 @@
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
-import type { PrismaClient } from "@rising-intelligence/db";
+import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
+import { serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
@@ -15,13 +16,6 @@ import {
 } from "./health.js";
 import { applyEventToWindows } from "./redis.js";
 
-function serializeError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
-
 function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   if (!value) {
     return fallback;
@@ -32,41 +26,6 @@ function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   } catch {
     return fallback;
   }
-}
-
-async function upsertConsumerLag(
-  prisma: PrismaClient,
-  config: Config,
-  topic: string,
-  partition: number,
-  currentOffset: bigint,
-  latestOffset: bigint,
-  lagMessages: bigint
-): Promise<void> {
-  await prisma.consumerLag.upsert({
-    where: {
-      consumerGroup_topic_partition: {
-        consumerGroup: config.KAFKA_CONSUMER_GROUP,
-        topic,
-        partition,
-      },
-    },
-    update: {
-      currentOffset,
-      latestOffset,
-      lagMessages,
-      updatedAt: new Date(),
-    },
-    create: {
-      consumerGroup: config.KAFKA_CONSUMER_GROUP,
-      topic,
-      partition,
-      currentOffset,
-      latestOffset,
-      lagMessages,
-      updatedAt: new Date(),
-    },
-  });
 }
 
 export interface TrendsContext {
@@ -188,12 +147,15 @@ export async function processBatch(
   try {
     await upsertConsumerLag(
       ctx.prisma,
-      ctx.config,
-      batch.topic,
-      batch.partition,
-      currentOffset,
-      latestOffset,
-      lag
+      {
+        consumerGroup: ctx.config.KAFKA_CONSUMER_GROUP,
+        topic: batch.topic,
+        partition: batch.partition,
+        currentOffset,
+        latestOffset,
+        lagMessages: lag,
+        observedAt: new Date(now),
+      }
     );
     ctx.healthContext.postgresHealthy = true;
     ctx.lagWriteTimestamps.set(partitionKey, now);

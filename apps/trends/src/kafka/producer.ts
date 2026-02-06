@@ -1,4 +1,5 @@
-import { CompressionTypes, Kafka, Producer, logLevel } from "kafkajs";
+import { CompressionTypes, Kafka, Producer } from "kafkajs";
+import { connectKafkaProducer } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -9,54 +10,18 @@ export interface KafkaProducerContext {
 
 export async function createKafkaProducer(logger: Logger): Promise<KafkaProducerContext> {
   const config = getConfig();
-  const brokers = config.KAFKA_BROKERS
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-
-  if (brokers.length === 0) {
-    throw new Error("KAFKA_BROKERS must include at least one broker");
-  }
-
-  const kafka = new Kafka({
-    clientId: `${config.KAFKA_CLIENT_ID}-producer`,
-    brokers,
-    logLevel: logLevel.WARN,
-    logCreator: () => {
-      return ({ level, log }) => {
-        if (level === logLevel.NOTHING) {
-          return;
-        }
-
-        const { message, ...extra } = log;
-        const pinoLevel = {
-          [logLevel.ERROR]: "error",
-          [logLevel.WARN]: "warn",
-          [logLevel.INFO]: "info",
-          [logLevel.DEBUG]: "debug",
-        }[level] as "error" | "warn" | "info" | "debug" | undefined;
-
-        if (!pinoLevel) {
-          logger.debug({ level, ...extra, kafkajs: true }, message);
-          return;
-        }
-
-        logger[pinoLevel]({ ...extra, kafkajs: true }, message);
-      };
-    },
-  });
-
-  const producer = kafka.producer({
+  const connection = await connectKafkaProducer({
+    brokers: config.KAFKA_BROKERS,
+    clientId: config.KAFKA_CLIENT_ID,
+    clientIdSuffix: "-producer",
+    logger,
     allowAutoTopicCreation: false,
-    transactionTimeout: 30000,
   });
-
-  await producer.connect();
-  logger.info({ brokers }, "Kafka producer connected");
+  logger.info({ brokers: connection.brokers }, "Kafka producer connected");
 
   return {
-    kafka,
-    producer,
+    kafka: connection.kafka,
+    producer: connection.producer,
   };
 }
 

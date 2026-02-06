@@ -1,6 +1,12 @@
 import type { Server } from "node:http";
+import {
+  closeServer,
+  serializeError,
+  runService,
+  createServiceLogger,
+} from "@rising-intelligence/shared";
+import type pino from "pino";
 import { getConfig } from "./config.js";
-import { getLogger } from "./logger.js";
 import {
   createHealthContext,
   incrementConsumed,
@@ -18,34 +24,15 @@ import { deserializeSummaryRequest } from "./deserialize.js";
 
 interface RuntimeContext {
   config: ReturnType<typeof getConfig>;
-  logger: ReturnType<typeof getLogger>;
+  logger: pino.Logger;
   healthContext: HealthContext;
   healthServer: Server;
   kafkaContext: KafkaConsumerContext;
 }
 
-function serializeError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
-
-async function closeServer(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
 async function initialize(): Promise<RuntimeContext> {
   const config = getConfig();
-  const logger = getLogger();
+  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
   logger.info({ service: config.SERVICE_NAME }, "Starting brief service");
 
   const healthContext = createHealthContext();
@@ -120,16 +107,7 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
   });
 }
 
-async function shutdown(ctx: RuntimeContext | null, exitCode: number): Promise<never> {
-  if (!ctx) {
-    process.exit(exitCode);
-  }
-
-  const timeout = setTimeout(() => {
-    ctx.logger.error({ timeoutMs: ctx.config.SHUTDOWN_TIMEOUT_MS }, "Shutdown timeout reached");
-    process.exit(1);
-  }, ctx.config.SHUTDOWN_TIMEOUT_MS);
-
+async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   try {
     await disconnectKafkaConsumer(ctx.kafkaContext.consumer, ctx.logger);
     ctx.healthContext.kafkaHealthy = false;
@@ -142,52 +120,28 @@ async function shutdown(ctx: RuntimeContext | null, exitCode: number): Promise<n
   } catch (error) {
     ctx.logger.warn({ error: serializeError(error) }, "Health server close failed");
   }
-
-  clearTimeout(timeout);
-  process.exit(exitCode);
 }
 
-let shuttingDown = false;
+let _logger: pino.Logger | null = null;
 
-async function start(): Promise<void> {
-  let context: RuntimeContext | null = null;
-
-  const requestShutdown = async (exitCode: number) => {
-    if (shuttingDown) {
-      return;
+runService<RuntimeContext>({
+  name: "brief",
+  shutdownTimeoutMs: 30000,
+  getLogger() {
+    if (!_logger) {
+      _logger = createServiceLogger("brief", "info");
     }
-
-    shuttingDown = true;
-    await shutdown(context, exitCode);
-  };
-
-  process.on("SIGTERM", () => {
-    void requestShutdown(0);
-  });
-
-  process.on("SIGINT", () => {
-    void requestShutdown(0);
-  });
-
-  process.on("uncaughtException", (error) => {
-    getLogger().error({ error: serializeError(error) }, "Uncaught exception");
-    void requestShutdown(1);
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    getLogger().error({ error: serializeError(reason) }, "Unhandled rejection");
-    void requestShutdown(1);
-  });
-
-  try {
-    context = await initialize();
-    await runConsumer(context);
-  } catch (error) {
-    getLogger().error({ error: serializeError(error) }, "Brief service crashed");
-    await requestShutdown(1);
-  }
-}
-
-void start();
-
-export {};
+    return _logger;
+  },
+  async initialize() {
+    const ctx = await initialize();
+    _logger = ctx.logger;
+    return ctx;
+  },
+  async run(ctx) {
+    await runConsumer(ctx);
+  },
+  async shutdown(ctx) {
+    await gracefulShutdown(ctx);
+  },
+});

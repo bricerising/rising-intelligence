@@ -1,4 +1,10 @@
-import { PrismaClient, Source } from "@rising-intelligence/db";
+import {
+  PrismaClient,
+  Source,
+  type Prisma,
+  type ConsumerLagUpdate,
+  upsertConsumerLag as upsertSharedConsumerLag,
+} from "@rising-intelligence/db";
 import type { ParsedRawEvent } from "./types.js";
 
 export interface PersistBatchResult {
@@ -6,16 +12,6 @@ export interface PersistBatchResult {
   inserted: number;
   duplicates: number;
   insertedBySource: Map<Source, number>;
-}
-
-export interface ConsumerLagUpdate {
-  consumerGroup: string;
-  topic: string;
-  partition: number;
-  currentOffset: bigint;
-  latestOffset: bigint;
-  lagMessages: bigint;
-  observedAt: Date;
 }
 
 function groupBySource(events: ParsedRawEvent[]): Map<Source, ParsedRawEvent[]> {
@@ -34,6 +30,10 @@ function groupBySource(events: ParsedRawEvent[]): Map<Source, ParsedRawEvent[]> 
 }
 
 function toCreateManyInput(event: ParsedRawEvent) {
+  const sourceMeta = event.sourceMeta === null
+    ? undefined
+    : (event.sourceMeta as Prisma.InputJsonValue);
+
   return {
     eventId: event.eventId,
     source: event.source,
@@ -54,7 +54,7 @@ function toCreateManyInput(event: ParsedRawEvent) {
     extractedHashtags: event.extractedHashtags,
     extractedUrls: event.extractedUrls,
     topics: event.tags,
-    sourceMeta: (event.sourceMeta ?? undefined) as any,
+    sourceMeta,
   };
 }
 
@@ -95,32 +95,6 @@ export async function persistBatch(
   };
 }
 
-export async function upsertConsumerLag(
-  prisma: PrismaClient,
-  update: ConsumerLagUpdate
-): Promise<void> {
-  await prisma.consumerLag.upsert({
-    where: {
-      consumerGroup_topic_partition: {
-        consumerGroup: update.consumerGroup,
-        topic: update.topic,
-        partition: update.partition,
-      },
-    },
-    update: {
-      currentOffset: update.currentOffset,
-      latestOffset: update.latestOffset,
-      lagMessages: update.lagMessages,
-      updatedAt: update.observedAt,
-    },
-    create: {
-      consumerGroup: update.consumerGroup,
-      topic: update.topic,
-      partition: update.partition,
-      currentOffset: update.currentOffset,
-      latestOffset: update.latestOffset,
-      lagMessages: update.lagMessages,
-      updatedAt: update.observedAt,
-    },
-  });
-}
+export { type ConsumerLagUpdate };
+
+export const upsertConsumerLag = upsertSharedConsumerLag;

@@ -1,11 +1,6 @@
-export type Source =
-  | "rss"
-  | "news"
-  | "hackernews"
-  | "reddit"
-  | "github"
-  | "bluesky"
-  | "mastodon";
+import type { CanonicalSource } from "@rising-intelligence/shared";
+
+export type Source = CanonicalSource;
 
 export type TrendWindow = "15m" | "60m";
 

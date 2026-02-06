@@ -1,11 +1,46 @@
 import { Redis } from "ioredis";
 import type { Logger } from "pino";
+import { redactUrlPassword } from "@rising-intelligence/shared";
 import type { TrendWindow, ParsedRawEvent } from "./types.js";
 
 const WINDOW_SECONDS: Record<TrendWindow, number> = {
   "15m": 15 * 60,
   "60m": 60 * 60,
 };
+
+const APPLY_EVENT_TO_WINDOWS_SCRIPT = `
+local dedupKey = KEYS[1]
+local eventId = ARGV[1]
+local dedupTtlSeconds = tonumber(ARGV[2])
+local maxEvidencePerTopic = tonumber(ARGV[3])
+local engagementScore = tonumber(ARGV[4])
+local planCount = tonumber(ARGV[5])
+
+local dedupAdded = redis.call("SADD", dedupKey, eventId)
+redis.call("EXPIRE", dedupKey, dedupTtlSeconds)
+
+if dedupAdded == 0 then
+  return 0
+end
+
+local argIndex = 6
+for _ = 1, planCount do
+  local counterKey = ARGV[argIndex]
+  local counterTtl = tonumber(ARGV[argIndex + 1])
+  local evidenceKey = ARGV[argIndex + 2]
+  local evidenceTtl = tonumber(ARGV[argIndex + 3])
+
+  redis.call("INCR", counterKey)
+  redis.call("EXPIRE", counterKey, counterTtl)
+  redis.call("ZADD", evidenceKey, engagementScore, eventId)
+  redis.call("ZREMRANGEBYRANK", evidenceKey, 0, -(maxEvidencePerTopic + 1))
+  redis.call("EXPIRE", evidenceKey, evidenceTtl)
+
+  argIndex = argIndex + 4
+end
+
+return 1
+`;
 
 function getWindowSeconds(window: TrendWindow): number {
   return WINDOW_SECONDS[window];
@@ -53,7 +88,7 @@ export async function createRedisClient(redisUrl: string, logger: Logger): Promi
   });
 
   await redis.connect();
-  logger.info({ redisUrl }, "Redis connected");
+  logger.info({ redisUrl: redactUrlPassword(redisUrl, "<invalid-redis-url>") }, "Redis connected");
   return redis;
 }
 
@@ -89,15 +124,14 @@ export async function applyEventToWindows(
   }
 
   const dedupKey = getDedupKey(dedupWindow, dedupBucket);
-  const dedupAdded = await redis.sadd(dedupKey, event.eventId);
-  await redis.expire(dedupKey, getWindowSeconds(dedupWindow) * 3);
-
-  if (dedupAdded === 0) {
-    return { duplicate: true, buckets };
-  }
-
+  const dedupTtlSeconds = getWindowSeconds(dedupWindow) * 3;
   const engagementScore = event.engagementScore ?? 0;
-  const pipeline = redis.pipeline();
+  const windowPlans: Array<{
+    counterKey: string;
+    counterTtlSeconds: number;
+    evidenceKey: string;
+    evidenceTtlSeconds: number;
+  }> = [];
 
   for (const window of windows) {
     const bucket = buckets[window];
@@ -109,19 +143,41 @@ export async function applyEventToWindows(
     const evidenceTtlSeconds = getWindowSeconds(window) * 2;
 
     for (const topic of topics) {
-      const counterKey = getCounterKey(window, topic, bucket);
-      const evidenceKey = getEvidenceKey(window, topic);
-
-      pipeline.incr(counterKey);
-      pipeline.expire(counterKey, ttlSeconds);
-
-      pipeline.zadd(evidenceKey, engagementScore, event.eventId);
-      pipeline.zremrangebyrank(evidenceKey, 0, -(maxEvidencePerTopic + 1));
-      pipeline.expire(evidenceKey, evidenceTtlSeconds);
+      windowPlans.push({
+        counterKey: getCounterKey(window, topic, bucket),
+        counterTtlSeconds: ttlSeconds,
+        evidenceKey: getEvidenceKey(window, topic),
+        evidenceTtlSeconds,
+      });
     }
   }
 
-  await pipeline.exec();
+  const planArgs = windowPlans.flatMap((plan) => [
+    plan.counterKey,
+    plan.counterTtlSeconds,
+    plan.evidenceKey,
+    plan.evidenceTtlSeconds,
+  ]);
+  const scriptResult = await redis.eval(
+    APPLY_EVENT_TO_WINDOWS_SCRIPT,
+    1,
+    dedupKey,
+    event.eventId,
+    dedupTtlSeconds,
+    maxEvidencePerTopic,
+    engagementScore,
+    windowPlans.length,
+    ...planArgs
+  );
+  const dedupAdded = typeof scriptResult === "number"
+    ? scriptResult
+    : Number.parseInt(String(scriptResult), 10);
+  if (Number.isNaN(dedupAdded) || (dedupAdded !== 0 && dedupAdded !== 1)) {
+    throw new Error(`Unexpected dedup script result: ${String(scriptResult)}`);
+  }
+  if (dedupAdded === 0) {
+    return { duplicate: true, buckets };
+  }
 
   return { duplicate: false, buckets };
 }

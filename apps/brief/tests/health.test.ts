@@ -8,11 +8,12 @@ vi.mock("../src/config.js", () => ({
   }),
 }));
 
+import { createHealthHandler } from "@rising-intelligence/shared";
 import {
   createHealthContext,
+  createHandlers,
   getHealthStatus,
   formatMetrics,
-  createHealthHandler,
   incrementConsumed,
   incrementMalformed,
   incrementError,
@@ -136,7 +137,7 @@ describe("brief health", () => {
     it("returns 200 for /health when healthy", () => {
       ctx.kafkaHealthy = true;
 
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/health"), res);
 
@@ -146,7 +147,7 @@ describe("brief health", () => {
     });
 
     it("returns 503 for /health when unhealthy", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/health"), res);
 
@@ -156,7 +157,7 @@ describe("brief health", () => {
     it("handles /healthz alias", () => {
       ctx.kafkaHealthy = true;
 
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/healthz"), res);
 
@@ -166,7 +167,7 @@ describe("brief health", () => {
     it("returns 200 for /ready when kafka healthy", () => {
       ctx.kafkaHealthy = true;
 
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/ready"), res);
 
@@ -176,7 +177,7 @@ describe("brief health", () => {
     });
 
     it("returns 503 for /ready when kafka unhealthy", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/ready"), res);
 
@@ -186,7 +187,7 @@ describe("brief health", () => {
     });
 
     it("handles /readyz alias", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/readyz"), res);
 
@@ -194,7 +195,7 @@ describe("brief health", () => {
     });
 
     it("returns metrics on /metrics", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/metrics"), res);
 
@@ -204,7 +205,7 @@ describe("brief health", () => {
     });
 
     it("returns 404 for unknown paths", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("GET", "/unknown"), res);
 
@@ -212,7 +213,7 @@ describe("brief health", () => {
     });
 
     it("returns 405 for non-GET methods", () => {
-      const handler = createHealthHandler(ctx);
+      const handler = createHealthHandler(createHandlers(ctx));
       const res = makeResponse();
       handler(makeRequest("POST", "/health"), res);
 

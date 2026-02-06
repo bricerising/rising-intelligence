@@ -1,7 +1,16 @@
 import { Server } from "node:http";
-import { Producer } from "kafkajs";
-import { loadConfig, getConfig } from "./config.js";
-import { getLogger, createChildLogger } from "./logger.js";
+import {
+  closeServer,
+  serializeError,
+  runService,
+  createServiceLogger,
+  BackoffManager,
+  sleep,
+  isRateLimitError,
+  isTransientError,
+} from "@rising-intelligence/shared";
+import type pino from "pino";
+import { loadConfig } from "./config.js";
 import {
   createKafkaProducer,
   disconnectProducer,
@@ -21,9 +30,8 @@ import {
 } from "./health.js";
 import { CheckpointStore } from "./checkpoint.js";
 import { loadAllowlist, extractTopics, CompiledAllowlist } from "./topics/extractor.js";
-import { BackoffManager, sleep, isRateLimitError, isTransientError } from "./backoff.js";
 import { serializeRawEvent, serializeDeadLetterEvent, serializeHeartbeat, generateDlqId } from "./serializer.js";
-import type { SourceAdapter, RawEvent, DeadLetterEvent, CollectorHeartbeat, Source } from "./types.js";
+import type { SourceAdapter, DeadLetterEvent, CollectorHeartbeat } from "./types.js";
 
 // Import adapters
 import { createRSSAdapter } from "./adapters/rss.js";
@@ -32,7 +40,7 @@ import { createLobstersAdapter } from "./adapters/lobsters.js";
 
 interface CollectorContext {
   config: ReturnType<typeof loadConfig>;
-  logger: ReturnType<typeof getLogger>;
+  logger: pino.Logger;
   kafkaContext: KafkaProducerContext;
   healthContext: HealthContext;
   healthServer: Server;
@@ -43,28 +51,80 @@ interface CollectorContext {
   lastSeenCleanupAt: number;
 }
 
+type CollectorConfig = ReturnType<typeof loadConfig>;
+
+interface AdapterFactory {
+  name: string;
+  isEnabled(config: CollectorConfig): boolean;
+  create(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger): SourceAdapter;
+}
+
+const ADAPTER_FACTORIES: ReadonlyArray<AdapterFactory> = [
+  {
+    name: "rss",
+    isEnabled: (config) => config.RSS_ENABLED,
+    create: (config, checkpointStore, logger) =>
+      createRSSAdapter(
+        config.FEEDS_CONFIG_PATH,
+        config.RSS_POLL_INTERVAL_SECONDS * 1000,
+        checkpointStore,
+        logger.child({ adapter: "rss" })
+      ),
+  },
+  {
+    name: "hackernews",
+    isEnabled: (config) => config.HN_ENABLED,
+    create: (config, checkpointStore, logger) =>
+      createHackerNewsAdapter(
+        config.HN_MODE,
+        config.HN_POLL_INTERVAL_SECONDS * 1000,
+        config.HN_MAX_ITEMS_PER_POLL,
+        checkpointStore,
+        logger.child({ adapter: "hackernews" })
+      ),
+  },
+  {
+    name: "lobsters",
+    isEnabled: (config) => config.LOBSTERS_ENABLED,
+    create: (config, checkpointStore, logger) =>
+      createLobstersAdapter(
+        config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
+        config.LOBSTERS_MAX_ITEMS_PER_POLL,
+        checkpointStore,
+        logger.child({ adapter: "lobsters" })
+      ),
+  },
+];
+
+function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger): SourceAdapter[] {
+  const adapters: SourceAdapter[] = [];
+
+  for (const factory of ADAPTER_FACTORIES) {
+    if (!factory.isEnabled(config)) {
+      continue;
+    }
+    adapters.push(factory.create(config, checkpointStore, logger));
+  }
+
+  return adapters;
+}
+
 async function initializeCollector(): Promise<CollectorContext> {
-  // Load config first (validates env vars)
   const config = loadConfig();
-  const logger = getLogger();
+  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
   logger.info({ service: config.SERVICE_NAME }, "Starting collector service");
 
-  // Create health context
   const healthContext = createHealthContext();
-
-  // Start health server early
   const healthServer = startHealthServer(healthContext, logger);
 
-  // Initialize checkpoint store
   const checkpointStore = new CheckpointStore(
     config.CHECKPOINT_PATH,
-    createChildLogger({ component: "checkpoint" })
+    logger.child({ component: "checkpoint" })
   );
   await checkpointStore.initialize();
   healthContext.checkpointsHealthy = true;
 
-  // Load topics allowlist
   let allowlist: CompiledAllowlist;
   try {
     allowlist = loadAllowlist(config.TOPICS_ALLOWLIST_PATH);
@@ -79,48 +139,11 @@ async function initializeCollector(): Promise<CollectorContext> {
     throw error;
   }
 
-  // Connect to Kafka
   const kafkaContext = await createKafkaProducer(logger);
   healthContext.kafkaHealthy = true;
 
-  // Initialize adapters based on config
-  const adapters: SourceAdapter[] = [];
+  const adapters = buildAdapters(config, checkpointStore, logger);
 
-  if (config.RSS_ENABLED) {
-    adapters.push(
-      createRSSAdapter(
-        config.FEEDS_CONFIG_PATH,
-        config.RSS_POLL_INTERVAL_SECONDS * 1000,
-        checkpointStore,
-        createChildLogger({ adapter: "rss" })
-      )
-    );
-  }
-
-  if (config.HN_ENABLED) {
-    adapters.push(
-      createHackerNewsAdapter(
-        config.HN_MODE,
-        config.HN_POLL_INTERVAL_SECONDS * 1000,
-        config.HN_MAX_ITEMS_PER_POLL,
-        checkpointStore,
-        createChildLogger({ adapter: "hackernews" })
-      )
-    );
-  }
-
-  if (config.LOBSTERS_ENABLED) {
-    adapters.push(
-      createLobstersAdapter(
-        config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
-        config.LOBSTERS_MAX_ITEMS_PER_POLL,
-        checkpointStore,
-        createChildLogger({ adapter: "lobsters" })
-      )
-    );
-  }
-
-  // Initialize all adapters
   for (const adapter of adapters) {
     await adapter.initialize();
     healthContext.sourceHealth.set(adapter.name, {
@@ -147,8 +170,8 @@ async function runAdapter(
   ctx: CollectorContext,
   adapter: SourceAdapter
 ): Promise<void> {
-  const { logger, kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
-  const adapterLogger = createChildLogger({ adapter: adapter.name });
+  const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
+  const adapterLogger = ctx.logger.child({ adapter: adapter.name });
   const backoff = new BackoffManager(adapter.name, adapterLogger);
 
   while (!ctx.shutdownRequested) {
@@ -160,25 +183,20 @@ async function runAdapter(
       for await (const { event, checkpointKey, checkpointValue } of adapter.fetch()) {
         if (ctx.shutdownRequested) break;
 
-        // Always advance our local "last checkpoint" for handled items.
-        // This prevents repeated reprocessing of duplicate/invalid items.
         lastCheckpointKey = checkpointKey;
         lastCheckpointValue = checkpointValue;
 
-        // Check if already seen (dedup)
         if (checkpointStore.hasSeen(adapter.source, event.event_id)) {
           adapterLogger.debug({ eventId: event.event_id }, "Duplicate event skipped");
           continue;
         }
 
-        // Extract topics
         const topics = extractTopics(
           { title: event.title, text: event.text },
           allowlist
         );
         event.tags = topics;
 
-        // Validate event (basic checks)
         if (!event.event_id || !event.text) {
           const dlqEvent: DeadLetterEvent = {
             dlq_id: generateDlqId(),
@@ -200,7 +218,6 @@ async function runAdapter(
           continue;
         }
 
-        // Publish to Kafka
         await publishEvent(
           kafkaContext.producer,
           TOPICS.RAW_EVENTS,
@@ -209,7 +226,6 @@ async function runAdapter(
           adapterLogger
         );
 
-        // Mark as seen
         checkpointStore.markSeen(adapter.source, event.event_id);
         incrementEventsPublished(healthContext, adapter.source);
         healthContext.lastEventAt = new Date();
@@ -217,7 +233,6 @@ async function runAdapter(
         batchCount++;
       }
 
-      // Update checkpoint after successful batch
       if (lastCheckpointKey && lastCheckpointValue) {
         checkpointStore.setCheckpoint(
           adapter.name,
@@ -227,7 +242,6 @@ async function runAdapter(
         incrementCheckpointsWritten(healthContext, adapter.source);
       }
 
-      // Update health status
       healthContext.sourceHealth.set(adapter.name, {
         status: "healthy",
         last_poll_at: new Date().toISOString(),
@@ -235,14 +249,12 @@ async function runAdapter(
       });
       recordLastPoll(healthContext, adapter.source);
 
-      // Periodically cleanup old seen-event entries to prevent unbounded growth.
       const now = Date.now();
       if (now - ctx.lastSeenCleanupAt > 60 * 60 * 1000) {
         checkpointStore.cleanupSeen("-7 days");
         ctx.lastSeenCleanupAt = now;
       }
 
-      // Publish heartbeat
       const heartbeat: CollectorHeartbeat = {
         source: adapter.source,
         timestamp: new Date().toISOString(),
@@ -261,7 +273,6 @@ async function runAdapter(
       adapterLogger.info({ batchCount }, "Poll cycle complete");
       backoff.reset();
 
-      // Wait for next poll interval
       if (ctx.shutdownRequested) break;
       await sleep(adapter.pollIntervalMs);
 
@@ -270,13 +281,11 @@ async function runAdapter(
 
       const lastSuccessfulPollAt = healthContext.sourceHealth.get(adapter.name)?.last_poll_at;
 
-      // Update health status
       healthContext.sourceHealth.set(adapter.name, {
         status: "error",
         error_message: error instanceof Error ? error.message : String(error),
       });
 
-      // Publish error heartbeat
       const heartbeat: CollectorHeartbeat = {
         source: adapter.source,
         timestamp: new Date().toISOString(),
@@ -297,7 +306,6 @@ async function runAdapter(
         // Ignore heartbeat publish errors
       }
 
-      // Track error metrics
       if (ctx.shutdownRequested) break;
       if (isRateLimitError(error)) {
         incrementError(healthContext, adapter.source, "rate_limit");
@@ -316,67 +324,64 @@ async function runAdapter(
 async function gracefulShutdown(ctx: CollectorContext): Promise<void> {
   const { logger, kafkaContext, healthServer, checkpointStore, adapters } = ctx;
 
-  logger.info("Initiating graceful shutdown");
   ctx.shutdownRequested = true;
 
-  // Shutdown adapters
   for (const adapter of adapters) {
     try {
       await adapter.shutdown();
       logger.info({ adapter: adapter.name }, "Adapter shut down");
     } catch (error) {
-      logger.error({ adapter: adapter.name, error }, "Adapter shutdown error");
+      logger.error(
+        { adapter: adapter.name, error: serializeError(error) },
+        "Adapter shutdown error"
+      );
     }
   }
 
-  // Flush checkpoints
   checkpointStore.close();
   logger.info("Checkpoints flushed");
 
-  // Disconnect Kafka
-  await disconnectProducer(kafkaContext.producer, logger);
-
-  // Close health server
-  await new Promise<void>((resolve) => {
-    healthServer.close(() => resolve());
-  });
-  logger.info("Health server closed");
-
-  logger.info("Graceful shutdown complete");
-}
-
-async function main(): Promise<void> {
-  let ctx: CollectorContext | null = null;
+  try {
+    await disconnectProducer(kafkaContext.producer, logger);
+    ctx.healthContext.kafkaHealthy = false;
+  } catch (error) {
+    logger.warn({ error: serializeError(error) }, "Kafka producer disconnect failed");
+  }
 
   try {
-    ctx = await initializeCollector();
+    await closeServer(healthServer);
+    logger.info("Health server closed");
+  } catch (error) {
+    logger.warn({ error: serializeError(error) }, "Health server close failed");
+  }
+}
 
-    // Setup signal handlers
-    const shutdown = async () => {
-      if (ctx) {
-        await gracefulShutdown(ctx);
-      }
-      process.exit(0);
-    };
+let _logger: pino.Logger | null = null;
 
-    process.on("SIGTERM", shutdown);
-    process.on("SIGINT", shutdown);
-
-    // Run all adapters concurrently
+runService<CollectorContext>({
+  name: "collector",
+  shutdownTimeoutMs: 30000,
+  getLogger() {
+    if (!_logger) {
+      _logger = createServiceLogger("collector", "info");
+    }
+    return _logger;
+  },
+  async initialize() {
+    const ctx = await initializeCollector();
+    _logger = ctx.logger;
+    return ctx;
+  },
+  async run(ctx) {
     ctx.logger.info(
       { adapterCount: ctx.adapters.length },
       "Starting adapter loops"
     );
-
     await Promise.all(
-      ctx.adapters.map((adapter) => runAdapter(ctx!, adapter))
+      ctx.adapters.map((adapter) => runAdapter(ctx, adapter))
     );
-
-  } catch (error) {
-    const logger = ctx?.logger ?? getLogger();
-    logger.fatal({ error }, "Fatal error in collector");
-    process.exit(1);
-  }
-}
-
-main();
+  },
+  async shutdown(ctx) {
+    await gracefulShutdown(ctx);
+  },
+});

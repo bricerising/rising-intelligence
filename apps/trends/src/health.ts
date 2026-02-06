@@ -1,17 +1,21 @@
-import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Server } from "node:http";
 import type { Logger } from "pino";
+import {
+  startHealthServer as startSharedHealthServer,
+  createHealthHandler as createSharedHealthHandler,
+  quoteMetricLabelValue,
+  type HistogramState,
+  createHistogram,
+  observeHistogram,
+  formatHistogram,
+  formatMetricLabels,
+  getMaxConsumerLag,
+  type HealthHandlers,
+} from "@rising-intelligence/shared";
 import { getConfig } from "./config.js";
 import type { TrendWindow } from "./types.js";
 
 const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
-
-interface HistogramState {
-  buckets: number[];
-  bucketCounts: number[];
-  overflowCount: number;
-  count: number;
-  sum: number;
-}
 
 export interface Metrics {
   eventsProcessed: number;
@@ -47,82 +51,6 @@ export interface HealthStatus {
   last_event_at?: string;
 }
 
-function createHistogram(buckets: number[]): HistogramState {
-  return {
-    buckets,
-    bucketCounts: new Array(buckets.length).fill(0),
-    overflowCount: 0,
-    count: 0,
-    sum: 0,
-  };
-}
-
-function observeHistogram(histogram: HistogramState, value: number): void {
-  if (!Number.isFinite(value) || value < 0) {
-    return;
-  }
-
-  histogram.count++;
-  histogram.sum += value;
-
-  for (let i = 0; i < histogram.buckets.length; i++) {
-    if (value <= histogram.buckets[i]) {
-      histogram.bucketCounts[i]++;
-      return;
-    }
-  }
-
-  histogram.overflowCount++;
-}
-
-function quoteMetricLabelValue(value: string): string {
-  return value
-    .replaceAll("\\", "\\\\")
-    .replaceAll("\"", "\\\"")
-    .replaceAll("\n", "\\n");
-}
-
-function formatMetricLabels(labels: Record<string, string>): string {
-  const entries = Object.entries(labels);
-  if (entries.length === 0) {
-    return "";
-  }
-
-  return `{${entries
-    .map(([name, value]) => `${name}="${quoteMetricLabelValue(value)}"`)
-    .join(",")}}`;
-}
-
-function formatHistogram(
-  name: string,
-  help: string,
-  histogram: HistogramState,
-  extraLabels: Record<string, string> = {},
-  includeMetadata = true
-): string[] {
-  const lines: string[] = [];
-  if (includeMetadata) {
-    lines.push(`# HELP ${name} ${help}`);
-    lines.push(`# TYPE ${name} histogram`);
-  }
-
-  let cumulativeCount = 0;
-  for (let i = 0; i < histogram.buckets.length; i++) {
-    cumulativeCount += histogram.bucketCounts[i];
-    const labels = formatMetricLabels({ ...extraLabels, le: histogram.buckets[i].toString() });
-    lines.push(`${name}_bucket${labels} ${cumulativeCount}`);
-  }
-
-  const infLabels = formatMetricLabels({ ...extraLabels, le: "+Inf" });
-  lines.push(`${name}_bucket${infLabels} ${histogram.count}`);
-
-  const countLabels = formatMetricLabels(extraLabels);
-  lines.push(`${name}_sum${countLabels} ${histogram.sum}`);
-  lines.push(`${name}_count${countLabels} ${histogram.count}`);
-
-  return lines;
-}
-
 function makeTopicWindowKey(topic: string, window: TrendWindow): string {
   return `${topic}|${window}`;
 }
@@ -133,16 +61,6 @@ function parseTopicWindowKey(value: string): { topic: string; window: TrendWindo
     topic,
     window: window as TrendWindow,
   };
-}
-
-function getMaxConsumerLag(lagMap: Map<number, bigint>): bigint {
-  let maxLag = 0n;
-  for (const lag of lagMap.values()) {
-    if (lag > maxLag) {
-      maxLag = lag;
-    }
-  }
-  return maxLag;
 }
 
 export function createMetrics(): Metrics {
@@ -327,55 +245,34 @@ export function formatMetrics(ctx: HealthContext): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function createHealthHandler(ctx: HealthContext) {
-  return (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method !== "GET") {
-      res.writeHead(405);
-      res.end("Method not allowed");
-      return;
-    }
-
-    if (req.url === "/health" || req.url === "/healthz") {
+export function createHandlers(ctx: HealthContext): HealthHandlers {
+  return {
+    getHealth() {
       const health = getHealthStatus(ctx);
-      const statusCode = health.status === "unhealthy" ? 503 : 200;
-      res.writeHead(statusCode, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(health, null, 2));
-      return;
-    }
-
-    if (req.url === "/ready" || req.url === "/readyz") {
+      return { status: health.status, body: health };
+    },
+    isReady() {
       const ready = ctx.kafkaHealthy && ctx.postgresHealthy && ctx.redisHealthy && ctx.allowlistHealthy;
-      res.writeHead(ready ? 200 : 503, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
+      return {
+        ready,
+        body: {
           ready,
           kafka: ctx.kafkaHealthy,
           postgres: ctx.postgresHealthy,
           redis: ctx.redisHealthy,
           allowlist: ctx.allowlistHealthy,
-        })
-      );
-      return;
-    }
-
-    if (req.url === "/metrics") {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(formatMetrics(ctx));
-      return;
-    }
-
-    res.writeHead(404);
-    res.end("Not found");
+        },
+      };
+    },
+    formatMetrics: () => formatMetrics(ctx),
   };
+}
+
+export function createHealthHandler(ctx: HealthContext) {
+  return createSharedHealthHandler(createHandlers(ctx));
 }
 
 export function startHealthServer(ctx: HealthContext, logger: Logger): Server {
   const config = getConfig();
-  const server = createServer(createHealthHandler(ctx));
-
-  server.listen(config.PORT, () => {
-    logger.info({ port: config.PORT }, "Health server started");
-  });
-
-  return server;
+  return startSharedHealthServer(config.PORT, createHandlers(ctx), logger);
 }

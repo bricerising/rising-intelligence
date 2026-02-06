@@ -5,10 +5,14 @@ const sharedMocks = vi.hoisted(() => ({
   getSecretValue: vi.fn(),
 }));
 
-vi.mock("@rising-intelligence/shared", () => ({
-  loadDotEnv: sharedMocks.loadDotEnv,
-  getSecretValue: sharedMocks.getSecretValue,
-}));
+vi.mock("@rising-intelligence/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared")>();
+  return {
+    ...actual,
+    getSecretValue: sharedMocks.getSecretValue,
+    loadDotEnv: sharedMocks.loadDotEnv,
+  };
+});
 
 describe("persister config", () => {
   const originalEnv = process.env;

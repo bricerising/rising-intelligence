@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { getSecretValue, loadDotEnv } from "@rising-intelligence/shared";
+import {
+  getSecretValue,
+  loadDotEnv,
+  parseConfig,
+  resolvePostgresPassword,
+  resolveDatabaseUrl,
+} from "@rising-intelligence/shared";
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("persister"),
@@ -33,27 +39,6 @@ export type Config = z.infer<typeof ConfigSchema> & {
   DATABASE_URL: string;
 };
 
-function resolvePostgresPassword(env: Record<string, string | undefined>): string {
-  if (env.POSTGRES_PASSWORD && env.POSTGRES_PASSWORD.trim().length > 0) {
-    return env.POSTGRES_PASSWORD;
-  }
-
-  const secret = getSecretValue("POSTGRES_PASSWORD");
-  if (secret && secret.trim().length > 0) {
-    return secret;
-  }
-
-  return "rising";
-}
-
-function buildDatabaseUrl(parsed: z.infer<typeof ConfigSchema>, password: string): string {
-  const username = encodeURIComponent(parsed.POSTGRES_USER);
-  const encodedPassword = encodeURIComponent(password);
-  const database = encodeURIComponent(parsed.POSTGRES_DB);
-
-  return `postgresql://${username}:${encodedPassword}@${parsed.POSTGRES_HOST}:${parsed.POSTGRES_PORT}/${database}`;
-}
-
 export function loadConfig(): Config {
   loadDotEnv();
 
@@ -65,22 +50,16 @@ export function loadConfig(): Config {
     }
   }
 
-  const result = ConfigSchema.safeParse(env);
-  if (!result.success) {
-    console.error("Configuration validation failed:");
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join(".")}: ${issue.message}`);
-    }
-    process.exit(1);
-  }
-
-  const parsed = result.data;
+  const parsed = parseConfig(ConfigSchema, env);
   const password = resolvePostgresPassword(env);
 
-  const databaseUrl =
-    parsed.DATABASE_URL && parsed.DATABASE_URL.trim().length > 0
-      ? parsed.DATABASE_URL
-      : buildDatabaseUrl(parsed, password);
+  const databaseUrl = resolveDatabaseUrl(parsed.DATABASE_URL, {
+    host: parsed.POSTGRES_HOST,
+    port: parsed.POSTGRES_PORT,
+    db: parsed.POSTGRES_DB,
+    user: parsed.POSTGRES_USER,
+    password,
+  });
 
   return {
     ...parsed,

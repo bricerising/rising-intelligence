@@ -1,4 +1,4 @@
-import { TrendWindow as DbTrendWindow, PrismaClient } from "@rising-intelligence/db";
+import { TrendWindow as DbTrendWindow, PrismaClient, type Prisma } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import type { Logger } from "pino";
@@ -187,7 +187,7 @@ async function publishWindowSnapshot(
     data: {
       generatedAt,
       window: mapWindowToDb(window),
-      snapshot: snapshot as any,
+      snapshot: snapshot as Prisma.InputJsonValue,
     },
   });
 

@@ -1,5 +1,10 @@
-import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Server } from "node:http";
 import type { Logger } from "pino";
+import {
+  startHealthServer as startSharedHealthServer,
+  quoteMetricLabelValue,
+  type HealthHandlers,
+} from "@rising-intelligence/shared";
 import { getConfig } from "./config.js";
 
 export interface Metrics {
@@ -57,13 +62,6 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
   };
 }
 
-function quoteMetricLabelValue(value: string): string {
-  return value
-    .replaceAll("\\", "\\\\")
-    .replaceAll("\"", "\\\"")
-    .replaceAll("\n", "\\n");
-}
-
 export function formatMetrics(ctx: HealthContext): string {
   const lines: string[] = [];
 
@@ -88,48 +86,21 @@ export function formatMetrics(ctx: HealthContext): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function createHealthHandler(ctx: HealthContext) {
-  return (req: IncomingMessage, res: ServerResponse) => {
-    if (req.method !== "GET") {
-      res.writeHead(405);
-      res.end("Method not allowed");
-      return;
-    }
-
-    if (req.url === "/health" || req.url === "/healthz") {
+export function createHandlers(ctx: HealthContext): HealthHandlers {
+  return {
+    getHealth() {
       const health = getHealthStatus(ctx);
-      res.writeHead(health.status === "healthy" ? 200 : 503, {
-        "Content-Type": "application/json",
-      });
-      res.end(JSON.stringify(health, null, 2));
-      return;
-    }
-
-    if (req.url === "/ready" || req.url === "/readyz") {
+      return { status: health.status, body: health };
+    },
+    isReady() {
       const ready = ctx.kafkaHealthy;
-      res.writeHead(ready ? 200 : 503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ready }));
-      return;
-    }
-
-    if (req.url === "/metrics") {
-      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(formatMetrics(ctx));
-      return;
-    }
-
-    res.writeHead(404);
-    res.end("Not found");
+      return { ready, body: { ready } };
+    },
+    formatMetrics: () => formatMetrics(ctx),
   };
 }
 
 export function startHealthServer(ctx: HealthContext, logger: Logger): Server {
   const config = getConfig();
-  const server = createServer(createHealthHandler(ctx));
-
-  server.listen(config.PORT, () => {
-    logger.info({ port: config.PORT }, "Health server started");
-  });
-
-  return server;
+  return startSharedHealthServer(config.PORT, createHandlers(ctx), logger);
 }

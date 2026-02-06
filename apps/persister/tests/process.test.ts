@@ -343,7 +343,7 @@ describe("processBatch", () => {
     expect(ctx.healthContext.postgresHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("postgres_error")).toBe(1);
     expect(ctx.logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "connection refused" }),
+      expect.objectContaining({ error: expect.objectContaining({ message: "connection refused" }) }),
       "Failed to persist Kafka batch"
     );
   });
@@ -415,7 +415,7 @@ describe("processBatch", () => {
     await processBatch(ctx, payload);
 
     expect(ctx.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "lag write failed" }),
+      expect.objectContaining({ error: expect.objectContaining({ message: "lag write failed" }) }),
       "Failed to update consumer lag"
     );
     expect(ctx.healthContext.metrics.errors.get("postgres_error")).toBe(1);
@@ -499,7 +499,7 @@ describe("persistAndMarkSeen", () => {
     expect(ctx.healthContext.redisHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("redis_error")).toBe(1);
     expect(ctx.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "READONLY" }),
+      expect.objectContaining({ error: expect.objectContaining({ message: "READONLY" }) }),
       "Failed to write seen keys to Redis; continuing"
     );
   });

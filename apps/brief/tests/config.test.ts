@@ -4,9 +4,13 @@ const sharedMocks = vi.hoisted(() => ({
   loadDotEnv: vi.fn(),
 }));
 
-vi.mock("@rising-intelligence/shared", () => ({
-  loadDotEnv: sharedMocks.loadDotEnv,
-}));
+vi.mock("@rising-intelligence/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared")>();
+  return {
+    ...actual,
+    loadDotEnv: sharedMocks.loadDotEnv,
+  };
+});
 
 describe("brief config", () => {
   const originalEnv = process.env;

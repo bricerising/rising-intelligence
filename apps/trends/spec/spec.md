@@ -98,6 +98,8 @@ The Trends service performs **two levels of deduplication**:
 1. **Event-level dedup**: Prevent the same `event_id` from being processed twice (handles Kafka at-least-once)
 2. **Story-level dedup**: Group events sharing a canonical URL as one "story" for counting
 
+Implementation note (2026-02-06): event-level dedup marking and window/evidence updates are applied atomically via a single Redis Lua script. This prevents a crash window where a dedup mark is written but counter updates are missed.
+
 ```typescript
 async function processEvent(event: RawEvent): Promise<void> {
   const topics = getTopics(event);
