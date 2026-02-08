@@ -1,9 +1,22 @@
 import { z } from "zod";
 import { getSecretValue } from "./secrets.js";
 
+export class ConfigValidationError extends Error {
+  readonly issues: ReadonlyArray<z.ZodIssue>;
+
+  constructor(issues: ReadonlyArray<z.ZodIssue>) {
+    const details = issues
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("\n  ");
+    super(`Configuration validation failed:\n  ${details}`);
+    this.name = "ConfigValidationError";
+    this.issues = issues;
+  }
+}
+
 /**
  * Parse and validate a Zod config schema against env vars.
- * Exits with code 1 on validation failure, printing each issue.
+ * Throws ConfigValidationError on validation failure.
  */
 export function parseConfig<TOutput, TDef extends z.ZodTypeDef, TInput>(
   schema: z.ZodType<TOutput, TDef, TInput>,
@@ -11,11 +24,7 @@ export function parseConfig<TOutput, TDef extends z.ZodTypeDef, TInput>(
 ): TOutput {
   const result = schema.safeParse(env);
   if (!result.success) {
-    console.error("Configuration validation failed:");
-    for (const issue of result.error.issues) {
-      console.error(`  ${issue.path.join(".")}: ${issue.message}`);
-    }
-    process.exit(1);
+    throw new ConfigValidationError(result.error.issues);
   }
   return result.data;
 }

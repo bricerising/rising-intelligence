@@ -35,6 +35,7 @@ export interface Metrics {
 export interface HealthContext {
   startTime: number;
   kafkaHealthy: boolean;
+  postgresHealthy: boolean;
   redisHealthy: boolean;
   metrics: Metrics;
 }
@@ -43,6 +44,7 @@ export interface HealthStatus {
   status: "healthy" | "unhealthy";
   checks: {
     kafka: "ok" | "error";
+    postgres: "ok" | "error";
     redis: "ok" | "error";
   };
   uptime_seconds: number;
@@ -52,6 +54,7 @@ export function createHealthContext(initialBudgetUsd = 0): HealthContext {
   return {
     startTime: Date.now(),
     kafkaHealthy: false,
+    postgresHealthy: false,
     redisHealthy: false,
     metrics: {
       generation: new Map(),
@@ -121,9 +124,10 @@ export function incrementError(ctx: HealthContext, errorType: string, count = 1)
 
 export function getHealthStatus(ctx: HealthContext): HealthStatus {
   return {
-    status: ctx.kafkaHealthy && ctx.redisHealthy ? "healthy" : "unhealthy",
+    status: ctx.kafkaHealthy && ctx.postgresHealthy && ctx.redisHealthy ? "healthy" : "unhealthy",
     checks: {
       kafka: ctx.kafkaHealthy ? "ok" : "error",
+      postgres: ctx.postgresHealthy ? "ok" : "error",
       redis: ctx.redisHealthy ? "ok" : "error",
     },
     uptime_seconds: Math.floor((Date.now() - ctx.startTime) / 1000),
@@ -209,7 +213,7 @@ export function createHandlers(ctx: HealthContext): HealthHandlers {
       return { status: health.status, body: health };
     },
     isReady() {
-      const ready = ctx.kafkaHealthy && ctx.redisHealthy;
+      const ready = ctx.kafkaHealthy && ctx.postgresHealthy && ctx.redisHealthy;
       return { ready, body: { ready } };
     },
     formatMetrics: () => formatMetrics(ctx),

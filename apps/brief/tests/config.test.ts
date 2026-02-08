@@ -50,21 +50,10 @@ describe("brief config", () => {
     expect(config.SHUTDOWN_TIMEOUT_MS).toBe(45000);
   });
 
-  it("exits on invalid config", async () => {
+  it("throws on invalid config", async () => {
     process.env.PORT = "0";
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit:${code}`);
-    }) as any);
-
-    try {
-      const { loadConfig } = await import("../src/config.js");
-      expect(() => loadConfig()).toThrow("process.exit:1");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
-    }
+    const { loadConfig } = await import("../src/config.js");
+    expect(() => loadConfig()).toThrow("Configuration validation failed");
   });
 
   it("getConfig returns cached object", async () => {

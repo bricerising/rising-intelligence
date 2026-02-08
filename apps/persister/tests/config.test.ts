@@ -100,21 +100,10 @@ describe("persister config", () => {
     );
   });
 
-  it("exits when configuration validation fails", async () => {
+  it("throws when configuration validation fails", async () => {
     process.env.SEEN_TTL_SECONDS = "0";
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit:${code}`);
-    }) as any);
-
-    try {
-      const { loadConfig } = await import("../src/config.js");
-      expect(() => loadConfig()).toThrow("process.exit:1");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
-    }
+    const { loadConfig } = await import("../src/config.js");
+    expect(() => loadConfig()).toThrow("Configuration validation failed");
   });
 
   it("getConfig caches the same object instance", async () => {

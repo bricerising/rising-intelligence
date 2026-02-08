@@ -6,7 +6,7 @@ import {
   createServiceLogger,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
-import { loadConfig } from "./config.js";
+import { getConfig } from "./config.js";
 import {
   createKafkaConsumer,
   disconnectKafkaConsumer,
@@ -20,7 +20,7 @@ import { PostgresCircuitBreaker } from "./circuit-breaker.js";
 import { processBatch, type PersisterContext } from "./process.js";
 
 async function initialize(): Promise<PersisterContext> {
-  const config = loadConfig();
+  const config = getConfig();
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
   logger.info({ service: config.SERVICE_NAME }, "Starting persister service");
@@ -111,7 +111,7 @@ let _logger: pino.Logger | null = null;
 
 runService<PersisterContext>({
   name: "persister",
-  shutdownTimeoutMs: 30000,
+  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
   getLogger() {
     if (!_logger) {
       _logger = createServiceLogger("persister", "info");

@@ -101,6 +101,12 @@ export interface SnapshotContext {
   healthContext: HealthContext;
 }
 
+export interface PublishedWindowSnapshot {
+  window: TrendWindow;
+  generatedAt: Date;
+  topMetrics: TopicSnapshotMetric[];
+}
+
 async function computeWindowMetrics(
   redis: Redis,
   allowlist: CompiledAllowlist,
@@ -150,7 +156,7 @@ async function computeWindowMetrics(
 async function publishWindowSnapshot(
   ctx: SnapshotContext,
   window: TrendWindow
-): Promise<void> {
+): Promise<PublishedWindowSnapshot> {
   const startTime = Date.now();
   const generatedAt = new Date();
   const generatedAtIso = generatedAt.toISOString();
@@ -214,10 +220,18 @@ async function publishWindowSnapshot(
     window,
     (Date.now() - startTime) / 1000
   );
+
+  return {
+    window,
+    generatedAt,
+    topMetrics,
+  };
 }
 
-export async function publishSnapshots(ctx: SnapshotContext): Promise<void> {
+export async function publishSnapshots(ctx: SnapshotContext): Promise<PublishedWindowSnapshot[]> {
+  const publishedSnapshots: PublishedWindowSnapshot[] = [];
   for (const window of ctx.config.WINDOWS) {
-    await publishWindowSnapshot(ctx, window);
+    publishedSnapshots.push(await publishWindowSnapshot(ctx, window));
   }
+  return publishedSnapshots;
 }

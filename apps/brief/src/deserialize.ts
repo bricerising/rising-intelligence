@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseCanonicalSource } from "@rising-intelligence/shared";
 import type { ParsedSummaryRequest, SummaryRequestType } from "./types.js";
 
 const SummaryRequestWireSchema = z.object({
@@ -10,9 +11,40 @@ const SummaryRequestWireSchema = z.object({
     .array(
       z.object({
         topic: z.string().min(1),
-        evidence: z.array(z.unknown()).optional(),
+        metrics: z
+          .array(
+            z.object({
+              topic: z.string().min(1).optional(),
+              window: z.union([z.number().int(), z.string()]).optional(),
+              score: z.number().optional(),
+              volume: z.number().optional(),
+              acceleration: z.number().optional(),
+            })
+          )
+          .optional(),
+        evidence: z
+          .array(
+            z.object({
+              event_id: z.string().min(1).optional(),
+              source: z.union([z.number().int(), z.string().min(1)]).optional(),
+              url: z.string().optional(),
+              title: z.string().optional(),
+              published_at: z.string().optional(),
+              fetched_at: z.string().optional(),
+              text_excerpt: z.string().optional(),
+            })
+          )
+          .optional(),
       })
     )
+    .optional(),
+  budget: z
+    .object({
+      daily_budget_usd: z.number().nonnegative().optional(),
+      max_topics: z.number().int().positive().optional(),
+      max_evidence_per_topic: z.number().int().positive().optional(),
+      max_output_tokens: z.number().int().positive().optional(),
+    })
     .optional(),
 });
 
@@ -58,6 +90,30 @@ function parseTrendWindow(value: number | string): number {
   throw new Error(`Unsupported trend window value: ${value}`);
 }
 
+function parseOptionalDate(value: string | undefined, field: string): Date | null {
+  if (!value || value.trim().length === 0) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid ${field}: ${value}`);
+  }
+  return parsed;
+}
+
+function parseEvidenceSource(value: number | string | undefined): string {
+  if (value === undefined) {
+    return "news";
+  }
+
+  try {
+    return parseCanonicalSource(value);
+  } catch {
+    return "news";
+  }
+}
+
 export function parseSummaryRequestType(value: number | string): SummaryRequestType {
   if (typeof value === "number") {
     if (value === 1) {
@@ -97,9 +153,35 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
     requestedAt: parseRequestedAt(wire.requested_at),
     type: parseSummaryRequestType(wire.type),
     windows: (wire.windows ?? []).map((window) => parseTrendWindow(window)),
-    topics: (wire.topics ?? []).map((topic) => ({
-      topic: topic.topic,
-      evidenceCount: topic.evidence?.length ?? 0,
-    })),
+    budget: wire.budget
+      ? {
+          dailyBudgetUsd: wire.budget.daily_budget_usd ?? 0,
+          maxTopics: wire.budget.max_topics ?? 0,
+          maxEvidencePerTopic: wire.budget.max_evidence_per_topic ?? 0,
+          maxOutputTokens: wire.budget.max_output_tokens ?? 0,
+        }
+      : null,
+    topics: (wire.topics ?? []).map((topic) => {
+      const parsedTopic = topic.topic.trim();
+      return {
+        topic: parsedTopic,
+        metrics: (topic.metrics ?? []).map((metric) => ({
+          topic: metric.topic?.trim() || parsedTopic,
+          window: metric.window ? parseTrendWindow(metric.window) : 0,
+          score: metric.score ?? 0,
+          volume: metric.volume ?? 0,
+          acceleration: metric.acceleration ?? 0,
+        })),
+        evidence: (topic.evidence ?? []).map((evidence) => ({
+          eventId: evidence.event_id?.trim() ?? "",
+          source: parseEvidenceSource(evidence.source),
+          url: evidence.url?.trim() || null,
+          title: evidence.title?.trim() || null,
+          publishedAt: parseOptionalDate(evidence.published_at, "published_at"),
+          fetchedAt: parseOptionalDate(evidence.fetched_at, "fetched_at"),
+          textExcerpt: evidence.text_excerpt?.trim() || null,
+        })),
+      };
+    }),
   };
 }

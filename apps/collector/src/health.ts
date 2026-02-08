@@ -13,6 +13,8 @@ import { getConfig } from "./config.js";
 
 const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
 const COUNT_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
+const TOPIC_LABEL_CARDINALITY_LIMIT = 30;
+const OTHER_TOPIC_LABEL = "other";
 
 export interface HealthStatus {
   status: "healthy" | "degraded" | "unhealthy";
@@ -275,6 +277,20 @@ export function incrementRateLimitBackoff(ctx: HealthContext, source: string, co
 }
 
 export function incrementTopicsExtracted(ctx: HealthContext, topic: string, count = 1): void {
-  const current = ctx.metrics.topicsExtracted.get(topic) ?? 0;
-  ctx.metrics.topicsExtracted.set(topic, current + count);
+  const existing = ctx.metrics.topicsExtracted.get(topic);
+  if (existing !== undefined) {
+    ctx.metrics.topicsExtracted.set(topic, existing + count);
+    return;
+  }
+
+  const explicitTopicCount = [...ctx.metrics.topicsExtracted.keys()].filter(
+    (key) => key !== OTHER_TOPIC_LABEL
+  ).length;
+  if (explicitTopicCount < TOPIC_LABEL_CARDINALITY_LIMIT) {
+    ctx.metrics.topicsExtracted.set(topic, count);
+    return;
+  }
+
+  const otherCount = ctx.metrics.topicsExtracted.get(OTHER_TOPIC_LABEL) ?? 0;
+  ctx.metrics.topicsExtracted.set(OTHER_TOPIC_LABEL, otherCount + count);
 }

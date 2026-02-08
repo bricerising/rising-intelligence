@@ -69,26 +69,38 @@ describe("brief health", () => {
 
   describe("getHealthStatus", () => {
     it("returns unhealthy when kafka is not connected", () => {
+      ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("unhealthy");
       expect(status.checks.kafka).toBe("error");
     });
 
+    it("returns unhealthy when postgres is not connected", () => {
+      ctx.kafkaHealthy = true;
+      ctx.redisHealthy = true;
+      const status = getHealthStatus(ctx);
+      expect(status.status).toBe("unhealthy");
+      expect(status.checks.postgres).toBe("error");
+    });
+
     it("returns unhealthy when redis is not connected", () => {
       ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("unhealthy");
       expect(status.checks.redis).toBe("error");
     });
 
-    it("returns healthy when kafka and redis are connected", () => {
+    it("returns healthy when kafka/postgres/redis are connected", () => {
       ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
 
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("healthy");
       expect(status.checks.kafka).toBe("ok");
+      expect(status.checks.postgres).toBe("ok");
       expect(status.checks.redis).toBe("ok");
     });
   });
@@ -143,6 +155,7 @@ describe("brief health", () => {
   describe("formatMetrics", () => {
     it("outputs Prometheus-compatible text", () => {
       ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
       incrementGeneration(ctx, "skipped", 2);
       incrementGeneration(ctx, "failure", 1);
@@ -187,6 +200,7 @@ describe("brief health", () => {
   describe("createHealthHandler", () => {
     it("returns 200 for /health when healthy", () => {
       ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
 
       const handler = createHealthHandler(createHandlers(ctx));
@@ -206,13 +220,14 @@ describe("brief health", () => {
       expect(res.statusCode).toBe(503);
     });
 
-    it("returns 200 for /ready only when kafka+redis are healthy", () => {
+    it("returns 200 for /ready only when kafka+postgres+redis are healthy", () => {
       const handler = createHealthHandler(createHandlers(ctx));
       const unhealthy = makeResponse();
       handler(makeRequest("GET", "/ready"), unhealthy);
       expect(unhealthy.statusCode).toBe(503);
 
       ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
 
       const healthy = makeResponse();

@@ -4,6 +4,7 @@ import {
   parseConfig,
   resolvePostgresPassword,
   resolveDatabaseUrl,
+  zBooleanEnv,
 } from "@rising-intelligence/shared";
 import type { TrendWindow } from "./types.js";
 
@@ -18,8 +19,10 @@ const ConfigSchema = z.object({
   KAFKA_BROKERS: z.string().default("localhost:9092"),
   KAFKA_CLIENT_ID: z.string().default("trends"),
   KAFKA_CONSUMER_GROUP: z.string().default("trends-processor"),
+  PERSISTER_CONSUMER_GROUP: z.string().default("persister"),
   KAFKA_TOPIC_RAW_EVENTS: z.string().default("events.raw"),
   KAFKA_TOPIC_TRENDS_SNAPSHOTS: z.string().default("trends.snapshots"),
+  KAFKA_TOPIC_SUMMARY_REQUESTS: z.string().default("summary.requests"),
 
   DATABASE_URL: z.string().optional(),
   POSTGRES_HOST: z.string().default("localhost"),
@@ -36,6 +39,15 @@ const ConfigSchema = z.object({
   MAX_EVIDENCE_PER_TOPIC: z.coerce.number().int().positive().default(10),
   SNAPSHOT_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   CONSUMER_LAG_UPDATE_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
+  DAILY_BRIEF_ENABLED: zBooleanEnv("true"),
+  DAILY_BRIEF_UTC_HOUR: z.coerce.number().int().min(0).max(23).default(1),
+  DAILY_BRIEF_UTC_MINUTE: z.coerce.number().int().min(0).max(59).default(0),
+  MAX_LAG_MESSAGES: z.coerce.number().int().nonnegative().default(100),
+  MAX_LAG_AGE_MS: z.coerce.number().int().positive().default(300000),
+  BRIEF_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
+  BRIEF_MAX_TOPICS: z.coerce.number().int().positive().default(10),
+  BRIEF_MAX_EVIDENCE_PER_TOPIC: z.coerce.number().int().positive().default(5),
+  BRIEF_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(2000),
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
 });
 
@@ -81,13 +93,7 @@ export function loadConfig(): Config {
     password,
   });
 
-  let windows: TrendWindow[];
-  try {
-    windows = parseWindows(parsed.TREND_WINDOWS);
-  } catch (error) {
-    console.error((error as Error).message);
-    process.exit(1);
-  }
+  const windows = parseWindows(parsed.TREND_WINDOWS);
 
   return {
     ...parsed,

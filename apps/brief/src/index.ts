@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import type { Redis } from "ioredis";
+import { PrismaClient } from "@rising-intelligence/db";
 import {
   closeServer,
   serializeError,
@@ -22,15 +23,23 @@ import {
   disconnectKafkaConsumer,
   type KafkaConsumerContext,
 } from "./kafka/consumer.js";
+import {
+  createKafkaProducer,
+  disconnectKafkaProducer,
+  type KafkaProducerContext,
+} from "./kafka/producer.js";
 import { deserializeSummaryRequest } from "./deserialize.js";
 import { createRedisClient, disconnectRedis } from "./redis.js";
+import { processSummaryRequest } from "./process.js";
 
 interface RuntimeContext {
   config: ReturnType<typeof getConfig>;
   logger: pino.Logger;
   healthContext: HealthContext;
   healthServer: Server;
-  kafkaContext: KafkaConsumerContext;
+  kafkaConsumerContext: KafkaConsumerContext;
+  kafkaProducerContext: KafkaProducerContext;
+  prisma: PrismaClient;
   redis: Redis;
 }
 
@@ -43,22 +52,36 @@ async function initialize(): Promise<RuntimeContext> {
   const healthServer = startHealthServer(healthContext, logger);
   setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
 
+  const prisma = new PrismaClient({
+    datasources: { db: { url: config.DATABASE_URL } },
+    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
+  });
+  await prisma.$connect();
+  healthContext.postgresHealthy = true;
+  logger.info("Postgres connected");
+
   const redis = await createRedisClient(
     config.REDIS_URL,
     logger.child({ component: "redis" })
   );
   healthContext.redisHealthy = true;
 
-  const kafkaContext = await createKafkaConsumer(logger);
-  await kafkaContext.consumer.subscribe({
+  const kafkaConsumerContext = await createKafkaConsumer(logger);
+  await kafkaConsumerContext.consumer.subscribe({
     topic: config.KAFKA_TOPIC_SUMMARY_REQUESTS,
     fromBeginning: false,
   });
+  const kafkaProducerContext = await createKafkaProducer(
+    logger.child({ component: "kafka-producer" })
+  );
   healthContext.kafkaHealthy = true;
 
   logger.info(
-    { topic: config.KAFKA_TOPIC_SUMMARY_REQUESTS },
-    "Kafka consumer subscribed"
+    {
+      consumeTopic: config.KAFKA_TOPIC_SUMMARY_REQUESTS,
+      publishTopic: config.KAFKA_TOPIC_SUMMARY_RESULTS,
+    },
+    "Kafka subscriptions initialized"
   );
 
   return {
@@ -66,13 +89,15 @@ async function initialize(): Promise<RuntimeContext> {
     logger,
     healthContext,
     healthServer,
-    kafkaContext,
+    kafkaConsumerContext,
+    kafkaProducerContext,
+    prisma,
     redis,
   };
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
-  await ctx.kafkaContext.consumer.run({
+  await ctx.kafkaConsumerContext.consumer.run({
     eachMessage: async ({ topic, partition, message }) => {
       const startTime = Date.now();
       if (!message.value) {
@@ -92,23 +117,24 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
 
       try {
         const request = deserializeSummaryRequest(message.value);
-        incrementGeneration(ctx.healthContext, "skipped");
-        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
-        ctx.logger.info(
+        await processSummaryRequest(
           {
-            requestId: request.requestId,
-            type: request.type,
-            topicCount: request.topics.length,
-            kafkaTopic: topic,
-            partition,
-            offset: message.offset,
+            config: ctx.config,
+            logger: ctx.logger.child({
+              kafkaTopic: topic,
+              partition,
+              offset: message.offset,
+            }),
+            healthContext: ctx.healthContext,
+            prisma: ctx.prisma,
+            redis: ctx.redis,
+            producer: ctx.kafkaProducerContext.producer,
           },
-          "Summary request consumed"
+          request
         );
       } catch (error) {
         incrementError(ctx.healthContext, "parse_error");
         incrementGeneration(ctx.healthContext, "failure");
-        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         ctx.logger.warn(
           {
             kafkaTopic: topic,
@@ -116,8 +142,10 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
             offset: message.offset,
             error: serializeError(error),
           },
-          "Failed to deserialize summary request"
+          "Failed to process summary request"
         );
+      } finally {
+        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
       }
     },
   });
@@ -125,10 +153,16 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
 
 async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   try {
-    await disconnectKafkaConsumer(ctx.kafkaContext.consumer, ctx.logger);
+    await disconnectKafkaConsumer(ctx.kafkaConsumerContext.consumer, ctx.logger);
     ctx.healthContext.kafkaHealthy = false;
   } catch (error) {
     ctx.logger.warn({ error: serializeError(error) }, "Kafka consumer disconnect failed");
+  }
+
+  try {
+    await disconnectKafkaProducer(ctx.kafkaProducerContext.producer, ctx.logger);
+  } catch (error) {
+    ctx.logger.warn({ error: serializeError(error) }, "Kafka producer disconnect failed");
   }
 
   try {
@@ -136,6 +170,13 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
     ctx.healthContext.redisHealthy = false;
   } catch (error) {
     ctx.logger.warn({ error: serializeError(error) }, "Redis disconnect failed");
+  }
+
+  try {
+    await ctx.prisma.$disconnect();
+    ctx.healthContext.postgresHealthy = false;
+  } catch (error) {
+    ctx.logger.warn({ error: serializeError(error) }, "Postgres disconnect failed");
   }
 
   try {
@@ -149,7 +190,7 @@ let _logger: pino.Logger | null = null;
 
 runService<RuntimeContext>({
   name: "brief",
-  shutdownTimeoutMs: 30000,
+  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
   getLogger() {
     if (!_logger) {
       _logger = createServiceLogger("brief", "info");

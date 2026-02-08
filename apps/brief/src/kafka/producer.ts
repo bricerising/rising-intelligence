@@ -25,7 +25,7 @@ export async function createKafkaProducer(logger: Logger): Promise<KafkaProducer
   };
 }
 
-export async function publishSnapshot(
+export async function publishBriefResult(
   producer: Producer,
   topic: string,
   key: string,
@@ -37,22 +37,7 @@ export async function publishSnapshot(
     compression: CompressionTypes.GZIP,
     messages: [{ key, value }],
   });
-  logger.debug({ topic, key }, "Trend snapshot published");
-}
-
-export async function publishSummaryRequest(
-  producer: Producer,
-  topic: string,
-  key: string,
-  value: Buffer,
-  logger: Logger
-): Promise<void> {
-  await producer.send({
-    topic,
-    compression: CompressionTypes.GZIP,
-    messages: [{ key, value }],
-  });
-  logger.debug({ topic, key }, "Summary request published");
+  logger.debug({ topic, key }, "Brief result published");
 }
 
 export async function disconnectKafkaProducer(producer: Producer, logger: Logger): Promise<void> {

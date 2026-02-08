@@ -7,7 +7,7 @@ import {
   createServiceLogger,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
-import { loadConfig } from "./config.js";
+import { getConfig } from "./config.js";
 import { loadAllowlist, type CompiledAllowlist } from "./allowlist.js";
 import {
   createHealthContext,
@@ -28,6 +28,7 @@ import {
 import { createRedisClient, disconnectRedis } from "./redis.js";
 import { processBatch, type TrendsContext } from "./process.js";
 import { publishSnapshots } from "./snapshot.js";
+import { maybeTriggerDailySummaryRequest } from "./brief-trigger.js";
 
 interface RuntimeContext extends TrendsContext {
   healthServer: Server;
@@ -35,6 +36,7 @@ interface RuntimeContext extends TrendsContext {
   kafkaProducerContext: KafkaProducerContext;
   snapshotTimer: NodeJS.Timeout | null;
   snapshotInFlight: boolean;
+  lastDailyBriefTriggerDate: string | null;
 }
 
 async function initializeAllowlist(
@@ -49,7 +51,7 @@ async function initializeAllowlist(
 }
 
 async function initializeTrends(): Promise<RuntimeContext> {
-  const config = loadConfig();
+  const config = getConfig();
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
   logger.info({ service: config.SERVICE_NAME }, "Starting trends service");
@@ -109,6 +111,7 @@ async function initializeTrends(): Promise<RuntimeContext> {
     kafkaProducerContext,
     snapshotTimer: null,
     snapshotInFlight: false,
+    lastDailyBriefTriggerDate: null,
   };
 }
 
@@ -120,7 +123,7 @@ async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
 
     ctx.snapshotInFlight = true;
     try {
-      await publishSnapshots({
+      const snapshots = await publishSnapshots({
         config: ctx.config,
         logger: ctx.logger.child({ component: "snapshot" }),
         redis: ctx.redis,
@@ -128,6 +131,15 @@ async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
         prisma: ctx.prisma,
         allowlist: ctx.allowlist,
         healthContext: ctx.healthContext,
+      });
+      ctx.lastDailyBriefTriggerDate = await maybeTriggerDailySummaryRequest({
+        config: ctx.config,
+        logger: ctx.logger,
+        prisma: ctx.prisma,
+        producer: ctx.kafkaProducerContext.producer,
+        healthContext: ctx.healthContext,
+        snapshots,
+        lastDailyTriggerDate: ctx.lastDailyBriefTriggerDate,
       });
     } catch (error) {
       incrementError(ctx.healthContext, "snapshot_error");
@@ -200,7 +212,7 @@ let _logger: pino.Logger | null = null;
 
 runService<RuntimeContext>({
   name: "trends",
-  shutdownTimeoutMs: 30000,
+  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
   getLogger() {
     if (!_logger) {
       _logger = createServiceLogger("trends", "info");

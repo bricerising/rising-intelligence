@@ -10,7 +10,7 @@ import {
   isTransientError,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
-import { loadConfig } from "./config.js";
+import { getConfig } from "./config.js";
 import {
   createKafkaProducer,
   disconnectProducer,
@@ -41,7 +41,7 @@ import { createHackerNewsAdapter } from "./adapters/hackernews.js";
 import { createLobstersAdapter } from "./adapters/lobsters.js";
 
 interface CollectorContext {
-  config: ReturnType<typeof loadConfig>;
+  config: ReturnType<typeof getConfig>;
   logger: pino.Logger;
   kafkaContext: KafkaProducerContext;
   healthContext: HealthContext;
@@ -53,7 +53,7 @@ interface CollectorContext {
   lastSeenCleanupAt: number;
 }
 
-type CollectorConfig = ReturnType<typeof loadConfig>;
+type CollectorConfig = ReturnType<typeof getConfig>;
 
 interface AdapterFactory {
   name: string;
@@ -131,7 +131,7 @@ function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore
 }
 
 async function initializeCollector(): Promise<CollectorContext> {
-  const config = loadConfig();
+  const config = getConfig();
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
   logger.info({ service: config.SERVICE_NAME }, "Starting collector service");
@@ -164,6 +164,19 @@ async function initializeCollector(): Promise<CollectorContext> {
   healthContext.kafkaHealthy = true;
 
   const adapters = buildAdapters(config, checkpointStore, logger);
+  const unsupportedEnabledAdapters = [
+    config.REDDIT_ENABLED ? "reddit" : null,
+    config.BLUESKY_ENABLED ? "bluesky" : null,
+    config.MASTODON_ENABLED ? "mastodon" : null,
+    config.GITHUB_ENABLED ? "github" : null,
+  ].filter((name): name is string => name !== null);
+
+  if (unsupportedEnabledAdapters.length > 0) {
+    logger.warn(
+      { unsupportedAdapters: unsupportedEnabledAdapters },
+      "Adapter flags enabled without implementation in this collector build"
+    );
+  }
 
   for (const adapter of adapters) {
     await adapter.initialize();
@@ -391,7 +404,7 @@ let _logger: pino.Logger | null = null;
 
 runService<CollectorContext>({
   name: "collector",
-  shutdownTimeoutMs: 30000,
+  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
   getLogger() {
     if (!_logger) {
       _logger = createServiceLogger("collector", "info");

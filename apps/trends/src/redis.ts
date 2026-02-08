@@ -196,5 +196,14 @@ export async function writePreviousWindowCounts(
     pipeline.expire(key, ttlSeconds);
   }
 
-  await pipeline.exec();
+  const results = await pipeline.exec();
+  if (!results) {
+    throw new Error("Redis pipeline execution returned null");
+  }
+
+  for (const [error] of results) {
+    if (error) {
+      throw error;
+    }
+  }
 }

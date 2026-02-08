@@ -72,21 +72,10 @@ describe("trends config", () => {
     expect(config.WINDOWS).toEqual(["60m", "15m"]);
   });
 
-  it("exits on unsupported windows", async () => {
+  it("throws on unsupported windows", async () => {
     process.env.TREND_WINDOWS = "5m";
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit:${code}`);
-    }) as any);
-
-    try {
-      const { loadConfig } = await import("../src/config.js");
-      expect(() => loadConfig()).toThrow("process.exit:1");
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
-    }
+    const { loadConfig } = await import("../src/config.js");
+    expect(() => loadConfig()).toThrow("Unsupported trend window");
   });
 
   it("getConfig returns the cached instance", async () => {

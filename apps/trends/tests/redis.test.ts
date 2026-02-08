@@ -200,5 +200,35 @@ describe("trends redis key helpers", () => {
       expect(pipeline.expire).toHaveBeenCalledWith("prev:60m:ai.openai", 7200);
       expect(pipeline.exec).toHaveBeenCalledOnce();
     });
+
+    it("throws when Redis pipeline returns null", async () => {
+      const pipeline = {
+        set: vi.fn().mockReturnThis(),
+        expire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue(null),
+      };
+      const redis = {
+        pipeline: vi.fn(() => pipeline),
+      };
+
+      await expect(
+        writePreviousWindowCounts(redis as any, "15m", new Map([["aws.bedrock", 4]]))
+      ).rejects.toThrow("Redis pipeline execution returned null");
+    });
+
+    it("throws when a pipeline command fails", async () => {
+      const pipeline = {
+        set: vi.fn().mockReturnThis(),
+        expire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[new Error("WRITE_FAILED"), null]]),
+      };
+      const redis = {
+        pipeline: vi.fn(() => pipeline),
+      };
+
+      await expect(
+        writePreviousWindowCounts(redis as any, "15m", new Map([["aws.bedrock", 4]]))
+      ).rejects.toThrow("WRITE_FAILED");
+    });
   });
 });

@@ -15,10 +15,35 @@ describe("brief deserializeSummaryRequest", () => {
       requested_at: "2026-02-06T10:00:00.000Z",
       type: 1,
       windows: [1, "2"],
+      budget: {
+        daily_budget_usd: 5,
+        max_topics: 3,
+        max_evidence_per_topic: 4,
+        max_output_tokens: 1200,
+      },
       topics: [
         {
           topic: "aws.bedrock",
-          evidence: [{ id: "one" }, { id: "two" }],
+          metrics: [
+            {
+              topic: "aws.bedrock",
+              window: 2,
+              score: 12.5,
+              volume: 21,
+              acceleration: 0.8,
+            },
+          ],
+          evidence: [
+            {
+              event_id: "evt-1",
+              source: 3,
+              url: "https://example.com/1",
+              title: "Bedrock update",
+              published_at: "2026-02-06T09:00:00.000Z",
+              fetched_at: "2026-02-06T09:30:00.000Z",
+              text_excerpt: "Details",
+            },
+          ],
         },
       ],
     };
@@ -28,7 +53,29 @@ describe("brief deserializeSummaryRequest", () => {
     expect(parsed.requestId).toBe("req-1");
     expect(parsed.type).toBe("daily");
     expect(parsed.windows).toEqual([1, 2]);
-    expect(parsed.topics).toEqual([{ topic: "aws.bedrock", evidenceCount: 2 }]);
+    expect(parsed.budget).toEqual({
+      dailyBudgetUsd: 5,
+      maxTopics: 3,
+      maxEvidencePerTopic: 4,
+      maxOutputTokens: 1200,
+    });
+    expect(parsed.topics[0].topic).toBe("aws.bedrock");
+    expect(parsed.topics[0].metrics).toHaveLength(1);
+    expect(parsed.topics[0].metrics[0]).toMatchObject({
+      topic: "aws.bedrock",
+      window: 2,
+      score: 12.5,
+      volume: 21,
+      acceleration: 0.8,
+    });
+    expect(parsed.topics[0].evidence).toHaveLength(1);
+    expect(parsed.topics[0].evidence[0]).toMatchObject({
+      eventId: "evt-1",
+      source: "hackernews",
+      url: "https://example.com/1",
+      title: "Bedrock update",
+      textExcerpt: "Details",
+    });
   });
 
   it("parses protobuf trend window enum names", () => {

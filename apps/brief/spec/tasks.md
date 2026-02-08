@@ -3,6 +3,7 @@
 ## Progress
 
 - 2026-02-06: Implemented T001-T003 baseline path (service skeleton, Kafka consumer setup, and SummaryRequest deserialization).
+- 2026-02-06: Implemented idempotent processing, Postgres persistence, and `summary.results` publishing with budget-aware failure handling (initial T008-T010/T013 path).
 
 ## Phase 1: Skeleton + contracts
 

@@ -1,8 +1,27 @@
 export type SummaryRequestType = "daily" | "threshold";
 
+export interface ParsedSummaryMetric {
+  topic: string;
+  window: number;
+  score: number;
+  volume: number;
+  acceleration: number;
+}
+
+export interface ParsedSummaryEvidence {
+  eventId: string;
+  source: string;
+  url: string | null;
+  title: string | null;
+  publishedAt: Date | null;
+  fetchedAt: Date | null;
+  textExcerpt: string | null;
+}
+
 export interface ParsedSummaryTopic {
   topic: string;
-  evidenceCount: number;
+  metrics: ParsedSummaryMetric[];
+  evidence: ParsedSummaryEvidence[];
 }
 
 export interface ParsedSummaryRequest {
@@ -10,5 +29,13 @@ export interface ParsedSummaryRequest {
   requestedAt: Date;
   type: SummaryRequestType;
   windows: number[];
+  budget:
+    | {
+        dailyBudgetUsd: number;
+        maxTopics: number;
+        maxEvidencePerTopic: number;
+        maxOutputTokens: number;
+      }
+    | null;
   topics: ParsedSummaryTopic[];
 }

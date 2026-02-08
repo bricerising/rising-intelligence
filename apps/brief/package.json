@@ -15,6 +15,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@rising-intelligence/db": "*",
     "@rising-intelligence/shared": "*",
     "ioredis": "^5.6.1",
     "kafkajs": "^2.2.4",

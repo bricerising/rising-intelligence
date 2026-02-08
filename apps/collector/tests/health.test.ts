@@ -148,4 +148,24 @@ describe("health handler", () => {
     expect(metricsRes.body).toContain("ri_collector_poll_duration_seconds_bucket");
     expect(metricsRes.body).toContain("ri_collector_poll_items_count_bucket");
   });
+
+  it("caps topic metric cardinality and aggregates overflow into other", () => {
+    const ctx = createHealthContext();
+    ctx.kafkaHealthy = true;
+    ctx.checkpointsHealthy = true;
+    ctx.allowlistHealthy = true;
+
+    for (let i = 0; i < 40; i += 1) {
+      incrementTopicsExtracted(ctx, `topic.${i}`);
+    }
+
+    const handler = createHealthHandler(createHandlers(ctx));
+    const metricsRes = createMockRes();
+    handler({ method: "GET", url: "/metrics" } as any, metricsRes as any);
+
+    expect(metricsRes.statusCode).toBe(200);
+    expect(metricsRes.body).toContain('ri_collector_topics_extracted_total{topic="other"} 10');
+    expect(metricsRes.body).toContain('ri_collector_topics_extracted_total{topic="topic.29"} 1');
+    expect(metricsRes.body).not.toContain('ri_collector_topics_extracted_total{topic="topic.39"}');
+  });
 });
