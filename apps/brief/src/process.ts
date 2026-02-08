@@ -3,6 +3,7 @@ import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import { serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
+import { z } from "zod";
 import type { Config } from "./config.js";
 import {
   incrementBudgetExceeded,
@@ -30,6 +31,71 @@ interface ProcessContext {
 
 const BUDGET_KEY_PREFIX = "brief:budget";
 const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
+
+const LlmHighlightSchema = z.object({
+  topic: z.string().min(1),
+  what_happened: z.string().min(1),
+  why_it_matters: z.string().min(1),
+  suggested_action: z.string().min(1),
+  citations: z.array(z.string()).default([]),
+});
+
+const LlmResponseSchema = z.object({
+  title: z.string().min(1),
+  highlights: z.array(LlmHighlightSchema).default([]),
+  notes: z.string().optional(),
+  usage: z
+    .object({
+      prompt_tokens: z.number().int().nonnegative(),
+      completion_tokens: z.number().int().nonnegative(),
+    })
+    .optional(),
+  meta: z
+    .object({
+      provider: z.string().min(1).optional(),
+      model: z.string().min(1).optional(),
+      estimated_cost_usd: z.number().nonnegative().optional(),
+    })
+    .optional(),
+});
+
+type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
+
+interface SuccessResult {
+  payload: {
+    request_id: string;
+    produced_at: string;
+    brief: {
+      brief_id: string;
+      generated_at: string;
+      window: number;
+      title: string;
+      highlights: NormalizedHighlight[];
+      notes: string;
+      meta: {
+        provider: string;
+        model: string;
+        input_tokens: number;
+        output_tokens: number;
+        estimated_cost_usd: number;
+      };
+    };
+  };
+  metrics: {
+    highlightsCount: number;
+    citationsCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+  };
+}
+
+class LlmGenerationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmGenerationError";
+  }
+}
 
 function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -67,7 +133,7 @@ function selectPrimaryMetric(topic: ParsedSummaryTopic) {
   return topic.metrics.find((metric) => metric.window === 2) ?? topic.metrics[0] ?? null;
 }
 
-function buildHighlight(topic: ParsedSummaryTopic) {
+function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
   const primaryMetric = selectPrimaryMetric(topic);
   const citations = dedupeStrings(topic.evidence.map((evidence) => evidence.url)).slice(0, 3);
   const score = primaryMetric ? primaryMetric.score.toFixed(1) : "0.0";
@@ -89,25 +155,123 @@ function buildHighlight(topic: ParsedSummaryTopic) {
   };
 }
 
-function buildSuccessResult(
-  request: ParsedSummaryRequest,
-  producedAt: Date,
-  estimatedCostUsd: number
-) {
-  const budgetMaxTopics = request.budget?.maxTopics ?? request.topics.length;
-  const topics = request.topics.slice(0, budgetMaxTopics);
-  const highlights = topics.map((topic) => buildHighlight(topic));
-  const totalCitations = highlights.reduce((sum, highlight) => sum + highlight.citations.length, 0);
-  const inputTokens = estimateTokenCount(JSON.stringify(request));
-  const outputTokens = estimateTokenCount(JSON.stringify(highlights));
-  const window = request.type === "daily" ? 1 : 2;
+function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighlight {
+  return {
+    topic: highlight.topic.trim(),
+    what_happened: highlight.what_happened.trim(),
+    why_it_matters: highlight.why_it_matters.trim(),
+    suggested_action: highlight.suggested_action.trim(),
+    citations: dedupeStrings(highlight.citations).slice(0, 3),
+  };
+}
+
+function deriveDefaultNotes(highlights: NormalizedHighlight[]): string {
   const missingCitationTopics = highlights
     .filter((highlight) => highlight.citations.length === 0)
     .map((highlight) => highlight.topic);
-  const notes =
-    missingCitationTopics.length > 0
-      ? `Limited coverage for topics: ${missingCitationTopics.join(", ")}.`
-      : "All highlights include source citations.";
+  return missingCitationTopics.length > 0
+    ? `Limited coverage for topics: ${missingCitationTopics.join(", ")}.`
+    : "All highlights include source citations.";
+}
+
+function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<string, unknown> {
+  return {
+    request_id: request.requestId,
+    requested_at: request.requestedAt.toISOString(),
+    type: request.type,
+    windows: request.windows,
+    topics: request.topics.map((topic) => ({
+      topic: topic.topic,
+      metrics: topic.metrics.map((metric) => ({
+        topic: metric.topic,
+        window: metric.window,
+        score: metric.score,
+        volume: metric.volume,
+        acceleration: metric.acceleration,
+      })),
+      evidence: topic.evidence.map((evidence) => ({
+        event_id: evidence.eventId,
+        source: evidence.source,
+        url: evidence.url ?? "",
+        title: evidence.title ?? "",
+        published_at: evidence.publishedAt ? evidence.publishedAt.toISOString() : "",
+        fetched_at: evidence.fetchedAt ? evidence.fetchedAt.toISOString() : "",
+        text_excerpt: evidence.textExcerpt ?? "",
+      })),
+    })),
+    budget: request.budget
+      ? {
+          daily_budget_usd: request.budget.dailyBudgetUsd,
+          max_topics: request.budget.maxTopics,
+          max_evidence_per_topic: request.budget.maxEvidencePerTopic,
+          max_output_tokens: request.budget.maxOutputTokens,
+        }
+      : null,
+  };
+}
+
+async function callHttpLlm(
+  config: Config,
+  request: ParsedSummaryRequest,
+  logger: pino.Logger
+): Promise<z.infer<typeof LlmResponseSchema>> {
+  let response: Response;
+  try {
+    response = await fetch(config.LLM_ENDPOINT_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildSummaryRequestPayload(request)),
+      signal: AbortSignal.timeout(config.LLM_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new LlmGenerationError(
+      `LLM endpoint request failed: ${error instanceof Error ? error.message : "unknown error"}`
+    );
+  }
+
+  if (!response.ok) {
+    const responseBody = await response.text();
+    logger.warn(
+      {
+        status: response.status,
+        body: responseBody.slice(0, 512),
+      },
+      "LLM endpoint returned non-2xx status"
+    );
+    throw new LlmGenerationError(`LLM endpoint returned HTTP ${response.status}`);
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = await response.json();
+  } catch (error) {
+    throw new LlmGenerationError(
+      `LLM endpoint returned invalid JSON: ${error instanceof Error ? error.message : "unknown error"}`
+    );
+  }
+
+  const parsed = LlmResponseSchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new LlmGenerationError(`LLM endpoint response validation failed: ${parsed.error.issues[0]?.message}`);
+  }
+
+  return parsed.data;
+}
+
+function buildSuccessPayload(
+  request: ParsedSummaryRequest,
+  producedAt: Date,
+  title: string,
+  highlights: NormalizedHighlight[],
+  notes: string,
+  provider: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  estimatedCostUsd: number
+): SuccessResult {
+  const window = request.type === "daily" ? 1 : 2;
+  const totalCitations = highlights.reduce((sum, highlight) => sum + highlight.citations.length, 0);
 
   return {
     payload: {
@@ -117,12 +281,12 @@ function buildSuccessResult(
         brief_id: `brief:${request.requestId}`,
         generated_at: producedAt.toISOString(),
         window,
-        title: `Trend Brief ${producedAt.toISOString().slice(0, 10)}`,
+        title,
         highlights,
         notes,
         meta: {
-          provider: "internal",
-          model: "rule-based-v1",
+          provider,
+          model,
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           estimated_cost_usd: estimatedCostUsd,
@@ -134,8 +298,79 @@ function buildSuccessResult(
       citationsCount: totalCitations,
       inputTokens,
       outputTokens,
+      estimatedCostUsd,
     },
   };
+}
+
+function buildInternalSuccessResult(
+  request: ParsedSummaryRequest,
+  producedAt: Date,
+  estimatedCostUsd: number
+): SuccessResult {
+  const budgetMaxTopics = request.budget?.maxTopics ?? request.topics.length;
+  const topics = request.topics.slice(0, budgetMaxTopics);
+  const highlights = topics.map((topic) => buildInternalHighlight(topic));
+  const inputTokens = estimateTokenCount(JSON.stringify(request));
+  const outputTokens = estimateTokenCount(JSON.stringify(highlights));
+  const notes = deriveDefaultNotes(highlights);
+
+  return buildSuccessPayload(
+    request,
+    producedAt,
+    `Trend Brief ${producedAt.toISOString().slice(0, 10)}`,
+    highlights,
+    notes,
+    "internal",
+    "rule-based-v1",
+    inputTokens,
+    outputTokens,
+    estimatedCostUsd
+  );
+}
+
+async function buildHttpSuccessResult(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest,
+  producedAt: Date,
+  estimatedCostUsd: number
+): Promise<SuccessResult> {
+  const llmResponse = await callHttpLlm(ctx.config, request, ctx.logger);
+  const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
+  const highlights = llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight);
+  const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
+  const outputTokens =
+    llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
+  const notes = llmResponse.notes?.trim() || deriveDefaultNotes(highlights);
+
+  return buildSuccessPayload(
+    request,
+    producedAt,
+    llmResponse.title,
+    highlights,
+    notes,
+    llmResponse.meta?.provider?.trim() || "http",
+    llmResponse.meta?.model?.trim() || "http-v1",
+    inputTokens,
+    outputTokens,
+    estimatedCostUsd
+  );
+}
+
+async function buildSuccessResult(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest,
+  producedAt: Date,
+  estimatedCostUsd: number
+): Promise<SuccessResult> {
+  if (ctx.config.LLM_PROVIDER === "internal") {
+    return buildInternalSuccessResult(request, producedAt, estimatedCostUsd);
+  }
+  if (ctx.config.LLM_PROVIDER === "http") {
+    return buildHttpSuccessResult(ctx, request, producedAt, estimatedCostUsd);
+  }
+
+  throw new LlmGenerationError(`Unsupported LLM provider: ${ctx.config.LLM_PROVIDER}`);
 }
 
 function buildFailureResult(
@@ -296,8 +531,8 @@ export async function processSummaryRequest(
     return;
   }
 
-  const successResult = buildSuccessResult(request, producedAt, estimatedCostUsd);
   try {
+    const successResult = await buildSuccessResult(ctx, request, producedAt, estimatedCostUsd);
     const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
     ctx.healthContext.postgresHealthy = true;
     if (persisted === "duplicate") {
@@ -314,28 +549,28 @@ export async function processSummaryRequest(
       Buffer.from(JSON.stringify(successResult.payload), "utf-8"),
       logger
     );
-    await recordBudgetSpendUsd(ctx.redis, dateKey, estimatedCostUsd);
+    await recordBudgetSpendUsd(ctx.redis, dateKey, successResult.metrics.estimatedCostUsd);
     ctx.healthContext.redisHealthy = true;
 
     incrementGeneration(ctx.healthContext, "success");
-    incrementLlmCostUsd(ctx.healthContext, estimatedCostUsd);
+    incrementLlmCostUsd(ctx.healthContext, successResult.metrics.estimatedCostUsd);
     incrementLlmTokens(ctx.healthContext, "input", successResult.metrics.inputTokens);
     incrementLlmTokens(ctx.healthContext, "output", successResult.metrics.outputTokens);
     observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
     observeCitationsCount(ctx.healthContext, successResult.metrics.citationsCount);
 
-    const updatedSpend = spentBudgetUsd + estimatedCostUsd;
+    const updatedSpend = spentBudgetUsd + successResult.metrics.estimatedCostUsd;
     setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - updatedSpend));
     logger.info(
       {
         topicCount: successResult.metrics.highlightsCount,
         citationsCount: successResult.metrics.citationsCount,
-        estimatedCostUsd,
+        estimatedCostUsd: successResult.metrics.estimatedCostUsd,
       },
       "Summary request processed"
     );
   } catch (error) {
-    incrementError(ctx.healthContext, "generation_error");
+    incrementError(ctx.healthContext, error instanceof LlmGenerationError ? "llm_error" : "generation_error");
     incrementGeneration(ctx.healthContext, "failure");
     logger.error({ error: serializeError(error) }, "Failed to process summary request");
     try {

@@ -10,6 +10,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e:brief": "node tests/e2e/brief-mock-llm.e2e.mjs",
+    "test:e2e:brief:compose": "./scripts/test-e2e-brief.sh",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
     "db:migrate": "npm run db:migrate --workspace=@rising-intelligence/db",

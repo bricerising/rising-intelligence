@@ -69,6 +69,7 @@ describe("processSummaryRequest", () => {
     const ctx = {
       config: {
         KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "internal",
         LLM_DAILY_BUDGET_USD: 5,
       },
       logger: makeLogger(),
@@ -91,6 +92,74 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.llmCostUsdTotal).toBeGreaterThan(0);
   });
 
+  it("uses http provider when configured", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    const producer = {
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+    const redis = {
+      get: vi.fn().mockResolvedValue("0"),
+      incrbyfloat: vi.fn().mockResolvedValue("0.02"),
+      expire: vi.fn().mockResolvedValue(1),
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Mock Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Model update landed [1]",
+            why_it_matters: "Lower latency for key workloads",
+            suggested_action: "Re-check production defaults",
+            citations: ["https://example.com/1"],
+          },
+        ],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 80,
+        },
+        meta: {
+          provider: "test-llm",
+          model: "mock-v1",
+          estimated_cost_usd: 0.02,
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = {
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+      logger: makeLogger(),
+      healthContext: createHealthContext(5),
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create,
+        },
+      },
+      redis,
+      producer,
+    } as any;
+
+    try {
+      await processSummaryRequest(ctx, makeRequest());
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledOnce();
+      expect(producer.send).toHaveBeenCalledOnce();
+      expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(120);
+      expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(80);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("skips duplicate requests without publishing", async () => {
     const producer = {
       send: vi.fn().mockResolvedValue(undefined),
@@ -98,6 +167,7 @@ describe("processSummaryRequest", () => {
     const ctx = {
       config: {
         KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "internal",
         LLM_DAILY_BUDGET_USD: 5,
       },
       logger: makeLogger(),

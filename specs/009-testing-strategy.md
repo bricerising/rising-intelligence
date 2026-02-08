@@ -1,7 +1,7 @@
 # Spec 009: Testing Strategy
 
 **Created**: 2026-02-05
-**Updated**: 2026-02-05
+**Updated**: 2026-02-08
 **Status**: Proposed
 
 ## Overview
@@ -52,7 +52,7 @@ Test service logic with real Redis/Postgres but mocked Kafka and external APIs.
 
 ### Level 3: End-to-End Tests
 
-Planned full-pipeline tests with all infrastructure. Verify data flows correctly from ingestion to brief once the dedicated E2E suite lands.
+Full-pipeline tests run against real infrastructure in Docker Compose. Initial scenario is implemented for the Brief service using a mock HTTP LLM server, with additional pipeline scenarios to follow.
 
 | Scenario | What to Verify |
 |----------|----------------|
@@ -63,9 +63,9 @@ Planned full-pipeline tests with all infrastructure. Verify data flows correctly
 
 **Infrastructure**: Full Docker Compose stack.
 
-**Location**: `tests/e2e/` (planned; create alongside first pipeline scenario)
+**Location**: `tests/e2e/`
 
-**Run**: `docker compose -f docker-compose.test.yml --profile e2e up -d && npm test --workspaces --if-present`
+**Run**: `npm run test:e2e:brief:compose`
 
 ## Test Harness Architecture
 

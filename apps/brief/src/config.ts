@@ -8,6 +8,7 @@ import {
 } from "@rising-intelligence/shared";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
+const LLM_PROVIDERS = ["internal", "http"] as const;
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("brief"),
@@ -28,6 +29,9 @@ const ConfigSchema = z.object({
   POSTGRES_PASSWORD: z.string().optional(),
 
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
+  LLM_PROVIDER: z.enum(LLM_PROVIDERS).default("internal"),
+  LLM_ENDPOINT_URL: z.string().url().default("http://localhost:8088/v1/generate"),
+  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   LLM_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
 
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),

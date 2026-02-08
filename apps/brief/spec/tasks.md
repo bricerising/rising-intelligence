@@ -4,6 +4,8 @@
 
 - 2026-02-06: Implemented T001-T003 baseline path (service skeleton, Kafka consumer setup, and SummaryRequest deserialization).
 - 2026-02-06: Implemented idempotent processing, Postgres persistence, and `summary.results` publishing with budget-aware failure handling (initial T008-T010/T013 path).
+- 2026-02-08: Added configurable `LLM_PROVIDER` with `http` provider support and schema validation for remote LLM responses.
+- 2026-02-08: Added Docker Compose E2E harness with mock LLM server and end-to-end verification script (`test:e2e:brief:compose`).
 
 ## Phase 1: Skeleton + contracts
 
@@ -78,3 +80,13 @@
 ### T016: Trace spans
 
 - **Acceptance**: `brief.process_request`, `brief.call_llm`, `brief.persist_result` spans appear in Tempo.
+
+## Phase 6: E2E Test Harness
+
+### T017: Mock LLM provider path
+
+- **Acceptance**: Brief service can call an HTTP endpoint (`LLM_PROVIDER=http`) and emit a valid `summary.results` success payload with response metadata.
+
+### T018: Compose-driven E2E test
+
+- **Acceptance**: `docker-compose.test.yml` profile boots Redis/Postgres/Redpanda + `brief` + mock LLM, and e2e script verifies success, duplicate skip, and budget-exceeded behavior.

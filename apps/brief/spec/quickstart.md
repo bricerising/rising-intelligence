@@ -22,3 +22,11 @@ curl -fsS http://localhost:3005/metrics
 ```
 
 3. Publish a test `summary.requests` message and confirm the service logs a consumed request.
+
+## E2E With Mock LLM
+
+Run the Compose-backed end-to-end test (real Kafka/Postgres/Redis + mock HTTP LLM):
+
+```bash
+npm run test:e2e:brief:compose
+```
