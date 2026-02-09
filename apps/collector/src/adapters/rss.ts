@@ -135,16 +135,25 @@ export class RSSAdapter implements SourceAdapter {
   }
 
   async *fetch(): AsyncIterable<FetchResult> {
+    let attemptedFeeds = 0;
+    let failedFeeds = 0;
+
     for (const feed of this.feeds) {
+      attemptedFeeds += 1;
       try {
         yield* this.fetchFeed(feed);
       } catch (error) {
+        failedFeeds += 1;
         this.logger.error(
           { feed: feed.name, url: feed.url, error },
           "Failed to fetch feed"
         );
         // Continue with other feeds
       }
+    }
+
+    if (attemptedFeeds > 0 && failedFeeds === attemptedFeeds) {
+      throw new Error("All configured RSS feeds failed during poll cycle");
     }
   }
 
@@ -166,7 +175,7 @@ export class RSSAdapter implements SourceAdapter {
         { feed: feed.name, url: feed.url, error },
         "Failed to parse RSS feed"
       );
-      return;
+      throw error;
     }
 
     const items = parsedFeed.items ?? [];

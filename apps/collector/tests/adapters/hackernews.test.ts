@@ -344,7 +344,7 @@ describe("HackerNewsAdapter", () => {
       expect(logger.warn).toHaveBeenCalled();
     });
 
-    it("returns early when story IDs fetch fails", async () => {
+    it("throws when story IDs fetch fails", async () => {
       const checkpoints = createMockCheckpoints();
       const logger = createTestLogger();
 
@@ -352,12 +352,11 @@ describe("HackerNewsAdapter", () => {
 
       const adapter = new HackerNewsAdapter("top", 300000, 30, checkpoints, logger);
 
-      const results: any[] = [];
-      for await (const result of adapter.fetch()) {
-        results.push(result);
-      }
-
-      expect(results).toHaveLength(0);
+      await expect(async () => {
+        for await (const _result of adapter.fetch()) {
+          // No-op
+        }
+      }).rejects.toThrow("API down");
       expect(logger.error).toHaveBeenCalled();
     });
 

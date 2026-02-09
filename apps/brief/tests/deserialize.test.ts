@@ -90,6 +90,25 @@ describe("brief deserializeSummaryRequest", () => {
     expect(parsed.windows).toEqual([1, 2, 3, 2]);
   });
 
+  it("preserves missing budget fields as undefined", () => {
+    const payload = {
+      request_id: "req-budget",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      budget: {
+        daily_budget_usd: 5,
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.budget).toEqual({
+      dailyBudgetUsd: 5,
+      maxTopics: undefined,
+      maxEvidencePerTopic: undefined,
+      maxOutputTokens: undefined,
+    });
+  });
+
   it("supports string summary request types", () => {
     expect(parseSummaryRequestType("daily")).toBe("daily");
     expect(parseSummaryRequestType("SUMMARY_REQUEST_TYPE_DAILY")).toBe("daily");
@@ -166,5 +185,28 @@ describe("brief deserializeSummaryRequest", () => {
     };
 
     expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow();
+  });
+
+  it("rejects unknown evidence source values", () => {
+    const payload = {
+      request_id: "req-source",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      topics: [
+        {
+          topic: "aws.bedrock",
+          evidence: [
+            {
+              event_id: "evt-1",
+              source: "totally-unknown-source",
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported source value"
+    );
   });
 });

@@ -93,7 +93,7 @@ export class HackerNewsAdapter implements SourceAdapter {
       storyIds = await fetchJson<number[]>(endpoint);
     } catch (error) {
       this.logger.error({ error }, "Failed to fetch HN story IDs");
-      return;
+      throw error;
     }
 
     // Take top N stories that are newer than checkpoint

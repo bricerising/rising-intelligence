@@ -23,7 +23,7 @@ vi.mock("../src/config.js", () => ({
   }),
 }));
 
-import { processBatch } from "../src/process.js";
+import { processBatch, processCollectorHeartbeatBatch } from "../src/process.js";
 import { createHealthContext, type HealthContext } from "../src/health.js";
 
 function makeLogger(): pino.Logger {
@@ -278,5 +278,62 @@ describe("trends processBatch", () => {
 
     expect(ctx.healthContext.postgresHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("postgres_error")).toBe(1);
+  });
+
+  it("stores collector heartbeat state from heartbeat batches", async () => {
+    const heartbeatMessage = makeMessage("1", {
+      source: 1,
+      timestamp: "2026-02-06T10:00:00.000Z",
+      last_fetch_at: "2026-02-06T09:59:30.000Z",
+      items_fetched: 12,
+      status: 1,
+      error_message: "",
+    });
+    const payload = makePayload([heartbeatMessage], {
+      batch: {
+        topic: "collector.heartbeat",
+        partition: 0,
+        highWatermark: "2",
+        messages: [heartbeatMessage],
+      },
+    });
+    const ctx = makeContext();
+
+    await processCollectorHeartbeatBatch(ctx, payload);
+
+    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
+      source: "rss",
+      status: "healthy",
+      itemsFetched: 12,
+    });
+  });
+
+  it("skips malformed collector heartbeat payloads and advances offsets", async () => {
+    const msg: KafkaMessage = {
+      offset: "1",
+      key: null,
+      value: Buffer.from("{bad-json", "utf-8"),
+      timestamp: Date.now().toString(),
+      attributes: 0,
+      headers: {},
+      size: 0,
+    } as KafkaMessage;
+    const payload = makePayload([msg], {
+      batch: {
+        topic: "collector.heartbeat",
+        partition: 0,
+        highWatermark: "2",
+        messages: [msg],
+      },
+    });
+    const ctx = makeContext();
+
+    await processCollectorHeartbeatBatch(ctx, payload);
+
+    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
 });

@@ -13,6 +13,8 @@ function makeConfig() {
     KAFKA_TOPIC_SUMMARY_REQUESTS: "summary.requests",
     MAX_LAG_AGE_MS: 5 * 60 * 1000,
     MAX_LAG_MESSAGES: 100,
+    MAX_SOURCE_HEARTBEAT_AGE_MS: 5 * 60 * 1000,
+    MIN_HEALTHY_SOURCES: 2,
     BRIEF_MAX_TOPICS: 10,
     BRIEF_MAX_EVIDENCE_PER_TOPIC: 5,
     BRIEF_DAILY_BUDGET_USD: 5,
@@ -72,6 +74,20 @@ describe("maybeTriggerDailySummaryRequest", () => {
     };
 
     const healthContext = createHealthContext();
+    healthContext.collectorHeartbeats.set("rss", {
+      source: "rss",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T01:04:30.000Z"),
+      lastFetchAt: new Date("2026-02-06T01:04:30.000Z"),
+      itemsFetched: 10,
+    });
+    healthContext.collectorHeartbeats.set("hackernews", {
+      source: "hackernews",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T01:04:30.000Z"),
+      lastFetchAt: new Date("2026-02-06T01:04:30.000Z"),
+      itemsFetched: 8,
+    });
     const nextDateKey = await maybeTriggerDailySummaryRequest({
       config: makeConfig(),
       logger: makeLogger(),
@@ -110,6 +126,15 @@ describe("maybeTriggerDailySummaryRequest", () => {
     expect(wire.request_id).toBe("daily:2026-02-06");
     expect(wire.type).toBe(1);
     expect(wire.topics[0].topic).toBe("aws.bedrock");
+    expect(prisma.rawEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          fetchedAt: {
+            gte: new Date("2026-02-06T00:00:00.000Z"),
+          },
+        }),
+      })
+    );
     expect(healthContext.metrics.briefTriggered.get("daily")).toBe(1);
   });
 
@@ -138,6 +163,94 @@ describe("maybeTriggerDailySummaryRequest", () => {
     };
 
     const healthContext = createHealthContext();
+    healthContext.collectorHeartbeats.set("rss", {
+      source: "rss",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T01:04:30.000Z"),
+      lastFetchAt: new Date("2026-02-06T01:04:30.000Z"),
+      itemsFetched: 4,
+    });
+    healthContext.collectorHeartbeats.set("hackernews", {
+      source: "hackernews",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T01:04:30.000Z"),
+      lastFetchAt: new Date("2026-02-06T01:04:30.000Z"),
+      itemsFetched: 7,
+    });
+    const nextDateKey = await maybeTriggerDailySummaryRequest({
+      config: makeConfig(),
+      logger: makeLogger(),
+      prisma: prisma as any,
+      producer: producer as any,
+      healthContext,
+      snapshots: [
+        {
+          window: "60m",
+          generatedAt: new Date("2026-02-06T01:00:00.000Z"),
+          topMetrics: [
+            {
+              topic: "aws.bedrock",
+              window: "60m",
+              volume: 25,
+              prevVolume: 10,
+              acceleration: 1.5,
+              baselineVolume: 12,
+              baselineDelta: 1.08,
+              score: 62.5,
+              evidenceEventIds: ["evt-1"],
+            },
+          ],
+        },
+      ],
+      lastDailyTriggerDate: null,
+      now: new Date("2026-02-06T01:05:00.000Z"),
+    });
+
+    expect(nextDateKey).toBeNull();
+    expect(producer.send).not.toHaveBeenCalled();
+    expect(healthContext.metrics.briefSkippedStaleData).toBe(1);
+  });
+
+  it("skips trigger when collector heartbeats are stale", async () => {
+    const producer = {
+      send: vi.fn().mockResolvedValue(undefined),
+    };
+    const prisma = {
+      consumerLag: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            consumerGroup: "trends-processor",
+            lagMessages: 2n,
+            updatedAt: new Date("2026-02-06T01:04:00.000Z"),
+          },
+          {
+            consumerGroup: "persister",
+            lagMessages: 2n,
+            updatedAt: new Date("2026-02-06T01:04:00.000Z"),
+          },
+        ]),
+      },
+      rawEvent: {
+        findMany: vi.fn(),
+      },
+    };
+
+    const healthContext = createHealthContext();
+    healthContext.collectorHeartbeats.set("rss", {
+      source: "rss",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T00:40:00.000Z"),
+      lastFetchAt: new Date("2026-02-06T00:40:00.000Z"),
+      itemsFetched: 2,
+    });
+    healthContext.collectorHeartbeats.set("hackernews", {
+      source: "hackernews",
+      status: "healthy",
+      timestamp: new Date("2026-02-06T00:40:00.000Z"),
+      lastFetchAt: new Date("2026-02-06T00:40:00.000Z"),
+      itemsFetched: 2,
+    });
+
     const nextDateKey = await maybeTriggerDailySummaryRequest({
       config: makeConfig(),
       logger: makeLogger(),

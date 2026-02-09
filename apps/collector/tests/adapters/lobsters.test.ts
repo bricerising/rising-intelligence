@@ -217,7 +217,7 @@ describe("LobstersAdapter", () => {
       expect(results).toHaveLength(0);
     });
 
-    it("handles RSS parse errors gracefully", async () => {
+    it("throws when Lobsters RSS fetch fails", async () => {
       const mockParser = {
         parseURL: vi.fn().mockRejectedValue(new Error("Network error")),
       };
@@ -227,12 +227,11 @@ describe("LobstersAdapter", () => {
       const logger = createTestLogger();
       const adapter = new LobstersAdapter(600000, 25, createMockCheckpoints(), logger);
 
-      const results: any[] = [];
-      for await (const result of adapter.fetch()) {
-        results.push(result);
-      }
-
-      expect(results).toHaveLength(0);
+      await expect(async () => {
+        for await (const _result of adapter.fetch()) {
+          // No-op
+        }
+      }).rejects.toThrow("Network error");
       expect(logger.error).toHaveBeenCalled();
     });
 

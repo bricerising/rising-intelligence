@@ -26,7 +26,11 @@ import {
   type KafkaProducerContext,
 } from "./kafka/producer.js";
 import { createRedisClient, disconnectRedis } from "./redis.js";
-import { processBatch, type TrendsContext } from "./process.js";
+import {
+  processBatch,
+  processCollectorHeartbeatBatch,
+  type TrendsContext,
+} from "./process.js";
 import { publishSnapshots } from "./snapshot.js";
 import { maybeTriggerDailySummaryRequest } from "./brief-trigger.js";
 
@@ -83,6 +87,10 @@ async function initializeTrends(): Promise<RuntimeContext> {
     topic: config.KAFKA_TOPIC_RAW_EVENTS,
     fromBeginning: false,
   });
+  await kafkaConsumerContext.consumer.subscribe({
+    topic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
+    fromBeginning: false,
+  });
 
   const kafkaProducerContext = await createKafkaProducer(
     logger.child({ component: "kafka-producer" })
@@ -92,6 +100,7 @@ async function initializeTrends(): Promise<RuntimeContext> {
   logger.info(
     {
       consumeTopic: config.KAFKA_TOPIC_RAW_EVENTS,
+      heartbeatTopic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
       publishTopic: config.KAFKA_TOPIC_TRENDS_SNAPSHOTS,
       windows: config.WINDOWS,
     },
@@ -161,7 +170,19 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
     autoCommit: false,
     eachBatchAutoResolve: false,
     eachBatch: async (payload) => {
-      await processBatch(ctx, payload);
+      if (payload.batch.topic === ctx.config.KAFKA_TOPIC_RAW_EVENTS) {
+        await processBatch(ctx, payload);
+        return;
+      }
+      if (payload.batch.topic === ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT) {
+        await processCollectorHeartbeatBatch(ctx, payload);
+        return;
+      }
+
+      ctx.logger.warn(
+        { topic: payload.batch.topic, partition: payload.batch.partition },
+        "Received batch for unexpected topic; skipping"
+      );
     },
   });
 }

@@ -33,6 +33,15 @@ export interface Metrics {
   baselineComputeDurationSeconds: HistogramState;
 }
 
+export interface CollectorHeartbeatState {
+  source: string;
+  status: "healthy" | "degraded" | "error";
+  timestamp: Date;
+  lastFetchAt: Date;
+  itemsFetched: number;
+  errorMessage?: string;
+}
+
 export interface HealthContext {
   startTime: number;
   kafkaHealthy: boolean;
@@ -40,6 +49,7 @@ export interface HealthContext {
   redisHealthy: boolean;
   allowlistHealthy: boolean;
   lastEventAt?: Date;
+  collectorHeartbeats: Map<string, CollectorHeartbeatState>;
   metrics: Metrics;
 }
 
@@ -94,6 +104,7 @@ export function createHealthContext(): HealthContext {
     postgresHealthy: false,
     redisHealthy: false,
     allowlistHealthy: false,
+    collectorHeartbeats: new Map(),
     metrics: createMetrics(),
   };
 }

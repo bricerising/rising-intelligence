@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHealthContext } from "../src/health.js";
 import { processSummaryRequest } from "../src/process.js";
 import type { ParsedSummaryRequest } from "../src/types.js";
@@ -55,53 +55,52 @@ function makeRequest(): ParsedSummaryRequest {
   };
 }
 
+function makeContext(overrides: Record<string, unknown> = {}) {
+  const create = vi.fn().mockResolvedValue(undefined);
+  return {
+    config: {
+      KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+      LLM_PROVIDER: "internal",
+      LLM_DAILY_BUDGET_USD: 5,
+      LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+      LLM_TIMEOUT_MS: 5000,
+    },
+    logger: makeLogger(),
+    healthContext: createHealthContext(5),
+    prisma: {
+      briefResult: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create,
+      },
+    },
+    redis: {
+      eval: vi.fn().mockResolvedValue([1, "0.02"]),
+    },
+    producer: {
+      send: vi.fn().mockResolvedValue(undefined),
+    },
+    ...overrides,
+  } as any;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("processSummaryRequest", () => {
   it("persists and publishes a successful brief result", async () => {
-    const create = vi.fn().mockResolvedValue(undefined);
-    const producer = {
-      send: vi.fn().mockResolvedValue(undefined),
-    };
-    const redis = {
-      get: vi.fn().mockResolvedValue("0"),
-      incrbyfloat: vi.fn().mockResolvedValue("0.02"),
-      expire: vi.fn().mockResolvedValue(1),
-    };
-    const ctx = {
-      config: {
-        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
-        LLM_PROVIDER: "internal",
-        LLM_DAILY_BUDGET_USD: 5,
-      },
-      logger: makeLogger(),
-      healthContext: createHealthContext(5),
-      prisma: {
-        briefResult: {
-          findUnique: vi.fn().mockResolvedValue(null),
-          create,
-        },
-      },
-      redis,
-      producer,
-    } as any;
+    const ctx = makeContext();
 
     await processSummaryRequest(ctx, makeRequest());
 
-    expect(create).toHaveBeenCalledOnce();
-    expect(producer.send).toHaveBeenCalledOnce();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    expect(ctx.redis.eval).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
     expect(ctx.healthContext.metrics.llmCostUsdTotal).toBeGreaterThan(0);
   });
 
   it("uses http provider when configured", async () => {
-    const create = vi.fn().mockResolvedValue(undefined);
-    const producer = {
-      send: vi.fn().mockResolvedValue(undefined),
-    };
-    const redis = {
-      get: vi.fn().mockResolvedValue("0"),
-      incrbyfloat: vi.fn().mockResolvedValue("0.02"),
-      expire: vi.fn().mockResolvedValue(1),
-    };
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -127,7 +126,8 @@ describe("processSummaryRequest", () => {
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = {
+
+    const ctx = makeContext({
       config: {
         KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
         LLM_PROVIDER: "http",
@@ -135,62 +135,107 @@ describe("processSummaryRequest", () => {
         LLM_TIMEOUT_MS: 5000,
         LLM_DAILY_BUDGET_USD: 5,
       },
-      logger: makeLogger(),
-      healthContext: createHealthContext(5),
-      prisma: {
-        briefResult: {
-          findUnique: vi.fn().mockResolvedValue(null),
-          create,
-        },
-      },
-      redis,
-      producer,
-    } as any;
+    });
 
-    try {
-      await processSummaryRequest(ctx, makeRequest());
+    await processSummaryRequest(ctx, makeRequest());
 
-      expect(fetchMock).toHaveBeenCalledOnce();
-      expect(create).toHaveBeenCalledOnce();
-      expect(producer.send).toHaveBeenCalledOnce();
-      expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(120);
-      expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(80);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(120);
+    expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(80);
   });
 
-  it("skips duplicate requests without publishing", async () => {
-    const producer = {
-      send: vi.fn().mockResolvedValue(undefined),
-    };
-    const ctx = {
-      config: {
-        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
-        LLM_PROVIDER: "internal",
-        LLM_DAILY_BUDGET_USD: 5,
+  it("republishes persisted result for duplicate requests", async () => {
+    const existingPayload = {
+      request_id: "req-1",
+      produced_at: "2026-02-06T10:01:00.000Z",
+      brief: {
+        brief_id: "brief:req-1",
+        generated_at: "2026-02-06T10:01:00.000Z",
+        window: 1,
+        title: "Existing Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Already generated",
+            why_it_matters: "Still relevant",
+            suggested_action: "Read source",
+            citations: ["https://example.com/1"],
+          },
+        ],
+        notes: "All highlights include source citations.",
+        meta: {
+          provider: "internal",
+          model: "rule-based-v1",
+          input_tokens: 100,
+          output_tokens: 100,
+          estimated_cost_usd: 0.02,
+        },
       },
-      logger: makeLogger(),
-      healthContext: createHealthContext(5),
+    };
+    const ctx = makeContext({
       prisma: {
         briefResult: {
-          findUnique: vi.fn().mockResolvedValue({ requestId: "req-1" }),
+          findUnique: vi.fn().mockResolvedValue({
+            status: "success",
+            result: existingPayload,
+          }),
           create: vi.fn(),
         },
       },
-      redis: {
-        get: vi.fn(),
-        incrbyfloat: vi.fn(),
-        expire: vi.fn(),
-      },
-      producer,
-    } as any;
+    });
 
     await processSummaryRequest(ctx, makeRequest());
 
     expect(ctx.prisma.briefResult.create).not.toHaveBeenCalled();
-    expect(producer.send).not.toHaveBeenCalled();
+    expect(ctx.redis.eval).not.toHaveBeenCalled();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.duplicatesSkipped).toBe(1);
     expect(ctx.healthContext.metrics.generation.get("skipped")).toBe(1);
+  });
+
+  it("emits non-retryable failure when LLM citations are not grounded", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Ungrounded Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Model update landed [1]",
+            why_it_matters: "Lower latency for key workloads",
+            suggested_action: "Re-check production defaults",
+            citations: ["https://not-in-evidence.example.com/1"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+      redis: {
+        eval: vi
+          .fn()
+          .mockResolvedValueOnce([1, "0.02"])
+          .mockResolvedValueOnce("0"),
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result;
+    expect((persistedPayload as any).failure.error_code).toBe("grounding_error");
+    expect((persistedPayload as any).failure.retryable).toBe(false);
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
   });
 });

@@ -94,12 +94,16 @@ function getPrimarySnapshot(
 async function loadEvidenceForTopic(
   prisma: PrismaClient,
   topic: string,
+  evidenceSince: Date,
   maxEvidencePerTopic: number
 ) {
   const rawEvents = await prisma.rawEvent.findMany({
     where: {
       topics: {
         has: topic,
+      },
+      fetchedAt: {
+        gte: evidenceSince,
       },
     },
     orderBy: {
@@ -138,9 +142,61 @@ async function loadEvidenceForTopic(
   }));
 }
 
+function getWindowDurationMs(window: TrendWindow): number {
+  if (window === "15m") {
+    return 15 * 60 * 1000;
+  }
+  return 60 * 60 * 1000;
+}
+
+function getEvidenceSince(snapshots: PublishedWindowSnapshot[]): Date {
+  const earliestWindowStart = Math.min(
+    ...snapshots.map((snapshot) => snapshot.generatedAt.getTime() - getWindowDurationMs(snapshot.window))
+  );
+  return new Date(earliestWindowStart);
+}
+
+function hasFreshCollectorHeartbeats(
+  config: Config,
+  healthContext: HealthContext,
+  logger: pino.Logger,
+  now: Date
+): boolean {
+  if (healthContext.collectorHeartbeats.size === 0) {
+    logger.warn("Skipping daily brief trigger: collector heartbeats are missing");
+    return false;
+  }
+
+  const staleCutoffMs = now.getTime() - config.MAX_SOURCE_HEARTBEAT_AGE_MS;
+  let healthySources = 0;
+  for (const heartbeat of healthContext.collectorHeartbeats.values()) {
+    if (heartbeat.status !== "healthy") {
+      continue;
+    }
+    if (heartbeat.timestamp.getTime() < staleCutoffMs) {
+      continue;
+    }
+    healthySources += 1;
+  }
+
+  if (healthySources < config.MIN_HEALTHY_SOURCES) {
+    logger.warn(
+      {
+        healthySources,
+        minHealthySources: config.MIN_HEALTHY_SOURCES,
+      },
+      "Skipping daily brief trigger: not enough fresh healthy collector sources"
+    );
+    return false;
+  }
+
+  return true;
+}
+
 async function isDataFresh(
   config: Config,
   prisma: PrismaClient,
+  healthContext: HealthContext,
   logger: pino.Logger,
   now: Date
 ): Promise<boolean> {
@@ -189,7 +245,7 @@ async function isDataFresh(
     }
   }
 
-  return true;
+  return hasFreshCollectorHeartbeats(config, healthContext, logger, now);
 }
 
 function shouldTriggerDailyBrief(
@@ -228,7 +284,7 @@ export async function maybeTriggerDailySummaryRequest(ctx: TriggerContext): Prom
     return ctx.lastDailyTriggerDate;
   }
 
-  const fresh = await isDataFresh(ctx.config, ctx.prisma, logger, now);
+  const fresh = await isDataFresh(ctx.config, ctx.prisma, ctx.healthContext, logger, now);
   if (!fresh) {
     incrementBriefSkippedStaleData(ctx.healthContext);
     return ctx.lastDailyTriggerDate;
@@ -248,6 +304,7 @@ export async function maybeTriggerDailySummaryRequest(ctx: TriggerContext): Prom
   }
 
   const metricsByTopic = buildMetricsByTopic(ctx.snapshots);
+  const evidenceSince = getEvidenceSince(ctx.snapshots);
   const topicInputs = await Promise.all(
     selectedTopics.map(async (topic) => {
       const metrics = (metricsByTopic.get(topic) ?? []).map(({ metric, windowEndIso }) => ({
@@ -268,6 +325,7 @@ export async function maybeTriggerDailySummaryRequest(ctx: TriggerContext): Prom
       const evidence = await loadEvidenceForTopic(
         ctx.prisma,
         topic,
+        evidenceSince,
         ctx.config.BRIEF_MAX_EVIDENCE_PER_TOPIC
       );
       return {

@@ -31,10 +31,10 @@ export interface ParsedSummaryRequest {
   windows: number[];
   budget:
     | {
-        dailyBudgetUsd: number;
-        maxTopics: number;
-        maxEvidencePerTopic: number;
-        maxOutputTokens: number;
+        dailyBudgetUsd?: number;
+        maxTopics?: number;
+        maxEvidencePerTopic?: number;
+        maxOutputTokens?: number;
       }
     | null;
   topics: ParsedSummaryTopic[];

@@ -1,7 +1,7 @@
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
-import { serializeError } from "@rising-intelligence/shared";
+import { parseCanonicalSource, serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
@@ -16,6 +16,8 @@ import {
 } from "./health.js";
 import { applyEventToWindows } from "./redis.js";
 
+const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 50;
+
 function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   if (!value) {
     return fallback;
@@ -26,6 +28,88 @@ function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   } catch {
     return fallback;
   }
+}
+
+function parseIsoDate(value: unknown, field: string): Date {
+  if (typeof value !== "string") {
+    throw new Error(`collector heartbeat ${field} must be a string`);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`collector heartbeat ${field} is invalid: ${value}`);
+  }
+  return parsed;
+}
+
+function parseCollectorStatus(value: unknown): "healthy" | "degraded" | "error" {
+  if (typeof value === "number") {
+    if (value === 1) {
+      return "healthy";
+    }
+    if (value === 2) {
+      return "degraded";
+    }
+    if (value === 3) {
+      return "error";
+    }
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "healthy" || normalized === "collector_status_healthy") {
+      return "healthy";
+    }
+    if (normalized === "degraded" || normalized === "collector_status_degraded") {
+      return "degraded";
+    }
+    if (normalized === "error" || normalized === "collector_status_error") {
+      return "error";
+    }
+  }
+
+  throw new Error(`Unsupported collector heartbeat status: ${String(value)}`);
+}
+
+function deserializeCollectorHeartbeat(
+  messageValue: Buffer
+): {
+  source: string;
+  status: "healthy" | "degraded" | "error";
+  timestamp: Date;
+  lastFetchAt: Date;
+  itemsFetched: number;
+  errorMessage?: string;
+} {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(messageValue.toString("utf-8"));
+  } catch (error) {
+    throw new Error(`Invalid collector heartbeat JSON: ${(error as Error).message}`);
+  }
+
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("Collector heartbeat payload must be an object");
+  }
+
+  const heartbeat = decoded as Record<string, unknown>;
+  const source = parseCanonicalSource(heartbeat.source as number | string);
+  const status = parseCollectorStatus(heartbeat.status);
+  const timestamp = parseIsoDate(heartbeat.timestamp, "timestamp");
+  const lastFetchAt = parseIsoDate(heartbeat.last_fetch_at, "last_fetch_at");
+  const itemsFetched = typeof heartbeat.items_fetched === "number" ? heartbeat.items_fetched : 0;
+  const errorMessage =
+    typeof heartbeat.error_message === "string" && heartbeat.error_message.trim().length > 0
+      ? heartbeat.error_message
+      : undefined;
+
+  return {
+    source,
+    status,
+    timestamp,
+    lastFetchAt,
+    itemsFetched,
+    errorMessage,
+  };
 }
 
 export interface TrendsContext {
@@ -48,6 +132,16 @@ export async function processBatch(
     return;
   }
 
+  let messagesSinceHeartbeat = 0;
+  const maybeHeartbeat = async () => {
+    messagesSinceHeartbeat += 1;
+    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
+      return;
+    }
+    await heartbeat();
+    messagesSinceHeartbeat = 0;
+  };
+
   for (const message of batch.messages) {
     if (!message.value) {
       incrementError(ctx.healthContext, "parse_error");
@@ -60,6 +154,7 @@ export async function processBatch(
         "Skipping message with empty value"
       );
       resolveOffset(message.offset);
+      await maybeHeartbeat();
       continue;
     }
 
@@ -78,12 +173,14 @@ export async function processBatch(
         "Failed to deserialize event"
       );
       resolveOffset(message.offset);
+      await maybeHeartbeat();
       continue;
     }
 
     const trackedTopics = filterTrackedTags(event.tags, ctx.allowlist);
     if (trackedTopics.length === 0) {
       resolveOffset(message.offset);
+      await maybeHeartbeat();
       continue;
     }
 
@@ -120,6 +217,7 @@ export async function processBatch(
     }
 
     resolveOffset(message.offset);
+    await maybeHeartbeat();
   }
 
   await commitOffsetsIfNecessary();
@@ -171,4 +269,63 @@ export async function processBatch(
       "Failed to update consumer lag row"
     );
   }
+}
+
+export async function processCollectorHeartbeatBatch(
+  ctx: TrendsContext,
+  payload: EachBatchPayload
+): Promise<void> {
+  const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+  if (!isRunning() || isStale()) {
+    return;
+  }
+
+  let messagesSinceHeartbeat = 0;
+  const maybeHeartbeat = async () => {
+    messagesSinceHeartbeat += 1;
+    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
+      return;
+    }
+    await heartbeat();
+    messagesSinceHeartbeat = 0;
+  };
+
+  for (const message of batch.messages) {
+    if (!message.value) {
+      incrementError(ctx.healthContext, "parse_error");
+      ctx.logger.warn(
+        {
+          kafkaTopic: batch.topic,
+          partition: batch.partition,
+          offset: message.offset,
+        },
+        "Skipping collector heartbeat with empty value"
+      );
+      resolveOffset(message.offset);
+      await maybeHeartbeat();
+      continue;
+    }
+
+    try {
+      const collectorHeartbeat = deserializeCollectorHeartbeat(message.value);
+      ctx.healthContext.collectorHeartbeats.set(collectorHeartbeat.source, collectorHeartbeat);
+    } catch (error) {
+      incrementError(ctx.healthContext, "parse_error");
+      ctx.logger.warn(
+        {
+          kafkaTopic: batch.topic,
+          partition: batch.partition,
+          offset: message.offset,
+          error: serializeError(error),
+        },
+        "Failed to deserialize collector heartbeat"
+      );
+    }
+
+    resolveOffset(message.offset);
+    await maybeHeartbeat();
+  }
+
+  await commitOffsetsIfNecessary();
+  await heartbeat();
 }

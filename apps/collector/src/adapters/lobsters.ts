@@ -79,7 +79,7 @@ export class LobstersAdapter implements SourceAdapter {
       feed = await this.parser.parseURL(LOBSTERS_RSS_URL);
     } catch (error) {
       this.logger.error({ error }, "Failed to fetch Lobsters RSS");
-      return;
+      throw error;
     }
 
     const items = feed.items ?? [];

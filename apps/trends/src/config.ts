@@ -21,6 +21,7 @@ const ConfigSchema = z.object({
   KAFKA_CONSUMER_GROUP: z.string().default("trends-processor"),
   PERSISTER_CONSUMER_GROUP: z.string().default("persister"),
   KAFKA_TOPIC_RAW_EVENTS: z.string().default("events.raw"),
+  KAFKA_TOPIC_COLLECTOR_HEARTBEAT: z.string().default("collector.heartbeat"),
   KAFKA_TOPIC_TRENDS_SNAPSHOTS: z.string().default("trends.snapshots"),
   KAFKA_TOPIC_SUMMARY_REQUESTS: z.string().default("summary.requests"),
 
@@ -44,6 +45,8 @@ const ConfigSchema = z.object({
   DAILY_BRIEF_UTC_MINUTE: z.coerce.number().int().min(0).max(59).default(0),
   MAX_LAG_MESSAGES: z.coerce.number().int().nonnegative().default(100),
   MAX_LAG_AGE_MS: z.coerce.number().int().positive().default(300000),
+  MAX_SOURCE_HEARTBEAT_AGE_MS: z.coerce.number().int().positive().default(300000),
+  MIN_HEALTHY_SOURCES: z.coerce.number().int().positive().default(2),
   BRIEF_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
   BRIEF_MAX_TOPICS: z.coerce.number().int().positive().default(10),
   BRIEF_MAX_EVIDENCE_PER_TOPIC: z.coerce.number().int().positive().default(5),

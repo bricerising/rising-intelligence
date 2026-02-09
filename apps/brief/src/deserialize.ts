@@ -104,14 +104,10 @@ function parseOptionalDate(value: string | undefined, field: string): Date | nul
 
 function parseEvidenceSource(value: number | string | undefined): string {
   if (value === undefined) {
-    return "news";
+    throw new Error("Missing evidence source");
   }
 
-  try {
-    return parseCanonicalSource(value);
-  } catch {
-    return "news";
-  }
+  return parseCanonicalSource(value);
 }
 
 export function parseSummaryRequestType(value: number | string): SummaryRequestType {
@@ -155,10 +151,10 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
     windows: (wire.windows ?? []).map((window) => parseTrendWindow(window)),
     budget: wire.budget
       ? {
-          dailyBudgetUsd: wire.budget.daily_budget_usd ?? 0,
-          maxTopics: wire.budget.max_topics ?? 0,
-          maxEvidencePerTopic: wire.budget.max_evidence_per_topic ?? 0,
-          maxOutputTokens: wire.budget.max_output_tokens ?? 0,
+          dailyBudgetUsd: wire.budget.daily_budget_usd,
+          maxTopics: wire.budget.max_topics,
+          maxEvidencePerTopic: wire.budget.max_evidence_per_topic,
+          maxOutputTokens: wire.budget.max_output_tokens,
         }
       : null,
     topics: (wire.topics ?? []).map((topic) => {

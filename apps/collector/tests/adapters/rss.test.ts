@@ -319,6 +319,34 @@ official_blogs:
       expect(logger.warn).toHaveBeenCalled();
     });
 
+    it("throws when all configured feeds fail", async () => {
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: Feed One
+    url: https://example.com/feed-one
+  - name: Feed Two
+    url: https://example.com/feed-two
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn().mockRejectedValue(new Error("Network error")),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+      await adapter.initialize();
+
+      await expect(async () => {
+        for await (const _result of adapter.fetch()) {
+          // No-op
+        }
+      }).rejects.toThrow("All configured RSS feeds failed during poll cycle");
+    });
+
     it("extracts URLs and hashtags from content", async () => {
       writeFileSync(
         feedsPath,

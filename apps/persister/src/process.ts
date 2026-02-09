@@ -25,6 +25,7 @@ import type { ParsedRawEvent } from "./types.js";
 import { nowSeconds, toBigInt } from "./utils.js";
 
 const CIRCUIT_PAUSE_HEARTBEAT_INTERVAL_MS = 2000;
+const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 50;
 
 class RedisWriteFailure extends Error {
   readonly cause: unknown;
@@ -156,6 +157,15 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
   }
 
   observeBatchSize(ctx.healthContext, batch.messages.length);
+  let messagesSinceHeartbeat = 0;
+  const maybeHeartbeat = async () => {
+    messagesSinceHeartbeat += 1;
+    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
+      return;
+    }
+    await heartbeat();
+    messagesSinceHeartbeat = 0;
+  };
 
   const events: ParsedRawEvent[] = [];
   for (const message of batch.messages) {
@@ -170,6 +180,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
         },
         "Skipping message with empty value"
       );
+      await maybeHeartbeat();
       continue;
     }
 
@@ -189,6 +200,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
         "Failed to deserialize event"
       );
     }
+    await maybeHeartbeat();
   }
 
   try {
@@ -231,6 +243,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
 
   for (const message of batch.messages) {
     resolveOffset(message.offset);
+    await maybeHeartbeat();
   }
 
   await commitOffsetsIfNecessary();

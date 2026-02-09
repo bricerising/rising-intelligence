@@ -31,13 +31,43 @@ interface ProcessContext {
 
 const BUDGET_KEY_PREFIX = "brief:budget";
 const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
+const BUDGET_RESERVATION_SCRIPT = `
+local key = KEYS[1]
+local max_budget = tonumber(ARGV[1])
+local amount = tonumber(ARGV[2])
+local ttl_seconds = tonumber(ARGV[3])
+
+local current = tonumber(redis.call("GET", key) or "0")
+if (current + amount) > max_budget then
+  return {0, tostring(current)}
+end
+
+local next = redis.call("INCRBYFLOAT", key, amount)
+redis.call("EXPIRE", key, ttl_seconds)
+return {1, tostring(next)}
+`;
+const BUDGET_RELEASE_SCRIPT = `
+local key = KEYS[1]
+local amount = tonumber(ARGV[1])
+local ttl_seconds = tonumber(ARGV[2])
+
+local current = tonumber(redis.call("GET", key) or "0")
+local next = current - amount
+if next < 0 then
+  next = 0
+end
+
+redis.call("SET", key, tostring(next))
+redis.call("EXPIRE", key, ttl_seconds)
+return tostring(next)
+`;
 
 const LlmHighlightSchema = z.object({
   topic: z.string().min(1),
   what_happened: z.string().min(1),
   why_it_matters: z.string().min(1),
   suggested_action: z.string().min(1),
-  citations: z.array(z.string()).default([]),
+  citations: z.array(z.string().url()).min(1),
 });
 
 const LlmResponseSchema = z.object({
@@ -97,6 +127,13 @@ class LlmGenerationError extends Error {
   }
 }
 
+class NonRetryableProcessingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NonRetryableProcessingError";
+  }
+}
+
 function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -114,19 +151,48 @@ function estimateRequestCostUsd(request: ParsedSummaryRequest): number {
   return Number((0.01 + request.topics.length * 0.002 + evidenceCount * 0.0005).toFixed(4));
 }
 
-function dedupeStrings(values: Array<string | null>): string[] {
+function canonicalizeUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
+      url.pathname = url.pathname.slice(0, -1);
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function dedupeCanonicalUrls(values: Array<string | null>): string[] {
   const unique = new Set<string>();
   for (const value of values) {
     if (!value) {
       continue;
     }
-    const trimmed = value.trim();
-    if (trimmed.length === 0) {
+    const canonical = canonicalizeUrl(value);
+    if (!canonical) {
       continue;
     }
-    unique.add(trimmed);
+    unique.add(canonical);
   }
   return [...unique];
+}
+
+function createEvidenceUrlSet(request: ParsedSummaryRequest): Set<string> {
+  const urls = request.topics.flatMap((topic) => topic.evidence.map((evidence) => evidence.url));
+  return new Set(dedupeCanonicalUrls(urls));
+}
+
+function filterGroundedCitations(citations: string[], evidenceUrls: Set<string>): string[] {
+  const filtered = dedupeCanonicalUrls(citations);
+  return filtered.filter((citation) => evidenceUrls.has(citation)).slice(0, 3);
 }
 
 function selectPrimaryMetric(topic: ParsedSummaryTopic) {
@@ -135,22 +201,16 @@ function selectPrimaryMetric(topic: ParsedSummaryTopic) {
 
 function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
   const primaryMetric = selectPrimaryMetric(topic);
-  const citations = dedupeStrings(topic.evidence.map((evidence) => evidence.url)).slice(0, 3);
+  const citations = dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url)).slice(0, 3);
   const score = primaryMetric ? primaryMetric.score.toFixed(1) : "0.0";
   const volume = primaryMetric ? Math.round(primaryMetric.volume) : topic.evidence.length;
   const acceleration = primaryMetric ? primaryMetric.acceleration.toFixed(2) : "0.00";
 
   return {
     topic: topic.topic,
-    why_it_matters:
-      citations.length > 0
-        ? `${topic.topic} is sustaining measurable momentum with ${volume} recent signals.`
-        : `${topic.topic} is trending, but source coverage is still thin.`,
+    why_it_matters: `${topic.topic} is sustaining measurable momentum with ${volume} recent signals.`,
     what_happened: `${topic.topic} reached score ${score} with volume ${volume} and acceleration ${acceleration}.`,
-    suggested_action:
-      citations.length > 0
-        ? `Review ${citations[0]} and validate whether this trend impacts current priorities.`
-        : "Monitor this topic and wait for stronger evidence before acting.",
+    suggested_action: `Review ${citations[0] ?? "the supporting sources"} and validate whether this trend impacts current priorities.`,
     citations,
   };
 }
@@ -161,16 +221,13 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
     what_happened: highlight.what_happened.trim(),
     why_it_matters: highlight.why_it_matters.trim(),
     suggested_action: highlight.suggested_action.trim(),
-    citations: dedupeStrings(highlight.citations).slice(0, 3),
+    citations: dedupeCanonicalUrls(highlight.citations).slice(0, 3),
   };
 }
 
 function deriveDefaultNotes(highlights: NormalizedHighlight[]): string {
-  const missingCitationTopics = highlights
-    .filter((highlight) => highlight.citations.length === 0)
-    .map((highlight) => highlight.topic);
-  return missingCitationTopics.length > 0
-    ? `Limited coverage for topics: ${missingCitationTopics.join(", ")}.`
+  return highlights.length === 0
+    ? "No grounded highlights were produced for this request."
     : "All highlights include source citations.";
 }
 
@@ -303,6 +360,31 @@ function buildSuccessPayload(
   };
 }
 
+function enforceGroundedHighlights(
+  request: ParsedSummaryRequest,
+  highlights: NormalizedHighlight[]
+): NormalizedHighlight[] {
+  const evidenceUrls = createEvidenceUrlSet(request);
+  if (evidenceUrls.size === 0) {
+    throw new NonRetryableProcessingError("No evidence URLs were provided in the summary request");
+  }
+
+  const groundedHighlights = highlights
+    .map((highlight) => ({
+      ...highlight,
+      citations: filterGroundedCitations(highlight.citations, evidenceUrls),
+    }))
+    .filter((highlight) => highlight.citations.length > 0);
+
+  if (groundedHighlights.length === 0) {
+    throw new NonRetryableProcessingError(
+      "Brief generation produced no grounded highlights with valid evidence citations"
+    );
+  }
+
+  return groundedHighlights;
+}
+
 function buildInternalSuccessResult(
   request: ParsedSummaryRequest,
   producedAt: Date,
@@ -310,7 +392,10 @@ function buildInternalSuccessResult(
 ): SuccessResult {
   const budgetMaxTopics = request.budget?.maxTopics ?? request.topics.length;
   const topics = request.topics.slice(0, budgetMaxTopics);
-  const highlights = topics.map((topic) => buildInternalHighlight(topic));
+  const highlights = enforceGroundedHighlights(
+    request,
+    topics.map((topic) => buildInternalHighlight(topic))
+  );
   const inputTokens = estimateTokenCount(JSON.stringify(request));
   const outputTokens = estimateTokenCount(JSON.stringify(highlights));
   const notes = deriveDefaultNotes(highlights);
@@ -337,7 +422,10 @@ async function buildHttpSuccessResult(
 ): Promise<SuccessResult> {
   const llmResponse = await callHttpLlm(ctx.config, request, ctx.logger);
   const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
-  const highlights = llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight);
+  const highlights = enforceGroundedHighlights(
+    request,
+    llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight)
+  );
   const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
   const outputTokens =
     llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
@@ -418,21 +506,126 @@ async function persistResult(
   }
 }
 
-async function readSpentBudgetUsd(redis: Redis, dateKey: string): Promise<number> {
-  const raw = await redis.get(getBudgetKey(dateKey));
-  if (!raw) {
-    return 0;
+function toNumeric(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
   }
-  const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
-async function recordBudgetSpendUsd(redis: Redis, dateKey: string, amount: number): Promise<number> {
+function parseBudgetReservationResult(result: unknown): { reserved: boolean; spentUsd: number } {
+  if (!Array.isArray(result) || result.length < 2) {
+    throw new Error("Unexpected Redis budget reservation response");
+  }
+
+  const reserved = toNumeric(result[0]) === 1;
+  const spentUsd = toNumeric(result[1]);
+  return { reserved, spentUsd };
+}
+
+async function reserveBudgetSpendUsd(
+  redis: Redis,
+  dateKey: string,
+  dailyBudgetUsd: number,
+  amountUsd: number
+): Promise<{ reserved: boolean; spentUsd: number }> {
   const key = getBudgetKey(dateKey);
-  const nextRaw = await redis.incrbyfloat(key, amount);
-  await redis.expire(key, BUDGET_KEY_TTL_SECONDS);
-  const parsed = Number.parseFloat(nextRaw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  const result = await redis.eval(
+    BUDGET_RESERVATION_SCRIPT,
+    1,
+    key,
+    dailyBudgetUsd.toString(),
+    amountUsd.toString(),
+    BUDGET_KEY_TTL_SECONDS.toString()
+  );
+  return parseBudgetReservationResult(result);
+}
+
+async function releaseBudgetReservationUsd(
+  redis: Redis,
+  dateKey: string,
+  amountUsd: number
+): Promise<number> {
+  const key = getBudgetKey(dateKey);
+  const result = await redis.eval(
+    BUDGET_RELEASE_SCRIPT,
+    1,
+    key,
+    amountUsd.toString(),
+    BUDGET_KEY_TTL_SECONDS.toString()
+  );
+  return toNumeric(result);
+}
+
+function asResultPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Persisted brief result payload is not an object");
+  }
+
+  const payload = value as Record<string, unknown>;
+  if (typeof payload.request_id !== "string" || payload.request_id.length === 0) {
+    throw new Error("Persisted brief result payload is missing request_id");
+  }
+  if (typeof payload.produced_at !== "string" || payload.produced_at.length === 0) {
+    throw new Error("Persisted brief result payload is missing produced_at");
+  }
+  return payload;
+}
+
+async function loadPersistedResult(
+  prisma: PrismaClient,
+  requestId: string
+): Promise<{ status: BriefStatus; payload: Record<string, unknown> } | null> {
+  const existing = await prisma.briefResult.findUnique({
+    where: { requestId },
+    select: { status: true, result: true },
+  });
+  if (!existing) {
+    return null;
+  }
+
+  return {
+    status: existing.status,
+    payload: asResultPayload(existing.result),
+  };
+}
+
+async function republishPersistedResult(
+  ctx: ProcessContext,
+  requestId: string,
+  logger: pino.Logger
+): Promise<BriefStatus | null> {
+  const existing = await loadPersistedResult(ctx.prisma, requestId);
+  ctx.healthContext.postgresHealthy = true;
+  if (!existing) {
+    return null;
+  }
+
+  await publishBriefResult(
+    ctx.producer,
+    ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
+    requestId,
+    Buffer.from(JSON.stringify(existing.payload), "utf-8"),
+    logger
+  );
+  return existing.status;
+}
+
+async function rollbackBudgetReservation(
+  ctx: ProcessContext,
+  logger: pino.Logger,
+  dateKey: string,
+  reservedAmountUsd: number,
+  dailyBudgetUsd: number
+): Promise<void> {
+  const spentBudgetUsd = await releaseBudgetReservationUsd(ctx.redis, dateKey, reservedAmountUsd);
+  ctx.healthContext.redisHealthy = true;
+  setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+  logger.info({ spentBudgetUsd }, "Rolled back brief budget reservation");
 }
 
 async function emitFailureResult(
@@ -448,6 +641,10 @@ async function emitFailureResult(
   ctx.healthContext.postgresHealthy = true;
   if (persisted === "duplicate") {
     incrementDuplicatesSkipped(ctx.healthContext);
+    const republishedStatus = await republishPersistedResult(ctx, requestId, ctx.logger);
+    if (!republishedStatus) {
+      throw new Error(`Unable to republish existing failure result for request ${requestId}`);
+    }
     return;
   }
 
@@ -466,81 +663,105 @@ export async function processSummaryRequest(
 ): Promise<void> {
   const logger = ctx.logger.child({ requestId: request.requestId });
   const producedAt = new Date();
+  let existingResult: { status: BriefStatus; payload: Record<string, unknown> } | null = null;
 
   try {
-    const existing = await ctx.prisma.briefResult.findUnique({
-      where: { requestId: request.requestId },
-      select: { requestId: true },
-    });
+    existingResult = await loadPersistedResult(ctx.prisma, request.requestId);
     ctx.healthContext.postgresHealthy = true;
-    if (existing) {
-      incrementDuplicatesSkipped(ctx.healthContext);
-      incrementGeneration(ctx.healthContext, "skipped");
-      logger.info("Skipping duplicate summary request");
-      return;
-    }
   } catch (error) {
     ctx.healthContext.postgresHealthy = false;
-    incrementError(ctx.healthContext, "postgres_error");
-    logger.error({ error: serializeError(error) }, "Failed to check brief idempotency");
+    incrementError(ctx.healthContext, "idempotency_error");
+    logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
     throw error;
+  }
+
+  if (existingResult) {
+    incrementDuplicatesSkipped(ctx.healthContext);
+    incrementGeneration(ctx.healthContext, "skipped");
+    try {
+      await publishBriefResult(
+        ctx.producer,
+        ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
+        request.requestId,
+        Buffer.from(JSON.stringify(existingResult.payload), "utf-8"),
+        logger
+      );
+      logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
+      return;
+    } catch (error) {
+      incrementError(ctx.healthContext, "publish_error");
+      logger.error(
+        { error: serializeError(error) },
+        "Failed to republish persisted brief result for duplicate request"
+      );
+      throw error;
+    }
   }
 
   const dateKey = getBudgetDateKey(request.requestedAt);
-  const dailyBudgetUsd = request.budget?.dailyBudgetUsd || ctx.config.LLM_DAILY_BUDGET_USD;
+  const dailyBudgetUsd = request.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
   const estimatedCostUsd = estimateRequestCostUsd(request);
+  let budgetReserved = false;
+  let spentBudgetUsd = 0;
 
-  let spentBudgetUsd: number;
   try {
-    spentBudgetUsd = await readSpentBudgetUsd(ctx.redis, dateKey);
+    const reservation = await reserveBudgetSpendUsd(
+      ctx.redis,
+      dateKey,
+      dailyBudgetUsd,
+      estimatedCostUsd
+    );
+    budgetReserved = reservation.reserved;
+    spentBudgetUsd = reservation.spentUsd;
     ctx.healthContext.redisHealthy = true;
+    setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
   } catch (error) {
     ctx.healthContext.redisHealthy = false;
     incrementError(ctx.healthContext, "redis_error");
-    logger.error({ error: serializeError(error) }, "Failed to read daily budget usage");
+    logger.error({ error: serializeError(error) }, "Failed to reserve daily budget");
     throw error;
   }
 
-  setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
-
-  if (spentBudgetUsd + estimatedCostUsd > dailyBudgetUsd) {
+  if (!budgetReserved) {
     incrementBudgetExceeded(ctx.healthContext);
     incrementGeneration(ctx.healthContext, "skipped");
-    try {
-      await emitFailureResult(
-        ctx,
-        request.requestId,
-        producedAt,
-        "budget_exceeded",
-        "Daily brief budget exceeded",
-        false
-      );
-      logger.info(
-        {
-          spentBudgetUsd,
-          estimatedCostUsd,
-          dailyBudgetUsd,
-        },
-        "Skipped summary request due to budget limit"
-      );
-    } catch (error) {
-      incrementError(ctx.healthContext, "publish_error");
-      logger.error({ error: serializeError(error) }, "Failed to emit budget-exceeded brief result");
-      throw error;
-    }
+    await emitFailureResult(
+      ctx,
+      request.requestId,
+      producedAt,
+      "budget_exceeded",
+      "Daily brief budget exceeded",
+      false
+    );
+    logger.info(
+      {
+        spentBudgetUsd,
+        estimatedCostUsd,
+        dailyBudgetUsd,
+      },
+      "Skipped summary request due to budget limit"
+    );
     return;
   }
 
+  let persistedCreated = false;
   try {
     const successResult = await buildSuccessResult(ctx, request, producedAt, estimatedCostUsd);
     const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
     ctx.healthContext.postgresHealthy = true;
     if (persisted === "duplicate") {
+      await rollbackBudgetReservation(ctx, logger, dateKey, estimatedCostUsd, dailyBudgetUsd);
+      budgetReserved = false;
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
-      logger.info("Detected duplicate summary request during persist");
+      const republishedStatus = await republishPersistedResult(ctx, request.requestId, logger);
+      if (!republishedStatus) {
+        throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
+      }
+      logger.info({ status: republishedStatus }, "Detected duplicate during persist and republished stored result");
       return;
     }
+    persistedCreated = true;
 
     await publishBriefResult(
       ctx.producer,
@@ -549,8 +770,6 @@ export async function processSummaryRequest(
       Buffer.from(JSON.stringify(successResult.payload), "utf-8"),
       logger
     );
-    await recordBudgetSpendUsd(ctx.redis, dateKey, successResult.metrics.estimatedCostUsd);
-    ctx.healthContext.redisHealthy = true;
 
     incrementGeneration(ctx.healthContext, "success");
     incrementLlmCostUsd(ctx.healthContext, successResult.metrics.estimatedCostUsd);
@@ -559,8 +778,7 @@ export async function processSummaryRequest(
     observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
     observeCitationsCount(ctx.healthContext, successResult.metrics.citationsCount);
 
-    const updatedSpend = spentBudgetUsd + successResult.metrics.estimatedCostUsd;
-    setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - updatedSpend));
+    setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
     logger.info(
       {
         topicCount: successResult.metrics.highlightsCount,
@@ -570,22 +788,51 @@ export async function processSummaryRequest(
       "Summary request processed"
     );
   } catch (error) {
-    incrementError(ctx.healthContext, error instanceof LlmGenerationError ? "llm_error" : "generation_error");
-    incrementGeneration(ctx.healthContext, "failure");
-    logger.error({ error: serializeError(error) }, "Failed to process summary request");
-    try {
+    if (budgetReserved && !persistedCreated) {
+      try {
+        await rollbackBudgetReservation(ctx, logger, dateKey, estimatedCostUsd, dailyBudgetUsd);
+        budgetReserved = false;
+      } catch (rollbackError) {
+        ctx.healthContext.redisHealthy = false;
+        incrementError(ctx.healthContext, "redis_error");
+        logger.error(
+          { error: serializeError(rollbackError) },
+          "Failed to roll back reserved brief budget"
+        );
+        throw rollbackError;
+      }
+    }
+
+    if (error instanceof NonRetryableProcessingError) {
+      incrementError(ctx.healthContext, "grounding_error");
+      incrementGeneration(ctx.healthContext, "failure");
+      logger.warn({ error: serializeError(error) }, "Brief request failed non-retryable validation");
       await emitFailureResult(
         ctx,
         request.requestId,
         producedAt,
-        "processing_error",
-        error instanceof Error ? error.message : "Unknown brief processing error",
-        true
+        "grounding_error",
+        error.message,
+        false
       );
-    } catch (emitError) {
-      incrementError(ctx.healthContext, "publish_error");
-      logger.error({ error: serializeError(emitError) }, "Failed to emit failure brief result");
-      throw emitError;
+      return;
     }
+
+    if (persistedCreated) {
+      incrementError(ctx.healthContext, "publish_error");
+      logger.error(
+        { error: serializeError(error) },
+        "Persisted brief result but failed to publish; will retry from Kafka"
+      );
+      throw error;
+    }
+
+    incrementError(
+      ctx.healthContext,
+      error instanceof LlmGenerationError ? "llm_error" : "generation_error"
+    );
+    incrementGeneration(ctx.healthContext, "failure");
+    logger.error({ error: serializeError(error) }, "Failed to process summary request");
+    throw error;
   }
 }

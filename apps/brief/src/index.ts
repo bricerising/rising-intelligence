@@ -98,55 +98,100 @@ async function initialize(): Promise<RuntimeContext> {
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
   await ctx.kafkaConsumerContext.consumer.run({
-    eachMessage: async ({ topic, partition, message }) => {
-      const startTime = Date.now();
-      if (!message.value) {
-        incrementError(ctx.healthContext, "parse_error");
-        incrementGeneration(ctx.healthContext, "failure");
-        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
-        ctx.logger.warn(
-          {
-            kafkaTopic: topic,
-            partition,
-            offset: message.offset,
-          },
-          "Skipping message with empty value"
-        );
+    autoCommit: false,
+    eachBatchAutoResolve: false,
+    eachBatch: async (payload) => {
+      const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+      if (!isRunning() || isStale()) {
         return;
       }
 
-      try {
-        const request = deserializeSummaryRequest(message.value);
-        await processSummaryRequest(
-          {
-            config: ctx.config,
-            logger: ctx.logger.child({
-              kafkaTopic: topic,
-              partition,
+      let messagesSinceHeartbeat = 0;
+      for (const message of batch.messages) {
+        if (!isRunning() || isStale()) {
+          break;
+        }
+
+        const startTime = Date.now();
+        if (!message.value) {
+          incrementError(ctx.healthContext, "parse_error");
+          incrementGeneration(ctx.healthContext, "failure");
+          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
+          ctx.logger.warn(
+            {
+              kafkaTopic: batch.topic,
+              partition: batch.partition,
               offset: message.offset,
-            }),
-            healthContext: ctx.healthContext,
-            prisma: ctx.prisma,
-            redis: ctx.redis,
-            producer: ctx.kafkaProducerContext.producer,
-          },
-          request
-        );
-      } catch (error) {
-        incrementError(ctx.healthContext, "parse_error");
-        incrementGeneration(ctx.healthContext, "failure");
-        ctx.logger.warn(
-          {
-            kafkaTopic: topic,
-            partition,
-            offset: message.offset,
-            error: serializeError(error),
-          },
-          "Failed to process summary request"
-        );
-      } finally {
-        observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
+            },
+            "Skipping message with empty value"
+          );
+          resolveOffset(message.offset);
+          await commitOffsetsIfNecessary();
+          continue;
+        }
+
+        let request: ReturnType<typeof deserializeSummaryRequest>;
+        try {
+          request = deserializeSummaryRequest(message.value);
+        } catch (error) {
+          incrementError(ctx.healthContext, "parse_error");
+          incrementGeneration(ctx.healthContext, "failure");
+          ctx.logger.warn(
+            {
+              kafkaTopic: batch.topic,
+              partition: batch.partition,
+              offset: message.offset,
+              error: serializeError(error),
+            },
+            "Failed to deserialize summary request"
+          );
+          resolveOffset(message.offset);
+          await commitOffsetsIfNecessary();
+          continue;
+        }
+
+        try {
+          await processSummaryRequest(
+            {
+              config: ctx.config,
+              logger: ctx.logger.child({
+                kafkaTopic: batch.topic,
+                partition: batch.partition,
+                offset: message.offset,
+              }),
+              healthContext: ctx.healthContext,
+              prisma: ctx.prisma,
+              redis: ctx.redis,
+              producer: ctx.kafkaProducerContext.producer,
+            },
+            request
+          );
+          resolveOffset(message.offset);
+          await commitOffsetsIfNecessary();
+        } catch (error) {
+          ctx.logger.warn(
+            {
+              kafkaTopic: batch.topic,
+              partition: batch.partition,
+              offset: message.offset,
+              error: serializeError(error),
+            },
+            "Failed to process summary request"
+          );
+          throw error;
+        } finally {
+          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
+        }
+
+        messagesSinceHeartbeat += 1;
+        if (messagesSinceHeartbeat >= 20) {
+          await heartbeat();
+          messagesSinceHeartbeat = 0;
+        }
       }
+
+      await commitOffsetsIfNecessary();
+      await heartbeat();
     },
   });
 }
