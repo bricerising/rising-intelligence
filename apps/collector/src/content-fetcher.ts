@@ -1,5 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { isIP } from "node:net";
 import type { Logger } from "pino";
 
 /**
@@ -71,6 +72,84 @@ function isDomainBlocked(url: string, blockedDomains: Set<string>): boolean {
   }
 
   return false;
+}
+
+function normalizeHostname(hostname: string): string {
+  const normalized = hostname.trim().toLowerCase();
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    return normalized.slice(1, -1);
+  }
+  return normalized;
+}
+
+function isPrivateOrLoopbackIpv4(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+
+  return (
+    octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
+function isPrivateOrLoopbackIpv6(hostname: string): boolean {
+  if (hostname === "::1") {
+    return true;
+  }
+  if (hostname.startsWith("::ffff:")) {
+    return isPrivateOrLoopbackIpv4(hostname.slice("::ffff:".length));
+  }
+  if (hostname.startsWith("fc") || hostname.startsWith("fd")) {
+    return true;
+  }
+
+  const firstHextet = hostname.split(":")[0];
+  return /^fe[89ab][0-9a-f]{0,2}$/i.test(firstHextet);
+}
+
+function isDisallowedHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "0.0.0.0"
+  ) {
+    return true;
+  }
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    return isPrivateOrLoopbackIpv4(normalized);
+  }
+  if (ipVersion === 6) {
+    return isPrivateOrLoopbackIpv6(normalized);
+  }
+  return false;
+}
+
+function isAllowedFetchUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    if (isDisallowedHostname(parsed.hostname)) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -181,6 +260,11 @@ export async function fetchArticleContent(
 ): Promise<ArticleContent | null> {
   // Check if fetching is enabled
   if (!config.enabled) {
+    return null;
+  }
+
+  if (!isAllowedFetchUrl(url)) {
+    logger.debug({ url }, "Skipping disallowed fetch URL");
     return null;
   }
 

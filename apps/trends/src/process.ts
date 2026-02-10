@@ -7,6 +7,7 @@ import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
 import { filterTrackedTags } from "./allowlist.js";
 import { deserializeRawEvent } from "./deserialize.js";
+import type { ParsedRawEvent } from "./types.js";
 import {
   incrementDuplicatesSkipped,
   incrementError,
@@ -17,6 +18,19 @@ import {
 import { applyEventToWindows } from "./redis.js";
 
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 50;
+const COLLECTOR_STATUS_BY_NUMBER = {
+  1: "healthy",
+  2: "degraded",
+  3: "error",
+} as const;
+const COLLECTOR_STATUS_BY_STRING = {
+  healthy: "healthy",
+  collector_status_healthy: "healthy",
+  degraded: "degraded",
+  collector_status_degraded: "degraded",
+  error: "error",
+  collector_status_error: "error",
+} as const;
 
 function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   if (!value) {
@@ -43,31 +57,44 @@ function parseIsoDate(value: unknown, field: string): Date {
 
 function parseCollectorStatus(value: unknown): "healthy" | "degraded" | "error" {
   if (typeof value === "number") {
-    if (value === 1) {
-      return "healthy";
-    }
-    if (value === 2) {
-      return "degraded";
-    }
-    if (value === 3) {
-      return "error";
+    const status = COLLECTOR_STATUS_BY_NUMBER[value as keyof typeof COLLECTOR_STATUS_BY_NUMBER];
+    if (status) {
+      return status;
     }
   }
 
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
-    if (normalized === "healthy" || normalized === "collector_status_healthy") {
-      return "healthy";
+    const statusByName = COLLECTOR_STATUS_BY_STRING[normalized as keyof typeof COLLECTOR_STATUS_BY_STRING];
+    if (statusByName) {
+      return statusByName;
     }
-    if (normalized === "degraded" || normalized === "collector_status_degraded") {
-      return "degraded";
-    }
-    if (normalized === "error" || normalized === "collector_status_error") {
-      return "error";
+
+    const asNumber = Number.parseInt(normalized, 10);
+    if (`${asNumber}` === normalized) {
+      const statusByNumber = COLLECTOR_STATUS_BY_NUMBER[asNumber as keyof typeof COLLECTOR_STATUS_BY_NUMBER];
+      if (statusByNumber) {
+        return statusByNumber;
+      }
     }
   }
 
   throw new Error(`Unsupported collector heartbeat status: ${String(value)}`);
+}
+
+function parseNonNegativeInteger(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^\d+$/.test(normalized)) {
+      return Number.parseInt(normalized, 10);
+    }
+  }
+
+  return fallback;
 }
 
 function deserializeCollectorHeartbeat(
@@ -96,7 +123,7 @@ function deserializeCollectorHeartbeat(
   const status = parseCollectorStatus(heartbeat.status);
   const timestamp = parseIsoDate(heartbeat.timestamp, "timestamp");
   const lastFetchAt = parseIsoDate(heartbeat.last_fetch_at, "last_fetch_at");
-  const itemsFetched = typeof heartbeat.items_fetched === "number" ? heartbeat.items_fetched : 0;
+  const itemsFetched = parseNonNegativeInteger(heartbeat.items_fetched, 0);
   const errorMessage =
     typeof heartbeat.error_message === "string" && heartbeat.error_message.trim().length > 0
       ? heartbeat.error_message
@@ -122,14 +149,32 @@ export interface TrendsContext {
   lagWriteTimestamps: Map<string, number>;
 }
 
-export async function processBatch(
+interface MessageContext {
+  kafkaTopic: string;
+  partition: number;
+  offset: string;
+}
+
+interface BatchMessageStrategy<TMessage> {
+  readonly emptyValueLogMessage: string;
+  readonly deserializeFailureLogMessage: string;
+  deserialize(value: Buffer): TMessage;
+  handleMessage(
+    ctx: TrendsContext,
+    decoded: TMessage,
+    messageContext: MessageContext
+  ): Promise<void>;
+}
+
+async function processBatchWithStrategy<TMessage>(
   ctx: TrendsContext,
-  payload: EachBatchPayload
-): Promise<void> {
+  payload: EachBatchPayload,
+  strategy: BatchMessageStrategy<TMessage>
+): Promise<boolean> {
   const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
 
   if (!isRunning() || isStale()) {
-    return;
+    return false;
   }
 
   let messagesSinceHeartbeat = 0;
@@ -143,45 +188,55 @@ export async function processBatch(
   };
 
   for (const message of batch.messages) {
+    const messageContext: MessageContext = {
+      kafkaTopic: batch.topic,
+      partition: batch.partition,
+      offset: message.offset,
+    };
+
     if (!message.value) {
       incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-        },
-        "Skipping message with empty value"
-      );
+      ctx.logger.warn(messageContext, strategy.emptyValueLogMessage);
       resolveOffset(message.offset);
       await maybeHeartbeat();
       continue;
     }
 
-    let event;
+    let decoded: TMessage;
     try {
-      event = deserializeRawEvent(message.value);
+      decoded = strategy.deserialize(message.value);
     } catch (error) {
       incrementError(ctx.healthContext, "parse_error");
       ctx.logger.warn(
         {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
+          ...messageContext,
           error: serializeError(error),
         },
-        "Failed to deserialize event"
+        strategy.deserializeFailureLogMessage
       );
       resolveOffset(message.offset);
       await maybeHeartbeat();
       continue;
     }
 
+    await strategy.handleMessage(ctx, decoded, messageContext);
+    resolveOffset(message.offset);
+    await maybeHeartbeat();
+  }
+
+  await commitOffsetsIfNecessary();
+  await heartbeat();
+  return true;
+}
+
+const RAW_EVENT_BATCH_STRATEGY: BatchMessageStrategy<ParsedRawEvent> = {
+  emptyValueLogMessage: "Skipping message with empty value",
+  deserializeFailureLogMessage: "Failed to deserialize event",
+  deserialize: deserializeRawEvent,
+  async handleMessage(ctx, event, messageContext): Promise<void> {
     const trackedTopics = filterTrackedTags(event.tags, ctx.allowlist);
     if (trackedTopics.length === 0) {
-      resolveOffset(message.offset);
-      await maybeHeartbeat();
-      continue;
+      return;
     }
 
     try {
@@ -206,23 +261,32 @@ export async function processBatch(
       ctx.healthContext.redisHealthy = false;
       ctx.logger.error(
         {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
+          ...messageContext,
           error: serializeError(error),
         },
         "Redis update failed while processing event"
       );
       throw error;
     }
+  },
+};
 
-    resolveOffset(message.offset);
-    await maybeHeartbeat();
-  }
+type CollectorHeartbeatState = ReturnType<typeof deserializeCollectorHeartbeat>;
 
-  await commitOffsetsIfNecessary();
-  await heartbeat();
+const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: BatchMessageStrategy<CollectorHeartbeatState> = {
+  emptyValueLogMessage: "Skipping collector heartbeat with empty value",
+  deserializeFailureLogMessage: "Failed to deserialize collector heartbeat",
+  deserialize: deserializeCollectorHeartbeat,
+  async handleMessage(ctx, collectorHeartbeat): Promise<void> {
+    ctx.healthContext.collectorHeartbeats.set(collectorHeartbeat.source, collectorHeartbeat);
+  },
+};
 
+async function updateConsumerLag(
+  ctx: TrendsContext,
+  payload: EachBatchPayload
+): Promise<void> {
+  const { batch } = payload;
   const lastMessage = batch.messages.at(-1);
   if (!lastMessage) {
     return;
@@ -271,61 +335,25 @@ export async function processBatch(
   }
 }
 
+export async function processBatch(
+  ctx: TrendsContext,
+  payload: EachBatchPayload
+): Promise<void> {
+  const processed = await processBatchWithStrategy(
+    ctx,
+    payload,
+    RAW_EVENT_BATCH_STRATEGY
+  );
+  if (!processed) {
+    return;
+  }
+
+  await updateConsumerLag(ctx, payload);
+}
+
 export async function processCollectorHeartbeatBatch(
   ctx: TrendsContext,
   payload: EachBatchPayload
 ): Promise<void> {
-  const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
-  if (!isRunning() || isStale()) {
-    return;
-  }
-
-  let messagesSinceHeartbeat = 0;
-  const maybeHeartbeat = async () => {
-    messagesSinceHeartbeat += 1;
-    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
-      return;
-    }
-    await heartbeat();
-    messagesSinceHeartbeat = 0;
-  };
-
-  for (const message of batch.messages) {
-    if (!message.value) {
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-        },
-        "Skipping collector heartbeat with empty value"
-      );
-      resolveOffset(message.offset);
-      await maybeHeartbeat();
-      continue;
-    }
-
-    try {
-      const collectorHeartbeat = deserializeCollectorHeartbeat(message.value);
-      ctx.healthContext.collectorHeartbeats.set(collectorHeartbeat.source, collectorHeartbeat);
-    } catch (error) {
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-          error: serializeError(error),
-        },
-        "Failed to deserialize collector heartbeat"
-      );
-    }
-
-    resolveOffset(message.offset);
-    await maybeHeartbeat();
-  }
-
-  await commitOffsetsIfNecessary();
-  await heartbeat();
+  await processBatchWithStrategy(ctx, payload, COLLECTOR_HEARTBEAT_BATCH_STRATEGY);
 }

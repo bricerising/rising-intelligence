@@ -350,4 +350,27 @@ describe("brief deserializeSummaryRequest", () => {
       "Unsupported source value"
     );
   });
+
+  it("parses supported llm_provider values", () => {
+    const payload = {
+      request_id: "req-provider",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      llm_provider: "  CODEX-CLI  ",
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.llmProvider).toBe("codex-cli");
+  });
+
+  it("rejects unsupported llm_provider values", () => {
+    const payload = {
+      request_id: "req-provider-invalid",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      llm_provider: "unknown-provider",
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow("Unsupported llm_provider");
+  });
 });

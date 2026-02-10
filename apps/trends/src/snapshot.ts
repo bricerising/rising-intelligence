@@ -24,27 +24,21 @@ import { publishSnapshot } from "./kafka/producer.js";
 
 const TOPIC_METRIC_LIMIT = 30;
 const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+const WINDOW_TO_PROTO: Record<TrendWindow, number> = {
+  "15m": 1,
+  "60m": 2,
+};
+const WINDOW_TO_DB: Record<TrendWindow, DbTrendWindow> = {
+  "15m": DbTrendWindow.WINDOW_15M,
+  "60m": DbTrendWindow.WINDOW_60M,
+};
 
 function mapWindowToProto(window: TrendWindow): number {
-  switch (window) {
-    case "15m":
-      return 1;
-    case "60m":
-      return 2;
-    default:
-      return 0;
-  }
+  return WINDOW_TO_PROTO[window];
 }
 
 function mapWindowToDb(window: TrendWindow): DbTrendWindow {
-  switch (window) {
-    case "15m":
-      return DbTrendWindow.WINDOW_15M;
-    case "60m":
-      return DbTrendWindow.WINDOW_60M;
-    default:
-      throw new Error(`Unsupported snapshot window ${window}`);
-  }
+  return WINDOW_TO_DB[window];
 }
 
 function parseCount(value: string | null): number {

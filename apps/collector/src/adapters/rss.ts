@@ -6,7 +6,13 @@ import type { Logger } from "pino";
 import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "../topics/extractor.js";
-import { fetchArticleContent, type ContentFetcherConfig } from "../content-fetcher.js";
+import type { ContentFetcherConfig } from "../content-fetcher.js";
+import {
+  createTextEnrichmentStrategy,
+  type TextEnrichmentStrategy,
+} from "./text-enrichment-strategy.js";
+
+const MIN_RSS_CONTENT_LENGTH = 300;
 
 /**
  * Feed configuration from feeds.yaml
@@ -109,19 +115,23 @@ export class RSSAdapter implements SourceAdapter {
   private feeds: FeedConfig[];
   private checkpoints: CheckpointStore;
   private logger: Logger;
-  private contentFetcherConfig: ContentFetcherConfig;
+  private textEnrichmentStrategy: TextEnrichmentStrategy;
 
   constructor(
     feedsConfigPath: string,
     pollIntervalMs: number,
     checkpoints: CheckpointStore,
     logger: Logger,
-    contentFetcherConfig: ContentFetcherConfig
+    contentFetcherConfig?: ContentFetcherConfig
   ) {
     this.pollIntervalMs = pollIntervalMs;
     this.checkpoints = checkpoints;
     this.logger = logger;
-    this.contentFetcherConfig = contentFetcherConfig;
+    this.textEnrichmentStrategy = createTextEnrichmentStrategy(
+      contentFetcherConfig,
+      logger,
+      "Fetched article content for RSS item"
+    );
     this.parser = new Parser({
       timeout: 30000,
       headers: {
@@ -227,24 +237,12 @@ export class RSSAdapter implements SourceAdapter {
       let text = item.contentSnippet ?? item.content ?? item.summary ?? "";
       const title = item.title ?? "";
 
-      // If text is too short and we have a link, try to fetch article content
-      const MIN_RSS_CONTENT_LENGTH = 300;
-      if (text.length < MIN_RSS_CONTENT_LENGTH && item.link) {
-        const articleContent = await fetchArticleContent(
-          item.link,
-          this.contentFetcherConfig,
-          this.logger
-        );
-
-        if (articleContent && articleContent.success) {
-          text = articleContent.text;
-          this.logger.debug(
-            { feed: feed.name, url: item.link, textLength: text.length },
-            "Fetched article content for RSS item"
-          );
-        }
-        // If fetch failed, keep the short RSS text
-      }
+      text = await this.textEnrichmentStrategy.enrich({
+        text,
+        url: item.link,
+        minLength: MIN_RSS_CONTENT_LENGTH,
+        logContext: { feed: feed.name },
+      });
 
       const event: RawEvent = {
         event_id: eventId,
@@ -290,7 +288,13 @@ export function createRSSAdapter(
   pollIntervalMs: number,
   checkpoints: CheckpointStore,
   logger: Logger,
-  contentFetcherConfig: ContentFetcherConfig
+  contentFetcherConfig?: ContentFetcherConfig
 ): SourceAdapter {
-  return new RSSAdapter(feedsConfigPath, pollIntervalMs, checkpoints, logger, contentFetcherConfig);
+  return new RSSAdapter(
+    feedsConfigPath,
+    pollIntervalMs,
+    checkpoints,
+    logger,
+    contentFetcherConfig
+  );
 }

@@ -310,6 +310,34 @@ describe("trends processBatch", () => {
     });
   });
 
+  it("accepts numeric-string heartbeat status and items_fetched values", async () => {
+    const heartbeatMessage = makeMessage("1", {
+      source: 1,
+      timestamp: "2026-02-06T10:00:00.000Z",
+      last_fetch_at: "2026-02-06T09:59:30.000Z",
+      items_fetched: "7",
+      status: "1",
+      error_message: "",
+    });
+    const payload = makePayload([heartbeatMessage], {
+      batch: {
+        topic: "collector.heartbeat",
+        partition: 0,
+        highWatermark: "2",
+        messages: [heartbeatMessage],
+      },
+    });
+    const ctx = makeContext();
+
+    await processCollectorHeartbeatBatch(ctx, payload);
+
+    expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
+      source: "rss",
+      status: "healthy",
+      itemsFetched: 7,
+    });
+  });
+
   it("skips malformed collector heartbeat payloads and advances offsets", async () => {
     const msg: KafkaMessage = {
       offset: "1",

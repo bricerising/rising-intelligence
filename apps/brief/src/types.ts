@@ -25,6 +25,7 @@ export interface ParsedSummaryTopic {
 }
 
 export type EvidenceStrategy = "diversity" | "recency" | "engagement";
+export type LlmProvider = "internal" | "http" | "codex-cli";
 
 export interface ParsedSummaryQuery {
   lookbackDays?: number;
@@ -55,7 +56,7 @@ export interface ParsedSummaryRequest {
   query: ParsedSummaryQuery | null;
   report: ParsedSummaryReport | null;
   topics: ParsedSummaryTopic[];
-  llmProvider?: string; // Override LLM provider for this request
+  llmProvider?: LlmProvider; // Override LLM provider for this request
   coverageWarnings?: string[]; // Query-mode warnings about incomplete data
 }
 

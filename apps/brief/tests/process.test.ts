@@ -115,6 +115,15 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       }
       return { spentUsd: budgetState.spentUsd };
     }),
+    updateMany: vi.fn().mockImplementation(async (args: any) => {
+      const maxAllowed = Number(args?.where?.spentUsd?.lte ?? Number.POSITIVE_INFINITY);
+      if (budgetState.spentUsd > maxAllowed) {
+        return { count: 0 };
+      }
+      const incrementSpent = Number(args?.data?.spentUsd?.increment ?? 0);
+      budgetState.spentUsd += incrementSpent;
+      return { count: 1 };
+    }),
   };
   const evalMock = vi.fn().mockImplementation((script: unknown) => {
     if (typeof script !== "string") {
@@ -422,6 +431,76 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.budgetRemainingUsd).toBeLessThan(5);
   });
 
+  it("falls back to Postgres when Redis reservation path is unavailable", async () => {
+    const ctx = makeContext({
+      redis: {
+        eval: vi.fn().mockRejectedValue(new Error("redis down")),
+        set: vi.fn().mockRejectedValue(new Error("redis still down")),
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.any(Object),
+      "Failed to sync brief budget cache; continuing with Postgres source of truth"
+    );
+  });
+
+  it("emits budget_exceeded when Postgres reservation denies the budget", async () => {
+    const request = makeRequest();
+    request.budget = {
+      ...request.budget!,
+      dailyBudgetUsd: 0.01,
+    };
+    const ctx = makeContext({
+      redis: {
+        eval: vi.fn().mockRejectedValue(new Error("redis down")),
+        set: vi.fn().mockRejectedValue(new Error("redis still down")),
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("budget_exceeded");
+    expect(ctx.healthContext.metrics.generation.get("skipped")).toBe(1);
+  });
+
+  it("handles async Postgres mirror failures in Redis fast path without crashing", async () => {
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockRejectedValue(new Error("postgres unavailable")),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+      },
+      redis: {
+        eval: vi.fn().mockResolvedValue([1, "0.02"]),
+        set: vi.fn().mockResolvedValue("OK"),
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+    await Promise.resolve();
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.any(Object),
+      "Failed to asynchronously mirror reserved budget to Postgres"
+    );
+  });
+
   it("republishes persisted result for duplicate requests", async () => {
     const existingPayload = {
       request_id: "req-1",
@@ -718,5 +797,159 @@ describe("processSummaryRequest", () => {
     expect(codexPrompt).toContain("# State of Signals and Where They're Going");
     expect(codexPrompt).toContain("## Method and scope");
     expect(codexPrompt).not.toContain("REPORT TEMPLATE MODE");
+  });
+
+  it("prefers request-level llm provider over config default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Override Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Model update landed [1]",
+            why_it_matters: "Lower latency for key workloads",
+            suggested_action: "Re-check production defaults",
+            citations: ["https://example.com/1"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeRequest();
+    request.llmProvider = "http";
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "internal",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+  });
+
+  it("applies engagement evidence strategy ordering in query mode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Query Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Ranking captured",
+            why_it_matters: "Priority reflects engagement",
+            suggested_action: "Review top evidence first",
+            citations: ["https://example.com/engagement-top"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeQueryRequest();
+    request.query = {
+      ...request.query,
+      evidenceStrategy: "engagement",
+      maxEventsPerTopic: 2,
+    };
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+        BRIEF_DEFAULT_LOOKBACK_DAYS: 7,
+        BRIEF_MAX_LOOKBACK_DAYS: 30,
+        BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: 25,
+      },
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-06T09:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "aws.bedrock",
+                    score: 85,
+                    volume: 22,
+                    acceleration: 0.9,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-recency-top",
+              source: "rss",
+              url: "https://example.com/recency-top",
+              title: "Most recent, low engagement",
+              publishedAt: new Date("2026-02-06T09:45:00.000Z"),
+              fetchedAt: new Date("2026-02-06T09:50:00.000Z"),
+              text: "recent low engagement",
+              topics: ["aws.bedrock"],
+              engagementScore: 5,
+            },
+            {
+              eventId: "evt-engagement-top",
+              source: "rss",
+              url: "https://example.com/engagement-top",
+              title: "Older, high engagement",
+              publishedAt: new Date("2026-02-06T09:10:00.000Z"),
+              fetchedAt: new Date("2026-02-06T09:20:00.000Z"),
+              text: "older high engagement",
+              topics: ["aws.bedrock"],
+              engagementScore: 90,
+            },
+            {
+              eventId: "evt-engagement-second",
+              source: "rss",
+              url: "https://example.com/engagement-second",
+              title: "Older, medium engagement",
+              publishedAt: new Date("2026-02-06T08:10:00.000Z"),
+              fetchedAt: new Date("2026-02-06T08:20:00.000Z"),
+              text: "older medium engagement",
+              topics: ["aws.bedrock"],
+              engagementScore: 40,
+            },
+          ]),
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body as string) as {
+      topics: Array<{
+        topic: string;
+        evidence: Array<{ event_id: string }>;
+      }>;
+    };
+    const topicPayload = payload.topics.find((topic) => topic.topic === "aws.bedrock");
+    expect(topicPayload?.evidence.map((evidence) => evidence.event_id)).toEqual([
+      "evt-engagement-top",
+      "evt-engagement-second",
+    ]);
   });
 });

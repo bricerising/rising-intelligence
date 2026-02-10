@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import type { EachBatchPayload } from "kafkajs";
 import { PrismaClient } from "@rising-intelligence/db";
 import {
   closeServer,
@@ -40,6 +41,8 @@ interface RuntimeContext extends TrendsContext {
   snapshotTimer: NodeJS.Timeout | null;
   snapshotInFlight: boolean;
 }
+
+type BatchTopicHandler = (payload: EachBatchPayload) => Promise<void>;
 
 async function initializeAllowlist(
   allowlistPath: string,
@@ -156,17 +159,26 @@ async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
   ctx.snapshotTimer.unref();
 }
 
+function createBatchTopicHandlers(ctx: RuntimeContext): Map<string, BatchTopicHandler> {
+  return new Map<string, BatchTopicHandler>([
+    [ctx.config.KAFKA_TOPIC_RAW_EVENTS, async (payload) => processBatch(ctx, payload)],
+    [
+      ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
+      async (payload) => processCollectorHeartbeatBatch(ctx, payload),
+    ],
+  ]);
+}
+
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
+  const batchTopicHandlers = createBatchTopicHandlers(ctx);
+
   await ctx.kafkaConsumerContext.consumer.run({
     autoCommit: false,
     eachBatchAutoResolve: false,
-    eachBatch: async (payload) => {
-      if (payload.batch.topic === ctx.config.KAFKA_TOPIC_RAW_EVENTS) {
-        await processBatch(ctx, payload);
-        return;
-      }
-      if (payload.batch.topic === ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT) {
-        await processCollectorHeartbeatBatch(ctx, payload);
+    eachBatch: async (payload: EachBatchPayload) => {
+      const topicHandler = batchTopicHandlers.get(payload.batch.topic);
+      if (topicHandler) {
+        await topicHandler(payload);
         return;
       }
 

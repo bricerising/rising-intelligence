@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parseCanonicalSource } from "@rising-intelligence/shared";
 import type {
   EvidenceStrategy,
+  LlmProvider,
   ParsedSummaryRequest,
   ParsedTrendSnapshot,
   SummaryRequestType,
@@ -85,6 +86,33 @@ const TrendSnapshotWireSchema = z.object({
     .optional(),
 });
 
+const SUPPORTED_TREND_WINDOWS = new Set([1, 2, 3]);
+const TREND_WINDOW_ALIASES: Record<string, number> = {
+  trend_window_15m: 1,
+  trend_window_60m: 2,
+  trend_window_24h: 3,
+};
+const SUMMARY_REQUEST_TYPE_ENUMS: Record<number, SummaryRequestType> = {
+  1: "daily",
+  2: "threshold",
+};
+const SUMMARY_REQUEST_TYPE_ALIASES: Record<string, SummaryRequestType> = {
+  summary_request_type_daily: "daily",
+  daily: "daily",
+  summary_request_type_threshold: "threshold",
+  threshold: "threshold",
+};
+const SUPPORTED_EVIDENCE_STRATEGIES: Record<EvidenceStrategy, true> = {
+  diversity: true,
+  recency: true,
+  engagement: true,
+};
+const SUPPORTED_LLM_PROVIDERS: Record<LlmProvider, true> = {
+  internal: true,
+  http: true,
+  "codex-cli": true,
+};
+
 function parseRequestedAt(value: string): Date {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -94,8 +122,6 @@ function parseRequestedAt(value: string): Date {
 }
 
 function parseTrendWindow(value: number | string): number {
-  const SUPPORTED_TREND_WINDOWS = new Set([1, 2, 3]);
-
   if (typeof value === "number") {
     if (Number.isInteger(value) && SUPPORTED_TREND_WINDOWS.has(value)) {
       return value;
@@ -104,15 +130,9 @@ function parseTrendWindow(value: number | string): number {
   }
 
   const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "trend_window_15m":
-      return 1;
-    case "trend_window_60m":
-      return 2;
-    case "trend_window_24h":
-      return 3;
-    default:
-      break;
+  const aliasValue = TREND_WINDOW_ALIASES[normalized];
+  if (aliasValue !== undefined) {
+    return aliasValue;
   }
 
   const asNumber = Number.parseInt(normalized, 10);
@@ -177,11 +197,27 @@ function parseEvidenceStrategy(value: string | undefined): EvidenceStrategy {
   }
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === "diversity" || normalized === "recency" || normalized === "engagement") {
-    return normalized;
+  if (normalized in SUPPORTED_EVIDENCE_STRATEGIES) {
+    return normalized as EvidenceStrategy;
   }
 
   throw new Error(`Unsupported evidence strategy: ${value}`);
+}
+
+function parseLlmProvider(value: string | undefined): LlmProvider | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  if (normalized in SUPPORTED_LLM_PROVIDERS) {
+    return normalized as LlmProvider;
+  }
+
+  throw new Error(`Unsupported llm_provider: ${value}`);
 }
 
 function parseOptionalTimezone(value: string | undefined): string | undefined {
@@ -202,26 +238,19 @@ function parseOptionalTimezone(value: string | undefined): string | undefined {
 
 export function parseSummaryRequestType(value: number | string): SummaryRequestType {
   if (typeof value === "number") {
-    if (value === 1) {
-      return "daily";
-    }
-    if (value === 2) {
-      return "threshold";
+    const type = SUMMARY_REQUEST_TYPE_ENUMS[value];
+    if (type) {
+      return type;
     }
     throw new Error(`Unsupported summary request type enum: ${value}`);
   }
 
   const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "summary_request_type_daily":
-    case "daily":
-      return "daily";
-    case "summary_request_type_threshold":
-    case "threshold":
-      return "threshold";
-    default:
-      throw new Error(`Unsupported summary request type value: ${value}`);
+  const type = SUMMARY_REQUEST_TYPE_ALIASES[normalized];
+  if (!type) {
+    throw new Error(`Unsupported summary request type value: ${value}`);
   }
+  return type;
 }
 
 export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRequest {
@@ -279,7 +308,7 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
         }
       : null,
     report: hasReportHints ? reportHints : null,
-    llmProvider: wire.llm_provider?.trim() || undefined,
+    llmProvider: parseLlmProvider(wire.llm_provider),
     topics: (wire.topics ?? []).map((topic) => {
       const parsedTopic = topic.topic.trim();
       return {

@@ -2,9 +2,14 @@ import type { Logger } from "pino";
 import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "../topics/extractor.js";
-import { fetchArticleContent, type ContentFetcherConfig } from "../content-fetcher.js";
+import type { ContentFetcherConfig } from "../content-fetcher.js";
+import {
+  createTextEnrichmentStrategy,
+  type TextEnrichmentStrategy,
+} from "./text-enrichment-strategy.js";
 
 const HN_API_BASE = "https://hacker-news.firebaseio.com/v0";
+const MIN_HN_TEXT_LENGTH = 1;
 
 type HNMode = "top" | "new" | "best";
 
@@ -58,7 +63,7 @@ export class HackerNewsAdapter implements SourceAdapter {
   private maxItems: number;
   private checkpoints: CheckpointStore;
   private logger: Logger;
-  private contentFetcherConfig: ContentFetcherConfig;
+  private textEnrichmentStrategy: TextEnrichmentStrategy;
 
   constructor(
     mode: HNMode,
@@ -66,14 +71,18 @@ export class HackerNewsAdapter implements SourceAdapter {
     maxItems: number,
     checkpoints: CheckpointStore,
     logger: Logger,
-    contentFetcherConfig: ContentFetcherConfig
+    contentFetcherConfig?: ContentFetcherConfig
   ) {
     this.mode = mode;
     this.pollIntervalMs = pollIntervalMs;
     this.maxItems = maxItems;
     this.checkpoints = checkpoints;
     this.logger = logger;
-    this.contentFetcherConfig = contentFetcherConfig;
+    this.textEnrichmentStrategy = createTextEnrichmentStrategy(
+      contentFetcherConfig,
+      logger,
+      "Fetched article content for HN story"
+    );
   }
 
   async initialize(): Promise<void> {
@@ -157,24 +166,16 @@ export class HackerNewsAdapter implements SourceAdapter {
     const title = item.title ?? "";
     let text = item.text ?? "";
 
-    // If no text content and we have a URL, try to fetch article content
-    if (!text && item.url) {
-      const articleContent = await fetchArticleContent(
-        item.url,
-        this.contentFetcherConfig,
-        this.logger
-      );
+    text = await this.textEnrichmentStrategy.enrich({
+      text,
+      url: item.url,
+      minLength: MIN_HN_TEXT_LENGTH,
+      logContext: { hnId: item.id },
+    });
 
-      if (articleContent && articleContent.success) {
-        text = articleContent.text;
-        this.logger.debug(
-          { hnId: item.id, url: item.url, textLength: text.length },
-          "Fetched article content for HN story"
-        );
-      } else {
-        // Fall back to URL if fetch failed
-        text = item.url;
-      }
+    // Fall back to URL when we could not extract text for link posts.
+    if (!text && item.url) {
+      text = item.url;
     }
 
     const combinedText = `${title} ${text}`;
@@ -227,7 +228,7 @@ export function createHackerNewsAdapter(
   maxItems: number,
   checkpoints: CheckpointStore,
   logger: Logger,
-  contentFetcherConfig: ContentFetcherConfig
+  contentFetcherConfig?: ContentFetcherConfig
 ): SourceAdapter {
   const validMode = (["top", "new", "best"].includes(mode)
     ? mode
