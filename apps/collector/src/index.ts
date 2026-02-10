@@ -3,6 +3,7 @@ import {
   closeServer,
   serializeError,
   runService,
+  runShutdownSteps,
   createServiceLogger,
   BackoffManager,
   sleep,
@@ -34,12 +35,8 @@ import { CheckpointStore } from "./checkpoint.js";
 import { loadAllowlist, extractTopics, CompiledAllowlist } from "./topics/extractor.js";
 import { serializeRawEvent, serializeDeadLetterEvent, serializeHeartbeat, generateDlqId } from "./serializer.js";
 import type { SourceAdapter, DeadLetterEvent, CollectorHeartbeat } from "./types.js";
-import { createContentFetcherConfig, type ContentFetcherConfig } from "./content-fetcher.js";
-
-// Import adapters
-import { createRSSAdapter } from "./adapters/rss.js";
-import { createHackerNewsAdapter } from "./adapters/hackernews.js";
-import { createLobstersAdapter } from "./adapters/lobsters.js";
+import { createContentFetcherConfig } from "./content-fetcher.js";
+import { buildCollectorAdapters } from "./adapters/factory.js";
 
 interface CollectorContext {
   config: ReturnType<typeof getConfig>;
@@ -53,54 +50,6 @@ interface CollectorContext {
   shutdownRequested: boolean;
   lastSeenCleanupAt: number;
 }
-
-type CollectorConfig = ReturnType<typeof getConfig>;
-
-interface AdapterFactory {
-  name: string;
-  isEnabled(config: CollectorConfig): boolean;
-  create(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger, contentFetcherConfig: ContentFetcherConfig): SourceAdapter;
-}
-
-const ADAPTER_FACTORIES: ReadonlyArray<AdapterFactory> = [
-  {
-    name: "rss",
-    isEnabled: (config) => config.RSS_ENABLED,
-    create: (config, checkpointStore, logger, contentFetcherConfig) =>
-      createRSSAdapter(
-        config.FEEDS_CONFIG_PATH,
-        config.RSS_POLL_INTERVAL_SECONDS * 1000,
-        checkpointStore,
-        logger.child({ adapter: "rss" }),
-        contentFetcherConfig
-      ),
-  },
-  {
-    name: "hackernews",
-    isEnabled: (config) => config.HN_ENABLED,
-    create: (config, checkpointStore, logger, contentFetcherConfig) =>
-      createHackerNewsAdapter(
-        config.HN_MODE,
-        config.HN_POLL_INTERVAL_SECONDS * 1000,
-        config.HN_MAX_ITEMS_PER_POLL,
-        checkpointStore,
-        logger.child({ adapter: "hackernews" }),
-        contentFetcherConfig
-      ),
-  },
-  {
-    name: "lobsters",
-    isEnabled: (config) => config.LOBSTERS_ENABLED,
-    create: (config, checkpointStore, logger, contentFetcherConfig) =>
-      createLobstersAdapter(
-        config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
-        config.LOBSTERS_MAX_ITEMS_PER_POLL,
-        checkpointStore,
-        logger.child({ adapter: "lobsters" }),
-        contentFetcherConfig
-      ),
-  },
-];
 
 function mapUnknownErrorType(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -119,19 +68,6 @@ function mapUnknownErrorType(error: unknown): string {
     return "auth_error";
   }
   return "parse_error";
-}
-
-function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger, contentFetcherConfig: ContentFetcherConfig): SourceAdapter[] {
-  const adapters: SourceAdapter[] = [];
-
-  for (const factory of ADAPTER_FACTORIES) {
-    if (!factory.isEnabled(config)) {
-      continue;
-    }
-    adapters.push(factory.create(config, checkpointStore, logger, contentFetcherConfig));
-  }
-
-  return adapters;
 }
 
 async function initializeCollector(): Promise<CollectorContext> {
@@ -173,13 +109,12 @@ async function initializeCollector(): Promise<CollectorContext> {
     "Content fetcher configuration loaded"
   );
 
-  const adapters = buildAdapters(config, checkpointStore, logger, contentFetcherConfig);
-  const unsupportedEnabledAdapters = [
-    config.REDDIT_ENABLED ? "reddit" : null,
-    config.BLUESKY_ENABLED ? "bluesky" : null,
-    config.MASTODON_ENABLED ? "mastodon" : null,
-    config.GITHUB_ENABLED ? "github" : null,
-  ].filter((name): name is string => name !== null);
+  const { adapters, unsupportedEnabledAdapters } = buildCollectorAdapters({
+    config,
+    checkpointStore,
+    logger,
+    contentFetcherConfig,
+  });
 
   if (unsupportedEnabledAdapters.length > 0) {
     logger.warn(
@@ -395,19 +330,24 @@ async function gracefulShutdown(ctx: CollectorContext): Promise<void> {
   checkpointStore.close();
   logger.info("Checkpoints flushed");
 
-  try {
-    await disconnectProducer(kafkaContext.producer, logger);
-    ctx.healthContext.kafkaHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Kafka producer disconnect failed");
-  }
-
-  try {
-    await closeServer(healthServer);
-    logger.info("Health server closed");
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Health server close failed");
-  }
+  await runShutdownSteps(logger, [
+    {
+      name: "kafka-producer",
+      run: async () => disconnectProducer(kafkaContext.producer, logger),
+      errorMessage: "Kafka producer disconnect failed",
+      onSuccess: () => {
+        ctx.healthContext.kafkaHealthy = false;
+      },
+    },
+    {
+      name: "health-server",
+      run: async () => closeServer(healthServer),
+      errorMessage: "Health server close failed",
+      onSuccess: () => {
+        logger.info("Health server closed");
+      },
+    },
+  ]);
 }
 
 let _logger: pino.Logger | null = null;

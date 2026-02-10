@@ -1,5 +1,5 @@
-import { Consumer, Kafka } from "kafkajs";
-import { connectKafkaConsumer } from "@rising-intelligence/shared";
+import type { Consumer, Kafka } from "kafkajs";
+import { createKafkaConsumerFactory } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -8,24 +8,19 @@ export interface KafkaConsumerContext {
   consumer: Consumer;
 }
 
-export async function createKafkaConsumer(logger: Logger): Promise<KafkaConsumerContext> {
-  const config = getConfig();
-  const connection = await connectKafkaConsumer({
-    brokers: config.KAFKA_BROKERS,
-    clientId: config.KAFKA_CLIENT_ID,
-    groupId: config.KAFKA_CONSUMER_GROUP,
-    logger,
-    allowAutoTopicCreation: false,
-  });
-  logger.info(
-    { brokers: connection.brokers, groupId: config.KAFKA_CONSUMER_GROUP },
-    "Kafka consumer connected"
-  );
+const createConsumer = createKafkaConsumerFactory({
+  getConfig,
+  allowAutoTopicCreation: false,
+  onConnected: ({ connection, config, logger }) => {
+    logger.info(
+      { brokers: connection.brokers, groupId: config.KAFKA_CONSUMER_GROUP },
+      "Kafka consumer connected"
+    );
+  },
+});
 
-  return {
-    kafka: connection.kafka,
-    consumer: connection.consumer,
-  };
+export async function createKafkaConsumer(logger: Logger): Promise<KafkaConsumerContext> {
+  return createConsumer(logger);
 }
 
 export async function disconnectKafkaConsumer(

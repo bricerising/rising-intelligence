@@ -1,8 +1,8 @@
 import { PrismaClient } from "@rising-intelligence/db";
 import {
   closeServer,
-  serializeError,
   runService,
+  runShutdownSteps,
   createServiceLogger,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
@@ -19,7 +19,7 @@ import { createRedisClient, disconnectRedis } from "./redis.js";
 import { PostgresCircuitBreaker } from "./circuit-breaker.js";
 import { processBatch, type PersisterContext } from "./process.js";
 
-async function initialize(): Promise<PersisterContext> {
+async function initializePersister(): Promise<PersisterContext> {
   const config = getConfig();
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
 
@@ -76,35 +76,38 @@ async function runConsumer(ctx: PersisterContext): Promise<void> {
   });
 }
 
-async function shutdown(ctx: PersisterContext): Promise<void> {
-  const logger = ctx.logger;
-
-  try {
-    await disconnectKafkaConsumer(ctx.kafkaContext.consumer, logger);
-    ctx.healthContext.kafkaHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Kafka disconnect failed during shutdown");
-  }
-
-  try {
-    await disconnectRedis(ctx.redis);
-    ctx.healthContext.redisHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Redis disconnect failed during shutdown");
-  }
-
-  try {
-    await ctx.prisma.$disconnect();
-    ctx.healthContext.postgresHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Postgres disconnect failed during shutdown");
-  }
-
-  try {
-    await closeServer(ctx.healthServer);
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Health server close failed during shutdown");
-  }
+async function gracefulShutdown(ctx: PersisterContext): Promise<void> {
+  await runShutdownSteps(ctx.logger, [
+    {
+      name: "kafka-consumer",
+      run: async () => disconnectKafkaConsumer(ctx.kafkaContext.consumer, ctx.logger),
+      errorMessage: "Kafka disconnect failed during shutdown",
+      onSuccess: () => {
+        ctx.healthContext.kafkaHealthy = false;
+      },
+    },
+    {
+      name: "redis",
+      run: async () => disconnectRedis(ctx.redis),
+      errorMessage: "Redis disconnect failed during shutdown",
+      onSuccess: () => {
+        ctx.healthContext.redisHealthy = false;
+      },
+    },
+    {
+      name: "postgres",
+      run: async () => ctx.prisma.$disconnect(),
+      errorMessage: "Postgres disconnect failed during shutdown",
+      onSuccess: () => {
+        ctx.healthContext.postgresHealthy = false;
+      },
+    },
+    {
+      name: "health-server",
+      run: async () => closeServer(ctx.healthServer),
+      errorMessage: "Health server close failed during shutdown",
+    },
+  ]);
 }
 
 let _logger: pino.Logger | null = null;
@@ -119,7 +122,7 @@ runService<PersisterContext>({
     return _logger;
   },
   async initialize() {
-    const ctx = await initialize();
+    const ctx = await initializePersister();
     _logger = ctx.logger;
     return ctx;
   },
@@ -127,6 +130,6 @@ runService<PersisterContext>({
     await runConsumer(ctx);
   },
   async shutdown(ctx) {
-    await shutdown(ctx);
+    await gracefulShutdown(ctx);
   },
 });

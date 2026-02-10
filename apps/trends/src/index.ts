@@ -5,6 +5,7 @@ import {
   closeServer,
   serializeError,
   runService,
+  runShutdownSteps,
   createServiceLogger,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
@@ -198,38 +199,42 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
     ctx.snapshotTimer = null;
   }
 
-  try {
-    await disconnectKafkaConsumer(ctx.kafkaConsumerContext.consumer, logger);
-    ctx.healthContext.kafkaHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Kafka consumer disconnect failed");
-  }
-
-  try {
-    await disconnectKafkaProducer(ctx.kafkaProducerContext.producer, logger);
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Kafka producer disconnect failed");
-  }
-
-  try {
-    await disconnectRedis(ctx.redis, logger);
-    ctx.healthContext.redisHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Redis disconnect failed");
-  }
-
-  try {
-    await ctx.prisma.$disconnect();
-    ctx.healthContext.postgresHealthy = false;
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Postgres disconnect failed");
-  }
-
-  try {
-    await closeServer(ctx.healthServer);
-  } catch (error) {
-    logger.warn({ error: serializeError(error) }, "Health server close failed");
-  }
+  await runShutdownSteps(logger, [
+    {
+      name: "kafka-consumer",
+      run: async () => disconnectKafkaConsumer(ctx.kafkaConsumerContext.consumer, logger),
+      errorMessage: "Kafka consumer disconnect failed",
+      onSuccess: () => {
+        ctx.healthContext.kafkaHealthy = false;
+      },
+    },
+    {
+      name: "kafka-producer",
+      run: async () => disconnectKafkaProducer(ctx.kafkaProducerContext.producer, logger),
+      errorMessage: "Kafka producer disconnect failed",
+    },
+    {
+      name: "redis",
+      run: async () => disconnectRedis(ctx.redis, logger),
+      errorMessage: "Redis disconnect failed",
+      onSuccess: () => {
+        ctx.healthContext.redisHealthy = false;
+      },
+    },
+    {
+      name: "postgres",
+      run: async () => ctx.prisma.$disconnect(),
+      errorMessage: "Postgres disconnect failed",
+      onSuccess: () => {
+        ctx.healthContext.postgresHealthy = false;
+      },
+    },
+    {
+      name: "health-server",
+      run: async () => closeServer(ctx.healthServer),
+      errorMessage: "Health server close failed",
+    },
+  ]);
 }
 
 let _logger: pino.Logger | null = null;

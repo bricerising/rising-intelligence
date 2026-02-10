@@ -127,6 +127,45 @@ export interface ConnectKafkaProducerOptions {
   transactionTimeoutMs?: number;
 }
 
+export interface KafkaConsumerServiceConfig {
+  KAFKA_BROKERS: string | string[];
+  KAFKA_CLIENT_ID: string;
+  KAFKA_CONSUMER_GROUP: string;
+}
+
+export interface KafkaProducerServiceConfig {
+  KAFKA_BROKERS: string | string[];
+  KAFKA_CLIENT_ID: string;
+}
+
+export interface KafkaConsumerConnectedHookArgs<TConfig extends KafkaConsumerServiceConfig> {
+  config: TConfig;
+  connection: KafkaConsumerConnection;
+  logger: KafkaLogger;
+}
+
+export interface KafkaProducerConnectedHookArgs<TConfig extends KafkaProducerServiceConfig> {
+  config: TConfig;
+  connection: KafkaProducerConnection;
+  logger: KafkaLogger;
+}
+
+export interface CreateKafkaConsumerFactoryOptions<TConfig extends KafkaConsumerServiceConfig> {
+  getConfig: () => TConfig;
+  sessionTimeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  allowAutoTopicCreation?: boolean;
+  onConnected?: (args: KafkaConsumerConnectedHookArgs<TConfig>) => void;
+}
+
+export interface CreateKafkaProducerFactoryOptions<TConfig extends KafkaProducerServiceConfig> {
+  getConfig: () => TConfig;
+  clientIdSuffix?: string;
+  allowAutoTopicCreation?: boolean;
+  transactionTimeoutMs?: number;
+  onConnected?: (args: KafkaProducerConnectedHookArgs<TConfig>) => void;
+}
+
 export async function connectKafkaConsumer(
   options: ConnectKafkaConsumerOptions
 ): Promise<KafkaConsumerConnection> {
@@ -171,5 +210,60 @@ export async function connectKafkaProducer(
     kafka,
     producer,
     brokers,
+  };
+}
+
+export function createKafkaConsumerFactory<TConfig extends KafkaConsumerServiceConfig>(
+  options: CreateKafkaConsumerFactoryOptions<TConfig>
+): (logger: KafkaLogger) => Promise<{ kafka: Kafka; consumer: Consumer }> {
+  return async (logger) => {
+    const config = options.getConfig();
+    const connection = await connectKafkaConsumer({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      groupId: config.KAFKA_CONSUMER_GROUP,
+      logger,
+      sessionTimeoutMs: options.sessionTimeoutMs,
+      heartbeatIntervalMs: options.heartbeatIntervalMs,
+      allowAutoTopicCreation: options.allowAutoTopicCreation,
+    });
+
+    options.onConnected?.({
+      config,
+      connection,
+      logger,
+    });
+
+    return {
+      kafka: connection.kafka,
+      consumer: connection.consumer,
+    };
+  };
+}
+
+export function createKafkaProducerFactory<TConfig extends KafkaProducerServiceConfig>(
+  options: CreateKafkaProducerFactoryOptions<TConfig>
+): (logger: KafkaLogger) => Promise<{ kafka: Kafka; producer: Producer }> {
+  return async (logger) => {
+    const config = options.getConfig();
+    const connection = await connectKafkaProducer({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      clientIdSuffix: options.clientIdSuffix,
+      logger,
+      allowAutoTopicCreation: options.allowAutoTopicCreation,
+      transactionTimeoutMs: options.transactionTimeoutMs,
+    });
+
+    options.onConnected?.({
+      config,
+      connection,
+      logger,
+    });
+
+    return {
+      kafka: connection.kafka,
+      producer: connection.producer,
+    };
   };
 }

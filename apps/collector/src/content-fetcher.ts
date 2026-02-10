@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
+import { createUrlSafetyFacade } from "@rising-intelligence/shared";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { isIP } from "node:net";
 import type { Logger } from "pino";
 
 /**
@@ -41,6 +41,7 @@ export interface ArticleContent {
  * Track last request time per domain for rate limiting
  */
 const domainLastRequest = new Map<string, number>();
+const urlSafetyFacade = createUrlSafetyFacade();
 
 /**
  * Extract domain from URL
@@ -48,7 +49,7 @@ const domainLastRequest = new Map<string, number>();
 function extractDomain(url: string): string | null {
   try {
     const parsed = new URL(url);
-    return parsed.hostname;
+    return parsed.hostname.trim().toLowerCase();
   } catch {
     return null;
   }
@@ -74,84 +75,6 @@ function isDomainBlocked(url: string, blockedDomains: Set<string>): boolean {
   return false;
 }
 
-function normalizeHostname(hostname: string): string {
-  const normalized = hostname.trim().toLowerCase();
-  if (normalized.startsWith("[") && normalized.endsWith("]")) {
-    return normalized.slice(1, -1);
-  }
-  return normalized;
-}
-
-function isPrivateOrLoopbackIpv4(hostname: string): boolean {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) {
-    return false;
-  }
-
-  const octets = parts.map((part) => Number.parseInt(part, 10));
-  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
-    return false;
-  }
-
-  return (
-    octets[0] === 10 ||
-    octets[0] === 127 ||
-    (octets[0] === 169 && octets[1] === 254) ||
-    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
-    (octets[0] === 192 && octets[1] === 168)
-  );
-}
-
-function isPrivateOrLoopbackIpv6(hostname: string): boolean {
-  if (hostname === "::1") {
-    return true;
-  }
-  if (hostname.startsWith("::ffff:")) {
-    return isPrivateOrLoopbackIpv4(hostname.slice("::ffff:".length));
-  }
-  if (hostname.startsWith("fc") || hostname.startsWith("fd")) {
-    return true;
-  }
-
-  const firstHextet = hostname.split(":")[0];
-  return /^fe[89ab][0-9a-f]{0,2}$/i.test(firstHextet);
-}
-
-function isDisallowedHostname(hostname: string): boolean {
-  const normalized = normalizeHostname(hostname);
-  if (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "0.0.0.0"
-  ) {
-    return true;
-  }
-
-  const ipVersion = isIP(normalized);
-  if (ipVersion === 4) {
-    return isPrivateOrLoopbackIpv4(normalized);
-  }
-  if (ipVersion === 6) {
-    return isPrivateOrLoopbackIpv6(normalized);
-  }
-  return false;
-}
-
-function isAllowedFetchUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return false;
-    }
-    if (isDisallowedHostname(parsed.hostname)) {
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Wait for domain rate limit delay
  */
@@ -163,7 +86,7 @@ async function waitForDomainDelay(
   if (!domain) return;
 
   const lastRequest = domainLastRequest.get(domain);
-  if (lastRequest) {
+  if (lastRequest !== undefined) {
     const elapsed = Date.now() - lastRequest;
     if (elapsed < domainDelayMs) {
       await new Promise((resolve) =>
@@ -263,7 +186,7 @@ export async function fetchArticleContent(
     return null;
   }
 
-  if (!isAllowedFetchUrl(url)) {
+  if (!urlSafetyFacade.isAllowedFetchUrl(url)) {
     logger.debug({ url }, "Skipping disallowed fetch URL");
     return null;
   }
@@ -316,40 +239,136 @@ export async function fetchArticleContent(
 /**
  * Create default content fetcher configuration
  */
+const DEFAULT_CONTENT_FETCHER_CONFIG: Readonly<
+  Omit<ContentFetcherConfig, "blockedDomains">
+> = Object.freeze({
+  enabled: false,
+  timeoutMs: 10_000,
+  maxContentLength: 50_000,
+  minContentLength: 200,
+  domainDelayMs: 1_000,
+  userAgent:
+    "RisingIntelligence/1.0 (+https://github.com/rising-intelligence)",
+});
+
+function parseIntegerEnv(value: string | undefined): number | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+  if (!/^-?\d+$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(normalized, 10);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseBlockedDomains(value: string | undefined): Set<string> {
+  if (!value) {
+    return new Set<string>();
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((domain) => domain.trim().toLowerCase())
+      .filter((domain) => domain.length > 0)
+  );
+}
+
+class ContentFetcherConfigBuilder {
+  private enabled = DEFAULT_CONTENT_FETCHER_CONFIG.enabled;
+  private timeoutMs = DEFAULT_CONTENT_FETCHER_CONFIG.timeoutMs;
+  private maxContentLength = DEFAULT_CONTENT_FETCHER_CONFIG.maxContentLength;
+  private minContentLength = DEFAULT_CONTENT_FETCHER_CONFIG.minContentLength;
+  private domainDelayMs = DEFAULT_CONTENT_FETCHER_CONFIG.domainDelayMs;
+  private userAgent = DEFAULT_CONTENT_FETCHER_CONFIG.userAgent;
+  private blockedDomains = new Set<string>();
+
+  fromEnv(env: Record<string, string | undefined>): this {
+    this.enabled = env.FETCH_ARTICLE_CONTENT === "true";
+    this.timeoutMs = this.parsePositiveInteger(
+      env.ARTICLE_FETCH_TIMEOUT_MS,
+      DEFAULT_CONTENT_FETCHER_CONFIG.timeoutMs
+    );
+    this.maxContentLength = this.parsePositiveInteger(
+      env.ARTICLE_MAX_CONTENT_LENGTH,
+      DEFAULT_CONTENT_FETCHER_CONFIG.maxContentLength
+    );
+    this.minContentLength = this.parsePositiveInteger(
+      env.ARTICLE_MIN_CONTENT_LENGTH,
+      DEFAULT_CONTENT_FETCHER_CONFIG.minContentLength
+    );
+    this.domainDelayMs = this.parseNonNegativeInteger(
+      env.ARTICLE_DOMAIN_DELAY_MS,
+      DEFAULT_CONTENT_FETCHER_CONFIG.domainDelayMs
+    );
+    this.userAgent = this.parseUserAgent(env.ARTICLE_USER_AGENT);
+    this.blockedDomains = parseBlockedDomains(env.ARTICLE_BLOCKED_DOMAINS);
+
+    return this;
+  }
+
+  build(): ContentFetcherConfig {
+    const minContentLength = this.minContentLength;
+    const maxContentLength = Math.max(this.maxContentLength, minContentLength);
+
+    return {
+      enabled: this.enabled,
+      timeoutMs: this.timeoutMs,
+      maxContentLength,
+      minContentLength,
+      domainDelayMs: this.domainDelayMs,
+      userAgent: this.userAgent,
+      blockedDomains: new Set(this.blockedDomains),
+    };
+  }
+
+  private parsePositiveInteger(
+    value: string | undefined,
+    fallback: number
+  ): number {
+    const parsed = parseIntegerEnv(value);
+    if (parsed === null || parsed <= 0) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  private parseNonNegativeInteger(
+    value: string | undefined,
+    fallback: number
+  ): number {
+    const parsed = parseIntegerEnv(value);
+    if (parsed === null || parsed < 0) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  private parseUserAgent(value: string | undefined): string {
+    if (!value) {
+      return DEFAULT_CONTENT_FETCHER_CONFIG.userAgent;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0
+      ? normalized
+      : DEFAULT_CONTENT_FETCHER_CONFIG.userAgent;
+  }
+}
+
 export function createContentFetcherConfig(
   env: Record<string, string | undefined>
 ): ContentFetcherConfig {
-  const enabled = env.FETCH_ARTICLE_CONTENT === "true";
-  const timeoutMs = parseInt(env.ARTICLE_FETCH_TIMEOUT_MS ?? "10000", 10);
-  const maxContentLength = parseInt(
-    env.ARTICLE_MAX_CONTENT_LENGTH ?? "50000",
-    10
-  );
-  const minContentLength = parseInt(
-    env.ARTICLE_MIN_CONTENT_LENGTH ?? "200",
-    10
-  );
-  const domainDelayMs = parseInt(env.ARTICLE_DOMAIN_DELAY_MS ?? "1000", 10);
-  const userAgent =
-    env.ARTICLE_USER_AGENT ??
-    "RisingIntelligence/1.0 (+https://github.com/rising-intelligence)";
-
-  // Parse blocked domains
-  const blockedDomainsStr = env.ARTICLE_BLOCKED_DOMAINS ?? "";
-  const blockedDomains = new Set(
-    blockedDomainsStr
-      .split(",")
-      .map((d) => d.trim())
-      .filter((d) => d.length > 0)
-  );
-
-  return {
-    enabled,
-    timeoutMs,
-    maxContentLength,
-    minContentLength,
-    domainDelayMs,
-    userAgent,
-    blockedDomains,
-  };
+  return new ContentFetcherConfigBuilder().fromEnv(env).build();
 }

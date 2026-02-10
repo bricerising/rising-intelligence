@@ -1,5 +1,6 @@
-import { Kafka, Producer, CompressionTypes } from "kafkajs";
-import { connectKafkaProducer } from "@rising-intelligence/shared";
+import { CompressionTypes } from "kafkajs";
+import type { Kafka, Producer } from "kafkajs";
+import { createKafkaProducerFactory } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -16,20 +17,16 @@ export interface KafkaProducerContext {
   kafka: Kafka;
 }
 
-export async function createKafkaProducer(logger: Logger): Promise<KafkaProducerContext> {
-  const config = getConfig();
-  const connection = await connectKafkaProducer({
-    brokers: config.KAFKA_BROKERS,
-    clientId: config.KAFKA_CLIENT_ID,
-    logger,
-    allowAutoTopicCreation: false,
-  });
-  logger.info({ brokers: connection.brokers }, "Kafka producer connected");
+const createProducer = createKafkaProducerFactory({
+  getConfig,
+  allowAutoTopicCreation: false,
+  onConnected: ({ connection, logger }) => {
+    logger.info({ brokers: connection.brokers }, "Kafka producer connected");
+  },
+});
 
-  return {
-    producer: connection.producer,
-    kafka: connection.kafka,
-  };
+export async function createKafkaProducer(logger: Logger): Promise<KafkaProducerContext> {
+  return createProducer(logger);
 }
 
 export async function publishEvent(

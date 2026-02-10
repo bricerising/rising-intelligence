@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchArticleContent,
+  createContentFetcherConfig,
   type ContentFetcherConfig,
 } from "../src/content-fetcher.js";
 
@@ -105,5 +106,46 @@ describe("content fetcher URL safety", () => {
     ).resolves.toBeNull();
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes blocked domains to lowercase", () => {
+    const config = createContentFetcherConfig({
+      FETCH_ARTICLE_CONTENT: "true",
+      ARTICLE_BLOCKED_DOMAINS: "Example.COM, Sub.Example.com",
+    });
+
+    expect(config.blockedDomains.has("example.com")).toBe(true);
+    expect(config.blockedDomains.has("sub.example.com")).toBe(true);
+  });
+
+  it("falls back to safe defaults when numeric env values are invalid", () => {
+    const config = createContentFetcherConfig({
+      FETCH_ARTICLE_CONTENT: "true",
+      ARTICLE_FETCH_TIMEOUT_MS: "invalid",
+      ARTICLE_MAX_CONTENT_LENGTH: "-5",
+      ARTICLE_MIN_CONTENT_LENGTH: "0",
+      ARTICLE_DOMAIN_DELAY_MS: "10ms",
+      ARTICLE_USER_AGENT: "   ",
+    });
+
+    expect(config.enabled).toBe(true);
+    expect(config.timeoutMs).toBe(10_000);
+    expect(config.maxContentLength).toBe(50_000);
+    expect(config.minContentLength).toBe(200);
+    expect(config.domainDelayMs).toBe(1_000);
+    expect(config.userAgent).toBe(
+      "RisingIntelligence/1.0 (+https://github.com/rising-intelligence)"
+    );
+  });
+
+  it("enforces max content length to be at least min content length", () => {
+    const config = createContentFetcherConfig({
+      FETCH_ARTICLE_CONTENT: "true",
+      ARTICLE_MAX_CONTENT_LENGTH: "100",
+      ARTICLE_MIN_CONTENT_LENGTH: "300",
+    });
+
+    expect(config.minContentLength).toBe(300);
+    expect(config.maxContentLength).toBe(300);
   });
 });

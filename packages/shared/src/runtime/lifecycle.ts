@@ -10,6 +10,33 @@ export interface ServiceDefinition<TCtx> {
   shutdownTimeoutMs: number;
 }
 
+export interface ShutdownStep {
+  readonly name: string;
+  readonly run: () => Promise<void>;
+  readonly errorMessage?: string;
+  readonly onSuccess?: () => void;
+}
+
+export async function runShutdownSteps(
+  logger: Logger,
+  steps: ReadonlyArray<ShutdownStep>
+): Promise<void> {
+  for (const step of steps) {
+    try {
+      await step.run();
+      step.onSuccess?.();
+    } catch (error) {
+      logger.warn(
+        {
+          step: step.name,
+          error: serializeError(error),
+        },
+        step.errorMessage ?? `${step.name} shutdown step failed`
+      );
+    }
+  }
+}
+
 export function runService<TCtx>(def: ServiceDefinition<TCtx>): void {
   let context: TCtx | null = null;
   let shuttingDown = false;
