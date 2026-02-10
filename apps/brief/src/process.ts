@@ -506,7 +506,7 @@ async function buildQueryModeRequest(
 
   try {
     const topicKeys = rankedTopics.map((t) => t.topic);
-    allEvents = await ctx.prisma.rawEvent.findMany({
+    const fetchedEvents = await ctx.prisma.rawEvent.findMany({
       where: {
         topics: {
           hasSome: topicKeys,
@@ -514,6 +514,9 @@ async function buildQueryModeRequest(
         fetchedAt: {
           gte: lookbackStart,
           lte: request.requestedAt,
+        },
+        url: {
+          not: null, // Only fetch events with URLs for grounding
         },
       },
       orderBy: {
@@ -531,6 +534,8 @@ async function buildQueryModeRequest(
         engagementScore: true,
       },
     });
+    // Filter to ensure non-null URLs (TypeScript doesn't narrow after Prisma query)
+    allEvents = fetchedEvents.filter((e) => e.url !== null) as Array<typeof fetchedEvents[0] & { url: string }>;
     ctx.healthContext.postgresHealthy = true;
   } catch (error) {
     ctx.healthContext.postgresHealthy = false;
@@ -576,7 +581,7 @@ async function buildQueryModeRequest(
         title: event.title ?? null,
         publishedAt: event.publishedAt,
         fetchedAt: event.fetchedAt,
-        textExcerpt: event.text.slice(0, 500),
+        textExcerpt: event.text.slice(0, 2000),
       })),
     };
   });
@@ -690,7 +695,7 @@ function createEvidenceUrlSet(request: ParsedSummaryRequest): Set<string> {
 
 function filterGroundedCitations(citations: string[], evidenceUrls: Set<string>): string[] {
   const filtered = dedupeCanonicalUrls(citations);
-  return filtered.filter((citation) => evidenceUrls.has(citation)).slice(0, 3);
+  return filtered.filter((citation) => evidenceUrls.has(citation));
 }
 
 function selectPrimaryMetric(topic: ParsedSummaryTopic) {
@@ -699,7 +704,7 @@ function selectPrimaryMetric(topic: ParsedSummaryTopic) {
 
 function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
   const primaryMetric = selectPrimaryMetric(topic);
-  const citations = dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url)).slice(0, 3);
+  const citations = dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url));
   const score = primaryMetric ? primaryMetric.score.toFixed(1) : "0.0";
   const volume = primaryMetric ? Math.round(primaryMetric.volume) : topic.evidence.length;
   const acceleration = primaryMetric ? primaryMetric.acceleration.toFixed(2) : "0.00";
@@ -719,7 +724,7 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
     what_happened: highlight.what_happened.trim(),
     why_it_matters: highlight.why_it_matters.trim(),
     suggested_action: highlight.suggested_action.trim(),
-    citations: dedupeCanonicalUrls(highlight.citations).slice(0, 3),
+    citations: dedupeCanonicalUrls(highlight.citations),
   };
 }
 
@@ -1066,17 +1071,20 @@ async function buildSuccessResult(
   producedAt: Date,
   estimatedCostUsd: number
 ): Promise<SuccessResult> {
-  if (ctx.config.LLM_PROVIDER === "internal") {
+  // Use request-level LLM provider if specified, otherwise use config default
+  const llmProvider = request.llmProvider || ctx.config.LLM_PROVIDER;
+
+  if (llmProvider === "internal") {
     return buildInternalSuccessResult(request, producedAt, estimatedCostUsd);
   }
-  if (ctx.config.LLM_PROVIDER === "http") {
+  if (llmProvider === "http") {
     return buildHttpSuccessResult(ctx, request, producedAt, estimatedCostUsd);
   }
-  if (ctx.config.LLM_PROVIDER === "codex-cli") {
+  if (llmProvider === "codex-cli") {
     return buildCodexCliSuccessResult(ctx, request, producedAt, estimatedCostUsd);
   }
 
-  throw new LlmGenerationError(`Unsupported LLM provider: ${ctx.config.LLM_PROVIDER}`);
+  throw new LlmGenerationError(`Unsupported LLM provider: ${llmProvider}`);
 }
 
 function buildFailureResult(
@@ -1166,10 +1174,11 @@ async function reserveBudgetSpendUsd(
     const cached = parseBudgetReservationResult(result);
     if (cached.reserved) {
       // Async write to Postgres (fire and forget for performance)
+      const budgetDate = new Date(dateKey + "T00:00:00Z");
       void prisma.briefBudgetTracking.upsert({
-        where: { date: dateKey },
+        where: { date: budgetDate },
         create: {
-          date: dateKey,
+          date: budgetDate,
           spentUsd: amountUsd,
           budgetUsd: dailyBudgetUsd,
           requestCount: 1,
@@ -1186,10 +1195,11 @@ async function reserveBudgetSpendUsd(
   }
 
   // Postgres slow path (or Redis returned false)
+  const budgetDate = new Date(dateKey + "T00:00:00Z");
   const record = await prisma.briefBudgetTracking.upsert({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     create: {
-      date: dateKey,
+      date: budgetDate,
       spentUsd: 0,
       budgetUsd: dailyBudgetUsd,
       requestCount: 0,
@@ -1207,7 +1217,7 @@ async function reserveBudgetSpendUsd(
 
   // Reserve in Postgres
   await prisma.briefBudgetTracking.update({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     data: {
       spentUsd: { increment: amountUsd },
       requestCount: { increment: 1 },
@@ -1227,8 +1237,9 @@ async function releaseBudgetReservationUsd(
   amountUsd: number
 ): Promise<number> {
   // Update Postgres first (source of truth)
+  const budgetDate = new Date(dateKey + "T00:00:00Z");
   const record = await prisma.briefBudgetTracking.findUnique({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     select: { spentUsd: true },
   });
 
@@ -1240,7 +1251,7 @@ async function releaseBudgetReservationUsd(
   const newSpent = Math.max(0, currentSpent - amountUsd);
 
   await prisma.briefBudgetTracking.update({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     data: { spentUsd: newSpent },
   });
 
@@ -1257,8 +1268,9 @@ async function settleBudgetSpendUsd(
   deltaUsd: number
 ): Promise<number> {
   // Update Postgres first (source of truth)
+  const budgetDate = new Date(dateKey + "T00:00:00Z");
   const record = await prisma.briefBudgetTracking.findUnique({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     select: { spentUsd: true },
   });
 
@@ -1270,7 +1282,7 @@ async function settleBudgetSpendUsd(
   const newSpent = Math.max(0, currentSpent + deltaUsd);
 
   await prisma.briefBudgetTracking.update({
-    where: { date: dateKey },
+    where: { date: budgetDate },
     data: { spentUsd: newSpent },
   });
 

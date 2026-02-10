@@ -11,6 +11,7 @@ interface TriggerBriefConfig {
   kafkaBrokers: string[];
   kafkaClientId: string;
   summaryRequestsTopic: string;
+  summaryResultsTopic: string;
   requestId: string;
   requestedAtIso: string;
   requestType: "daily" | "threshold";
@@ -32,7 +33,10 @@ interface TriggerBriefConfig {
   maxTopics: number;
   maxEvidencePerTopic: number;
   maxOutputTokens: number;
+  llmProvider?: string;
   dryRun: boolean;
+  noWait: boolean;
+  timeoutSeconds: number;
 }
 
 function getStringFlag(flags: Flags, name: string): string | undefined {
@@ -302,7 +306,14 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     maxTopics: assertPositiveInteger(maxTopics, "--max-topics"),
     maxEvidencePerTopic: assertPositiveInteger(maxEvidencePerTopic, "--max-evidence-per-topic"),
     maxOutputTokens: assertPositiveInteger(maxOutputTokens, "--max-output-tokens"),
+    llmProvider: getStringFlag(flags, "llm-provider"),
     dryRun: getBooleanFlag(flags, "dry-run"),
+    noWait: getBooleanFlag(flags, "no-wait"),
+    timeoutSeconds: getNumberFlag(flags, "timeout") ?? 300,
+    summaryResultsTopic:
+      getStringFlag(flags, "summary-results-topic") ||
+      getEnvString("KAFKA_TOPIC_SUMMARY_RESULTS") ||
+      "summary.results",
   };
 }
 
@@ -319,6 +330,7 @@ function buildSummaryRequest(config: TriggerBriefConfig) {
       max_evidence_per_topic: config.maxEvidencePerTopic,
       max_output_tokens: config.maxOutputTokens,
     },
+    ...(config.llmProvider && { llm_provider: config.llmProvider }),
   };
 
   if (config.mode === "query") {
@@ -451,6 +463,170 @@ async function checkDataFreshness(): Promise<FreshnessIssue[]> {
   return issues;
 }
 
+interface BriefResult {
+  request_id: string;
+  produced_at: string;
+  brief?: {
+    brief_id: string;
+    generated_at: string;
+    window: number;
+    title: string;
+    highlights: Array<{
+      topic: string;
+      what_happened: string;
+      why_it_matters: string;
+      suggested_action: string;
+      citations: string[];
+    }>;
+    notes?: string;
+    meta?: {
+      provider?: string;
+      model?: string;
+      input_tokens?: number;
+      output_tokens?: number;
+      estimated_cost_usd?: number;
+    };
+  };
+  failure?: {
+    error_code: string;
+    error_message: string;
+    retryable: boolean;
+  };
+}
+
+interface BriefResultWaiter {
+  consumer: ReturnType<Kafka["consumer"]>;
+  resultPromise: Promise<BriefResult>;
+}
+
+async function setupBriefResultConsumer(
+  kafka: Kafka,
+  requestId: string,
+  resultsTopic: string,
+  timeoutSeconds: number
+): Promise<BriefResultWaiter> {
+  const consumer = kafka.consumer({
+    groupId: `riops-brief-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  });
+
+  await consumer.connect();
+  // Subscribe from beginning and use eachBatch with manual offset control
+  await consumer.subscribe({ topic: resultsTopic, fromBeginning: true });
+
+  const timeoutMs = timeoutSeconds * 1000;
+  const startTime = Date.now();
+
+  const resultPromise = new Promise<BriefResult>((resolve, reject) => {
+    const timeoutHandle = setTimeout(() => {
+      reject(new Error(`Timeout waiting for brief result after ${timeoutSeconds}s`));
+    }, timeoutMs);
+
+    void consumer.run({
+      eachMessage: async ({ message }) => {
+        if (!message.value) {
+          return;
+        }
+
+        try {
+          const result = JSON.parse(message.value.toString("utf-8")) as BriefResult;
+
+          // Only process messages for our specific request
+          if (result.request_id === requestId) {
+            clearTimeout(timeoutHandle);
+            resolve(result);
+            // Don't await stop() - just trigger it and let the promise resolution handle cleanup
+            void consumer.stop();
+          }
+        } catch (error) {
+          // Ignore parse errors for messages not matching our request
+        }
+
+        // Check if we've exceeded timeout (safety check)
+        if (Date.now() - startTime > timeoutMs) {
+          clearTimeout(timeoutHandle);
+          reject(new Error(`Timeout waiting for brief result after ${timeoutSeconds}s`));
+          void consumer.stop();
+        }
+      },
+    });
+  });
+
+  // Give the consumer a moment to start polling before returning
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  return { consumer, resultPromise };
+}
+
+async function waitForBriefResult(
+  waiter: BriefResultWaiter
+): Promise<BriefResult> {
+  try {
+    return await waiter.resultPromise;
+  } finally {
+    await waiter.consumer.disconnect();
+  }
+}
+
+function formatBriefResult(result: BriefResult): string {
+  const lines: string[] = [];
+
+  lines.push(`\n${"=".repeat(80)}`);
+  lines.push(`Brief Result: ${result.request_id}`);
+  lines.push(`Produced at: ${result.produced_at}`);
+  lines.push("=".repeat(80));
+
+  if (result.failure) {
+    lines.push(`\n❌ FAILED: ${result.failure.error_code}`);
+    lines.push(`Message: ${result.failure.error_message}`);
+    lines.push(`Retryable: ${result.failure.retryable ? "Yes" : "No"}`);
+    return lines.join("\n");
+  }
+
+  if (!result.brief) {
+    lines.push("\n⚠️  No brief data in result");
+    return lines.join("\n");
+  }
+
+  const brief = result.brief;
+  lines.push(`\n📊 ${brief.title}`);
+  lines.push(`Generated: ${brief.generated_at}`);
+
+  if (brief.meta) {
+    lines.push(
+      `\nMeta: ${brief.meta.provider || "unknown"}/${brief.meta.model || "unknown"} | ` +
+        `Tokens: ${brief.meta.input_tokens || 0} in / ${brief.meta.output_tokens || 0} out | ` +
+        `Cost: $${(brief.meta.estimated_cost_usd || 0).toFixed(4)}`
+    );
+  }
+
+  lines.push(`\n${"─".repeat(80)}`);
+  lines.push("HIGHLIGHTS");
+  lines.push("─".repeat(80));
+
+  for (const highlight of brief.highlights) {
+    lines.push(`\n🔹 ${highlight.topic.toUpperCase()}`);
+    lines.push(`\n  What happened:\n    ${highlight.what_happened}`);
+    lines.push(`\n  Why it matters:\n    ${highlight.why_it_matters}`);
+    lines.push(`\n  Suggested action:\n    ${highlight.suggested_action}`);
+    if (highlight.citations.length > 0) {
+      lines.push(`\n  Citations:`);
+      for (const citation of highlight.citations) {
+        lines.push(`    - ${citation}`);
+      }
+    }
+  }
+
+  if (brief.notes && brief.notes.trim()) {
+    lines.push(`\n${"─".repeat(80)}`);
+    lines.push("NOTES");
+    lines.push("─".repeat(80));
+    lines.push(`\n${brief.notes}`);
+  }
+
+  lines.push(`\n${"=".repeat(80)}\n`);
+  return lines.join("\n");
+}
+
 export async function briefTrigger(flags: Flags): Promise<void> {
   const config = resolveConfig(flags);
 
@@ -491,8 +667,22 @@ export async function briefTrigger(flags: Flags): Promise<void> {
     clientId: config.kafkaClientId,
     brokers: config.kafkaBrokers,
   });
-  const producer = kafka.producer({ allowAutoTopicCreation: false });
 
+  // Set up result consumer BEFORE publishing the request to avoid race condition
+  let waiter: BriefResultWaiter | undefined;
+  if (!config.noWait) {
+    // eslint-disable-next-line no-console
+    console.log(`⏳ Setting up result listener (timeout: ${config.timeoutSeconds}s)...`);
+    waiter = await setupBriefResultConsumer(
+      kafka,
+      config.requestId,
+      config.summaryResultsTopic,
+      config.timeoutSeconds
+    );
+  }
+
+  // Now publish the request
+  const producer = kafka.producer({ allowAutoTopicCreation: false });
   try {
     await producer.connect();
     await producer.send({
@@ -510,6 +700,31 @@ export async function briefTrigger(flags: Flags): Promise<void> {
 
   // eslint-disable-next-line no-console
   console.log(
-    `Published ${config.mode} summary request ${config.requestId} to ${config.summaryRequestsTopic} via ${config.kafkaBrokers.join(",")}`
+    `✅ Published ${config.mode} summary request ${config.requestId} to ${config.summaryRequestsTopic}`
   );
+
+  if (config.noWait) {
+    // eslint-disable-next-line no-console
+    console.log(`Request ID: ${config.requestId}`);
+    return;
+  }
+
+  // Wait for the result
+  try {
+    const result = await waitForBriefResult(waiter!);
+
+    const formatted = formatBriefResult(result);
+    // eslint-disable-next-line no-console
+    console.log(formatted);
+
+    if (result.failure) {
+      process.exit(1);
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error(`\n❌ ${(error as Error).message}`);
+    // eslint-disable-next-line no-console
+    console.error(`Request ID: ${config.requestId}`);
+    process.exit(1);
+  }
 }

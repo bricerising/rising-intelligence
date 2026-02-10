@@ -1,6 +1,6 @@
 import type { Server } from "node:http";
 import type { Redis } from "ioredis";
-import { PrismaClient } from "@rising-intelligence/db";
+import { PrismaClient, Prisma, TrendWindow } from "@rising-intelligence/db";
 import {
   closeServer,
   serializeError,
@@ -32,7 +32,6 @@ import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deseriali
 import { createRedisClient, disconnectRedis } from "./redis.js";
 import { processSummaryRequest } from "./process.js";
 import type { ParsedTrendSnapshot } from "./types.js";
-import { TrendWindow } from "@rising-intelligence/db";
 
 interface RuntimeContext {
   config: ReturnType<typeof getConfig>;
@@ -69,7 +68,7 @@ async function persistTrendSnapshot(
       data: {
         generatedAt: snapshot.generatedAt,
         window: mapTrendWindowToEnum(snapshot.window),
-        snapshot: snapshot.snapshot,
+        snapshot: snapshot.snapshot as Prisma.InputJsonValue,
       },
     });
     ctx.healthContext.postgresHealthy = true;

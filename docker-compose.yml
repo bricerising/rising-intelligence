@@ -353,7 +353,7 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-rising}:${POSTGRES_PASSWORD:-rising}@postgres:5432/${POSTGRES_DB:-rising_intelligence}"
       REDIS_URL: "redis://redis:6379"
       LOG_LEVEL: "info"
-      LLM_PROVIDER: "${BRIEF_LLM_PROVIDER:-internal}"
+      LLM_PROVIDER: "${BRIEF_LLM_PROVIDER:-codex-cli}"
       LLM_CODEX_CLI_COMMAND: "${BRIEF_LLM_CODEX_COMMAND:-codex}"
       LLM_CODEX_MODEL: "${BRIEF_LLM_CODEX_MODEL:-}"
       LLM_CODEX_PROFILE: "${BRIEF_LLM_CODEX_PROFILE:-}"

@@ -2,6 +2,8 @@
 
 import { loadDotEnv } from "@rising-intelligence/shared";
 import { briefTrigger } from "./commands/brief/trigger.js";
+import { kafkaTopics } from "./commands/kafka/topics.js";
+import { topicsList } from "./commands/topics/list.js";
 import { schemaRegistryPublishProtos } from "./commands/schema-registry/publish-protos.js";
 import { printHelp } from "./help.js";
 import { parseArgs } from "./lib/args.js";
@@ -56,6 +58,16 @@ async function main() {
       subcommand === "generate-summary-request")
   ) {
     await briefTrigger(flags);
+    return;
+  }
+
+  if (group === "kafka" && (subcommand === "topics" || subcommand === "list")) {
+    await kafkaTopics(flags);
+    return;
+  }
+
+  if (group === "topics" && subcommand === "list") {
+    await topicsList(flags);
     return;
   }
 

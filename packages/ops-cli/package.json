@@ -10,6 +10,14 @@
     "@rising-intelligence/shared": "0.1.0",
     "kafkajs": "^2.2.4"
   },
+  "peerDependencies": {
+    "@rising-intelligence/db": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@rising-intelligence/db": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

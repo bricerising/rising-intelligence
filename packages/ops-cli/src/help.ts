@@ -16,6 +16,8 @@ Commands:
   schema-registry publish-protos   Publish protobuf schemas + subjects
   lgtm urls                        Print local dev endpoints
   brief trigger                    Publish a manual SummaryRequest to Kafka
+  kafka topics                     List all Kafka topics
+  topics list                      List distinct topics from raw_events table
 
 Flags (schema-registry publish-protos):
   --schema-registry-url <url>      Default: $SCHEMA_REGISTRY_URL or http://localhost:8081
@@ -25,6 +27,19 @@ Flags (schema-registry publish-protos):
   --retry-max-ms <ms>              Default: $SCHEMA_REGISTRY_RETRY_MAX_MS or 5000
   --timeout-ms <ms>                Default: $SCHEMA_REGISTRY_TIMEOUT_MS or 8000
   --dry-run                        Print actions without calling Schema Registry
+
+Flags (kafka topics):
+  --kafka-brokers <brokers>        Default: $KAFKA_BROKERS or localhost:9092
+
+Flags (topics list):
+  --database-url <url>             Default: $DATABASE_URL or constructed from postgres-* flags
+  --postgres-host <host>           Default: $POSTGRES_HOST or localhost
+  --postgres-port <port>           Default: $POSTGRES_PORT or 5432
+  --postgres-db <db>               Default: $POSTGRES_DB or rising_intelligence
+  --postgres-user <user>           Default: $POSTGRES_USER or rising
+  --postgres-password <password>   Default: $POSTGRES_PASSWORD or secret file
+  --counts                         Show event count per topic (sorted by count desc)
+  --min-count <n>                  Minimum event count to include (requires --counts)
 
 Flags (brief trigger):
   --kafka-brokers <brokers>        Default: $KAFKA_BROKERS or localhost:9092
@@ -56,6 +71,11 @@ Examples:
   riops schema-registry publish-protos
   riops schema-registry publish-protos --schema-registry-url http://localhost:8081
   SCHEMA_REGISTRY_URL=http://localhost:8081 riops schema-registry publish-protos
+  riops kafka topics
+  riops kafka topics --kafka-brokers localhost:9092
+  riops topics list
+  riops topics list --counts
+  riops topics list --counts --min-count 10
   riops brief trigger --dry-run
   riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock

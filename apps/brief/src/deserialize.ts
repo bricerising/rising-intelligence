@@ -60,6 +60,7 @@ const SummaryRequestWireSchema = z.object({
       evidence_strategy: z.string().optional(),
     })
     .optional(),
+  llm_provider: z.string().optional(),
 });
 
 const TrendSnapshotWireSchema = z.object({
@@ -234,6 +235,7 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
           evidenceStrategy: parseEvidenceStrategy(wire.query.evidence_strategy),
         }
       : null,
+    llmProvider: wire.llm_provider?.trim() || undefined,
     topics: (wire.topics ?? []).map((topic) => {
       const parsedTopic = topic.topic.trim();
       return {

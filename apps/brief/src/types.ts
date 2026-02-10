@@ -48,6 +48,7 @@ export interface ParsedSummaryRequest {
     | null;
   query: ParsedSummaryQuery | null;
   topics: ParsedSummaryTopic[];
+  llmProvider?: string; // Override LLM provider for this request
   coverageWarnings?: string[]; // Query-mode warnings about incomplete data
 }
 

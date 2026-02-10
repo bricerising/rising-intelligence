@@ -128,11 +128,11 @@ model BriefTrendSnapshot {
 
 /// Tracks daily LLM budget spending for Brief generation.
 model BriefBudgetTracking {
-  date       String   @id @db.Date // YYYY-MM-DD
-  spentUsd   Decimal  @default(0) @map("spent_usd") @db.Decimal(10, 4)
-  budgetUsd  Decimal  @map("budget_usd") @db.Decimal(10, 4)
-  requestCount Int    @default(0) @map("request_count")
-  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  date         DateTime @id @db.Date // YYYY-MM-DD stored as date-only
+  spentUsd     Decimal  @default(0) @map("spent_usd") @db.Decimal(10, 4)
+  budgetUsd    Decimal  @map("budget_usd") @db.Decimal(10, 4)
+  requestCount Int      @default(0) @map("request_count")
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("brief_budget_tracking")
 }
