@@ -8,6 +8,7 @@
 - 2026-02-08: Added Docker Compose E2E harness with mock LLM server and end-to-end verification script (`test:e2e:brief:compose`).
 - 2026-02-10: Added `LLM_PROVIDER=codex-cli` path to generate human-readable briefs via local Codex CLI, with response schema validation.
 - 2026-02-10: Updated Docker image + Compose to support `LLM_PROVIDER=codex-cli` in containerized runs (Codex CLI install + host `${HOME}/.codex` mount).
+- 2026-02-10: Updated specs for query-mode summary generation (`last N days` default), topic glob filtering, and executive-summary output (implementation pending).
 
 ## Phase 1: Skeleton + contracts
 
@@ -92,3 +93,29 @@
 ### T018: Compose-driven E2E test
 
 - **Acceptance**: `docker-compose.test.yml` profile boots Redis/Postgres/Redpanda + `brief` + mock LLM, and e2e script verifies success, duplicate skip, and budget-exceeded behavior.
+
+## Phase 7: Query-Mode Executive Summaries
+
+### T019: Query mode request parsing
+
+- **Acceptance**: When `topics` is missing/empty, request parser resolves query mode with default `lookback_days=7` and max guardrail `30`.
+
+### T020: Trend snapshot ranking in Brief service
+
+- **Acceptance**: Query mode reads `trend_snapshots` for `TREND_WINDOW_60M` in lookback window and computes recent-weighted average score ranking.
+
+### T021: Topic glob filtering
+
+- **Acceptance**: `topic_globs` supports wildcard matching over canonical topic keys (`*`, `?`), is applied before ranking, and has deterministic tests.
+
+### T022: Postgres evidence fetch in Brief service
+
+- **Acceptance**: After ranking, query mode loads events from `raw_events` within lookback window and builds bounded per-topic evidence.
+
+### T023: Executive summary output contract
+
+- **Acceptance**: Generated briefs include a human-readable executive summary paragraph in `brief.notes` plus grounded highlights.
+
+### T024: Query-mode test coverage
+
+- **Acceptance**: Unit/integration tests cover lookback bounds, pre-ranking glob filtering, trend-snapshot ranking behavior, no-data failures, and budget interactions.

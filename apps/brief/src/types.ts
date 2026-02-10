@@ -24,6 +24,15 @@ export interface ParsedSummaryTopic {
   evidence: ParsedSummaryEvidence[];
 }
 
+export type EvidenceStrategy = "diversity" | "recency" | "engagement";
+
+export interface ParsedSummaryQuery {
+  lookbackDays?: number;
+  topicGlobs?: string[];
+  maxEventsPerTopic?: number;
+  evidenceStrategy?: EvidenceStrategy;
+}
+
 export interface ParsedSummaryRequest {
   requestId: string;
   requestedAt: Date;
@@ -37,5 +46,13 @@ export interface ParsedSummaryRequest {
         maxOutputTokens?: number;
       }
     | null;
+  query: ParsedSummaryQuery | null;
   topics: ParsedSummaryTopic[];
+  coverageWarnings?: string[]; // Query-mode warnings about incomplete data
+}
+
+export interface ParsedTrendSnapshot {
+  generatedAt: Date;
+  window: number;
+  snapshot: unknown; // Raw JSON to be stored in Postgres
 }

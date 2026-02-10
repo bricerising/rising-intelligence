@@ -19,6 +19,8 @@ Run:
 ./node_modules/.bin/riops --help
 ./node_modules/.bin/riops lgtm urls
 ./node_modules/.bin/riops schema-registry publish-protos
+./node_modules/.bin/riops brief trigger --dry-run
+./node_modules/.bin/riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
 ./node_modules/.bin/riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
 ```
 
@@ -36,7 +38,7 @@ docker compose run --rm ops-cli schema-registry publish-protos
 
 - `lgtm urls`: print local endpoints for Grafana/Loki/Tempo/Mimir/OTLP/Kafka/Schema Registry
 - `schema-registry publish-protos`: publish Protobuf schemas + subjects to Schema Registry
-- `brief trigger`: generate + publish a manual `SummaryRequest` to `summary.requests` (useful for forcing a brief on demand)
+- `brief trigger`: generate + publish a manual `SummaryRequest` to `summary.requests` (query mode by default, explicit mode supported with topic/evidence flags)
 
 ## Env
 

@@ -42,6 +42,9 @@ describe("brief config", () => {
     expect(config.LLM_CODEX_PROFILE).toBe("");
     expect(config.LLM_CODEX_TIMEOUT_MS).toBe(120000);
     expect(config.LLM_DAILY_BUDGET_USD).toBe(5);
+    expect(config.BRIEF_DEFAULT_LOOKBACK_DAYS).toBe(7);
+    expect(config.BRIEF_MAX_LOOKBACK_DAYS).toBe(30);
+    expect(config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC).toBe(25);
   });
 
   it("coerces numeric config values", async () => {
@@ -54,6 +57,9 @@ describe("brief config", () => {
     process.env.LLM_CODEX_PROFILE = "default";
     process.env.LLM_CODEX_TIMEOUT_MS = "65000";
     process.env.LLM_DAILY_BUDGET_USD = "7.5";
+    process.env.BRIEF_DEFAULT_LOOKBACK_DAYS = "5";
+    process.env.BRIEF_MAX_LOOKBACK_DAYS = "20";
+    process.env.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC = "40";
     process.env.SHUTDOWN_TIMEOUT_MS = "45000";
 
     const { loadConfig } = await import("../src/config.js");
@@ -68,7 +74,19 @@ describe("brief config", () => {
     expect(config.LLM_CODEX_PROFILE).toBe("default");
     expect(config.LLM_CODEX_TIMEOUT_MS).toBe(65000);
     expect(config.LLM_DAILY_BUDGET_USD).toBe(7.5);
+    expect(config.BRIEF_DEFAULT_LOOKBACK_DAYS).toBe(5);
+    expect(config.BRIEF_MAX_LOOKBACK_DAYS).toBe(20);
+    expect(config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC).toBe(40);
     expect(config.SHUTDOWN_TIMEOUT_MS).toBe(45000);
+  });
+
+  it("throws when lookback max is below default", async () => {
+    process.env.BRIEF_DEFAULT_LOOKBACK_DAYS = "10";
+    process.env.BRIEF_MAX_LOOKBACK_DAYS = "7";
+    const { loadConfig } = await import("../src/config.js");
+    expect(() => loadConfig()).toThrow(
+      "BRIEF_MAX_LOOKBACK_DAYS must be >= BRIEF_DEFAULT_LOOKBACK_DAYS"
+    );
   });
 
   it("throws on invalid config", async () => {

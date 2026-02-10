@@ -10,7 +10,6 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 - Output:
   - `trends.snapshots` (Kafka)
   - `trend_snapshots` (Postgres)
-  - `summary.requests` (Kafka, on schedule/threshold)
 - State:
   - Window buckets in Redis (`window:*`, `prev:*`, `evidence:*`)
   - Baseline cache in Redis (`baseline:*`)
@@ -66,16 +65,13 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 - `src/lag.ts` - consumer lag tracking
 - `src/scoring.ts` - full scoring algorithm
 
-### Phase 3: Brief triggers + alerts
+### Phase 3: Request-driven brief compatibility + observability
 
-- Daily scheduled `SummaryRequest`
-- "Flash brief" triggers on spikes (optional)
-- Freshness gate before all triggers
+- Keep Trends as the ranking source of truth (`trend_snapshots`)
+- Do not auto-publish `summary.requests`
 - Metrics + traces + health endpoints
 
 **Deliverables**:
-- `src/triggers/daily.ts` - daily brief trigger
-- `src/triggers/threshold.ts` - threshold trigger
 - `src/health.ts` - `/healthz` and `/readyz`
 - Grafana dashboard for trends metrics
 
@@ -92,7 +88,6 @@ async function run() {
   // Start background jobs
   startLagTracker(consumer);
   startSnapshotPublisher();
-  startDailyBriefScheduler();
 
   await consumer.run({
     eachMessage: async ({ message }) => {
@@ -200,44 +195,13 @@ async function publishSnapshot(window: '15m' | '60m') {
 }
 ```
 
-### Daily Brief Trigger
+### Request-Driven Briefing Boundary
 
 ```typescript
-// Scheduled via cron
-async function triggerDailyBrief() {
-  // Gate: check data freshness
-  const fresh = await isDataFresh();
-  if (!fresh) {
-    log.warn('Skipping daily brief: data not fresh');
-    metrics.increment('brief_skipped_stale_data_total');
-    return;
-  }
-
-  // Get latest 60m and 24h snapshots
-  const snapshot60m = await getLatestSnapshot('60m');
-  const snapshot24h = await getLatestSnapshot('24h');
-
-  // Build summary request
-  const request: SummaryRequest = {
-    request_id: generateId(),
-    requested_at: new Date().toISOString(),
-    type: 'DAILY',
-    windows: ['60m', '24h'],
-    topics: await buildTopicInputs(snapshot60m, snapshot24h),
-    budget: {
-      daily_budget_usd: config.LLM_DAILY_BUDGET_USD,
-      max_topics: config.LLM_MAX_TOPICS_PER_BRIEF,
-      max_evidence_per_topic: config.LLM_MAX_EVIDENCE_PER_TOPIC,
-      max_output_tokens: config.LLM_MAX_OUTPUT_TOKENS,
-    },
-  };
-
-  await producer.send({
-    topic: 'summary.requests',
-    messages: [{ key: request.request_id, value: serialize(request) }],
-  });
-
-  log.info({ requestId: request.request_id }, 'Daily brief triggered');
+// No automatic brief publishing in Trends.
+// Requestors (for example riops) publish summary.requests explicitly.
+function publishDailyBriefAutomatically(): never {
+  throw new Error("Automatic brief triggering is disabled in request-driven mode");
 }
 ```
 
@@ -253,10 +217,10 @@ async function triggerDailyBrief() {
 
 - Full consumer cycle with test events
 - Snapshot publishing to Kafka + Postgres
-- Data freshness gate behavior
+- No automatic `summary.requests` publication
 
 ### Acceptance Tests
 
 - Soak test: 24h run, verify snapshot cadence
 - Spike test: inject high volume, verify acceleration detection
-- Staleness test: lag consumer, verify brief skip
+- Verify no automatic brief request publication from Trends runtime

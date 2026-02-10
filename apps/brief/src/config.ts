@@ -17,9 +17,10 @@ const ConfigSchema = z.object({
 
   KAFKA_BROKERS: z.string().default("localhost:9092"),
   KAFKA_CLIENT_ID: z.string().default("brief"),
-  KAFKA_CONSUMER_GROUP: z.string().default("brief-generator"),
+  KAFKA_CONSUMER_GROUP: z.string().default("brief-processor"),
   KAFKA_TOPIC_SUMMARY_REQUESTS: z.string().default("summary.requests"),
   KAFKA_TOPIC_SUMMARY_RESULTS: z.string().default("summary.results"),
+  KAFKA_TOPIC_TREND_SNAPSHOTS: z.string().default("trends.snapshots"),
 
   DATABASE_URL: z.string().optional(),
   POSTGRES_HOST: z.string().default("localhost"),
@@ -37,6 +38,9 @@ const ConfigSchema = z.object({
   LLM_CODEX_PROFILE: z.string().default(""),
   LLM_CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   LLM_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
+  BRIEF_DEFAULT_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+  BRIEF_MAX_LOOKBACK_DAYS: z.coerce.number().int().positive().default(30),
+  BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: z.coerce.number().int().positive().default(25),
 
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
 });
@@ -59,6 +63,12 @@ export function loadConfig(): Config {
   }
 
   const parsed = parseConfig(ConfigSchema, env);
+  if (parsed.BRIEF_MAX_LOOKBACK_DAYS < parsed.BRIEF_DEFAULT_LOOKBACK_DAYS) {
+    throw new Error(
+      "Configuration validation failed: BRIEF_MAX_LOOKBACK_DAYS must be >= BRIEF_DEFAULT_LOOKBACK_DAYS"
+    );
+  }
+
   const password = resolvePostgresPassword(env);
   const databaseUrl = resolveDatabaseUrl(parsed.DATABASE_URL, {
     host: parsed.POSTGRES_HOST,

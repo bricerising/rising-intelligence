@@ -6,7 +6,8 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 
 ## Architecture (High Level)
 
-- Input: `summary.requests` (request includes window + top topics + evidence)
+- Input: `summary.requests` (request may include explicit topics/evidence OR query parameters)
+- Query mode: if topics are omitted/empty, read `TREND_WINDOW_60M` snapshots for last `N` days, apply optional topic globs before ranking, then fetch bounded evidence from Postgres
 - LLM call: OpenAI/Anthropic via structured output (JSON mode)
 - Output: `summary.results` (`BriefResult`)
 - Persistence: Postgres (`brief_results`)
@@ -27,10 +28,10 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 
 ## Phases
 
-### Phase 1: Message contracts + stub generator
+### Phase 1: Message contracts + request normalization
 
 - Kafka consumer/producer setup
-- Implement `Brief` contract and a "no-LLM" deterministic brief for testing
+- Implement `SummaryRequest` normalization for query mode vs explicit mode
 - Postgres persistence
 - Basic metrics
 
@@ -39,13 +40,25 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 - `src/config.ts` - environment config
 - `src/kafka/consumer.ts` - Kafka consumer
 - `src/kafka/producer.ts` - Kafka producer
-- `src/stub.ts` - stub brief generator (no LLM)
-- `src/db/results.ts` - Postgres persistence
+- `src/deserialize.ts` - request mode normalization
+- `src/db/results.ts` - result persistence
 
-### Phase 2: LLM integration + structured output
+### Phase 2: Ranking + evidence query
+
+- Implement `trend_snapshots` read path (`TREND_WINDOW_60M`) for query mode
+- Implement recent-weighted average ranking over lookback window
+- Implement topic glob matcher over canonical topic keys (applied before ranking)
+- Implement Postgres event query for selected ranked topics
+- Bound selected topics/evidence by budget/config
+
+**Deliverables**:
+- `src/query.ts` - trend snapshot ranking and evidence query
+- `src/topic-glob.ts` - glob-to-regex matcher utilities
+
+### Phase 3: LLM integration + structured output
 
 - OpenAI client integration
-- System prompt + user prompt templates
+- Executive-summary system prompt + user prompt templates
 - JSON mode for structured output
 - Zod validation of LLM response
 - Error handling + retries
@@ -54,9 +67,9 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 - `src/llm/client.ts` - OpenAI client wrapper
 - `src/llm/prompts.ts` - prompt templates
 - `src/llm/schema.ts` - Zod schemas for output validation
-- `src/generator.ts` - main brief generation logic
+- `src/generator.ts` - brief generation logic
 
-### Phase 3: Budget enforcement + context management
+### Phase 4: Budget enforcement + context management
 
 - Daily cost budget tracking in Redis
 - Token estimation + cost calculation
@@ -68,7 +81,7 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 - `src/truncate.ts` - evidence truncation logic
 - `src/tokens.ts` - token estimation
 
-### Phase 4: Quality + observability
+### Phase 5: Quality + observability
 
 - Health check endpoints
 - Metrics + traces

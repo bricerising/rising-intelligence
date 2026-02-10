@@ -32,7 +32,6 @@ import {
   type TrendsContext,
 } from "./process.js";
 import { publishSnapshots } from "./snapshot.js";
-import { maybeTriggerDailySummaryRequest } from "./brief-trigger.js";
 
 interface RuntimeContext extends TrendsContext {
   healthServer: Server;
@@ -40,7 +39,6 @@ interface RuntimeContext extends TrendsContext {
   kafkaProducerContext: KafkaProducerContext;
   snapshotTimer: NodeJS.Timeout | null;
   snapshotInFlight: boolean;
-  lastDailyBriefTriggerDate: string | null;
 }
 
 async function initializeAllowlist(
@@ -120,7 +118,6 @@ async function initializeTrends(): Promise<RuntimeContext> {
     kafkaProducerContext,
     snapshotTimer: null,
     snapshotInFlight: false,
-    lastDailyBriefTriggerDate: null,
   };
 }
 
@@ -141,15 +138,9 @@ async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
         allowlist: ctx.allowlist,
         healthContext: ctx.healthContext,
       });
-      ctx.lastDailyBriefTriggerDate = await maybeTriggerDailySummaryRequest({
-        config: ctx.config,
-        logger: ctx.logger,
-        prisma: ctx.prisma,
-        producer: ctx.kafkaProducerContext.producer,
-        healthContext: ctx.healthContext,
-        snapshots,
-        lastDailyTriggerDate: ctx.lastDailyBriefTriggerDate,
-      });
+      if (snapshots.length === 0) {
+        ctx.logger.debug("No snapshots published in this interval");
+      }
     } catch (error) {
       incrementError(ctx.healthContext, "snapshot_error");
       ctx.logger.error({ error: serializeError(error) }, "Snapshot publish failed");

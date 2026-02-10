@@ -18,7 +18,7 @@ The system is optimized for a single operator (you) monitoring tech, AI, and AWS
 
 - Ingest multiple sources (social + curated) into a uniform event stream.
 - Detect emerging trends using volume and acceleration metrics on sliding windows.
-- Generate daily (and optionally on-demand) topic briefs with links and suggested actions.
+- Generate on-demand topic briefs with links and suggested actions.
 - Provide real-time dashboards for both raw chatter and computed trend metrics.
 - Keep components decoupled so ingestion, trend detection, and LLM summarization can evolve independently.
 
@@ -86,13 +86,14 @@ specs/                # thematic system specifications
 - **R-003 (Idempotency)**: Ingestion MUST emit a stable `event_id` per source item and perform best-effort deduplication within a Collector instance; downstream consumers MUST remain idempotent under at-least-once delivery.
 - **R-004 (Trend Metrics)**: The system MUST compute topic metrics on sliding windows and publish periodic `TrendSnapshot` outputs.
 - **R-005 (Ranking)**: The system MUST output a ranked “Top N Trends” list for a configurable window (e.g., 60m and 24h).
-- **R-006 (Brief Generation)**: The system MUST produce a daily brief (scheduled) from top trends and their supporting items.
+- **R-006 (Brief Generation)**: The system MUST produce briefs only from explicit `SummaryRequest` messages.
 - **R-007 (Dashboards)**: The system MUST expose dashboards for:
   - raw event exploration (search/filter by source/topic),
   - trend time series and “Top N” tables,
   - latest brief content.
 - **R-008 (Alerts, Optional MVP)**: The system SHOULD support alerting when a trend crosses a threshold (score or acceleration).
 - **R-009 (Contracts)**: The system MUST publish Kafka topic schemas (and gRPC `.proto` contracts) to the Schema Registry for compatibility-safe evolution.
+- **R-010 (No Auto Brief Triggering)**: Trends MUST NOT auto-publish `summary.requests`; brief creation is request-driven.
 
 ### Non-functional
 
@@ -129,6 +130,7 @@ specs/                # thematic system specifications
 - **Kafka (Redpanda)**: central event bus + retention for replay. The source of truth for all events.
 - **Persister service** (`apps/persister`): consumes `events.raw` → writes to Postgres + Redis. Lightweight materializer.
 - **Trends service** (`apps/trends`): consumes `events.raw` → topic extraction + windowed aggregation + scoring → publishes snapshots.
+- **Requestor tooling** (`packages/ops-cli`): publishes explicit `summary.requests` when an operator wants a brief.
 - **Brief service** (`apps/brief`): consumes `summary.requests` → LLM summarization → publishes results.
 - **Storage**:
   - **Postgres**: queryable materialized views (raw events, snapshots, briefs). See `specs/005`.
@@ -160,6 +162,7 @@ flowchart TD
   C[collector]
   PS[persister]
   TP[trends]
+  OP[ops-cli/requestor]
   BR[brief]
 
   R[(Redis)]
@@ -180,9 +183,9 @@ flowchart TD
   ER --> TP
   TP --> R
   TP --> TS
-  TP --> SReq
   TS --> PG
 
+  OP --> SReq
   SReq --> BR
   BR --> SRes
   SRes --> PG
@@ -198,7 +201,7 @@ flowchart TD
 | `events.raw.dlq` | Collector | (manual inspection) | `source` | Failed parse/normalize |
 | `collector.heartbeat` | Collector | Trends | `source` | Per-source health heartbeats |
 | `trends.snapshots` | Trends | (stored to Postgres) | `window` | Periodic trend rankings |
-| `summary.requests` | Trends | Brief | `request_id` | Request to generate a brief |
+| `summary.requests` | Ops CLI / operator | Brief | `request_id` | Request to generate a brief |
 | `summary.results` | Brief | (stored to Postgres) | `request_id` | Generated briefs |
 
 **Partition key rationale**: Using `source` for events provides even distribution across partitions and allows source-specific consumer scaling. Each source (RSS, Reddit, HN, etc.) gets its own partition, enabling parallelism without hot-spot issues that time-based keys would cause during traffic spikes.
@@ -209,12 +212,12 @@ flowchart TD
 |---------|------------|-----------|----------------|
 | Collector | External APIs | Kafka (`events.raw`) | Ingest + normalize |
 | Persister | Kafka (`events.raw`) | Postgres, Redis | Materialize queryable state |
-| Trends | Kafka (`events.raw`), Postgres (evidence), Redis | Kafka, Postgres, Redis | Compute trends, trigger briefs |
+| Trends | Kafka (`events.raw`), Redis | Kafka, Postgres, Redis | Compute trends and publish ranking snapshots |
 | Brief | Kafka (`summary.requests`) | Kafka, Postgres | LLM summarization |
 
 **Key insight**: Collector has no database dependencies. It only talks to external APIs and Kafka. This keeps ingestion fast and simple.
 
-**Note on Trends → Postgres**: When building a `SummaryRequest`, the Trends service queries `raw_events` to retrieve evidence items (title, text_excerpt, URL) for top topics. This is a read-only dependency; Trends does not modify `raw_events`.
+**Note on request-driven briefs**: `summary.requests` are published by operator tooling (for example `riops brief trigger`) or future requestor services, not by automatic Trends schedules.
 
 ## Event & Topic Model
 
@@ -606,7 +609,7 @@ MVP matcher semantics:
 - `events.raw`: all `RawEvent` messages (partition key: `source`).
 - `events.raw.dlq`: failed parse/normalize (`DeadLetterEvent`; partition key: `source`; includes safe context; no secrets).
 - `trends.snapshots`: periodic `TrendSnapshot` (partition key: `window`).
-- `summary.requests`: requests to generate a brief (`SummaryRequest`; partition key: `request_id`; daily or threshold-triggered).
+- `summary.requests`: requests to generate a brief (`SummaryRequest`; partition key: `request_id`; request-driven).
 - `summary.results`: produced brief results (`BriefResult`; partition key: `request_id`; success or failure + metadata).
 
 ### Retention
@@ -650,7 +653,8 @@ All configuration MUST be externalized (env vars and/or config files) and safe t
 
 ### Scheduling
 
-- `DAILY_BRIEF_CRON` (e.g., `0 1 * * *` for 1:00 UTC daily)
+- Snapshot cadence is schedule-driven (`SNAPSHOT_INTERVAL_SECONDS`).
+- Brief generation is request-driven (`summary.requests`) rather than cron-driven.
 
 **All times are UTC.** No local timezone configuration. Grafana handles display timezone conversion.
 
@@ -922,7 +926,7 @@ export interface BriefResult {
 
 ### Data Freshness Validation
 
-Before triggering a brief, the Trends service MUST verify data freshness at **two levels**:
+Before processing or requesting a brief, the system MUST verify data freshness at **two levels**:
 
 #### Level 1: Consumer Lag Check (Trends + Persister)
 
@@ -959,7 +963,7 @@ interface CollectorHeartbeat {
 - After each successful poll cycle
 - On error (with status = 'error')
 
-**Trends service validates**:
+**Requestor validates**:
 ```typescript
 function validateCollectorHealth(): HealthStatus {
   const heartbeats = getRecentHeartbeats(300); // last 5 minutes
@@ -982,20 +986,20 @@ function validateCollectorHealth(): HealthStatus {
 
 **If data is stale**:
 - Log a warning with lag details AND unhealthy sources
-- Skip brief generation (do not publish `SummaryRequest`)
-- Emit metric `ri_trends_brief_skipped_stale_data_total`
-- Retry on next scheduled trigger
+- Skip brief generation request
+- Emit freshness failure metrics/logs
+- Retry on the next explicit request attempt
 
 **Why this matters**: A brief generated from incomplete data (e.g., consumer was down for 2 hours OR Collector stopped fetching from Reddit) would mislead the operator. It's better to skip and wait for data to catch up.
 
 ### Triggering
 
-- **Daily**: Trends service publishes a `summary.requests` message at a fixed UTC time (e.g., 17:00 UTC), including last 24h + last 60m context. **Only if data freshness check passes.**
-- **Threshold** (optional): Trends service publishes a request if any topic exceeds alert threshold, requesting a short "flash brief". **Only if data freshness check passes.**
+- **Request-driven only**: Brief generation starts only when a requestor publishes `summary.requests` (for example `riops brief trigger`).
+- Trends continuously publishes `trends.snapshots`; Brief query mode references these snapshots when composing summaries.
 
 ### SummaryRequest format (MVP)
 
-`summary.requests` MUST contain enough information for the Brief service to generate an evidence-grounded brief without doing random-access reads:
+`summary.requests` MUST contain enough information for the Brief service to generate an evidence-grounded brief. Query mode may reference Postgres reads bounded by lookback:
 
 - Top topics and their computed metrics (windowed).
 - A bounded, deterministic set of evidence items per topic:
@@ -1009,7 +1013,7 @@ function validateCollectorHealth(): HealthStatus {
   - top-engagement items,
   - diverse sources (at least 1 curated + 1 discussion where available),
   - dedupe near-identical text/URLs.
-- Prefer passing **bounded evidence excerpts** in `summary.requests` so the Brief service does not need random-access reads from Kafka or Postgres in MVP.
+- Prefer bounded topic/evidence settings in `summary.requests` so Brief query mode remains deterministic and cost-bounded.
 
 ## Dashboards & UX
 
@@ -1234,11 +1238,11 @@ interface SystemHealth {
 | `PostgresUnavailable` | Postgres connection failed > 1min | Critical |
 | `KafkaUnavailable` | Kafka connection failed > 30s | Critical |
 | `BriefStale` | No brief generated in > 36 hours | Warning |
-| `BriefTriggerMissing` | No `SummaryRequest` published in > 26 hours | Warning |
+| `BriefRequestMissing` | No operator/requestor `SummaryRequest` observed in expected window | Warning |
 | `TrendsStale` | No snapshot in > 30 minutes | Warning |
 | `DataFreshnessBlocking` | Brief skipped due to stale data > 3 times in 24h | Warning |
 
-**Note on `BriefTriggerMissing`**: This catches the case where the Trends service cron job silently stops (crashed, misconfigured, or container not running). It's different from `BriefStale` which fires when the Brief service can't generate. Both alerts together cover the full pipeline.
+**Note on `BriefRequestMissing`**: This detects missing request-driven brief activity (for example an automation stopped running). It complements `BriefStale`, which fires when Brief generation stalls after requests exist.
 
 ## Backpressure Strategy
 
@@ -1342,9 +1346,9 @@ The system does NOT drop events under backpressure. Kafka's retention ensures ev
    - When the trend processor runs,
    - Then `trends.snapshots` publishes snapshots at a fixed cadence (e.g., every 5 minutes) and ranks topics deterministically.
 
-3) **Daily brief**
+3) **On-demand brief**
    - Given at least 1 day of events,
-   - When the daily brief job triggers,
+   - When an operator publishes a `SummaryRequest`,
    - Then a `Brief` is produced with Top N trends, each including citations and one suggested action.
 
 4) **Grafana visibility**
@@ -1362,8 +1366,8 @@ The system does NOT drop events under backpressure. Kafka's retention ensures ev
 MVP is “done” when:
 
 - Acceptance scenarios 1–5 are satisfied in a local Compose environment.
-- The daily brief runs on schedule for 3 consecutive days without manual intervention.
-- LLM spend stays within the configured daily budget for those runs.
+- Request-driven brief generation succeeds for repeated requests across 3 consecutive days.
+- LLM spend stays within the configured daily budget for those requests.
 
 ## Local Verification (planned)
 
@@ -1385,8 +1389,8 @@ Once implemented, provide a minimal set of commands/docs to verify locally:
 - **M0 (Local infra)**: Docker Compose brings up Kafka/Redpanda + Grafana + Loki.
 - **M1 (MVP ingestion)**: RSS + Hacker News + Reddit → `events.raw`.
 - **M2 (MVP trends)**: allowlist topics + `15m/60m` windows + `trends.snapshots` output.
-- **M3 (MVP daily brief)**: LLM summarizer consumes top trends and outputs a `Brief`.
-- **M4 (Alerts + baselines)**: 30-day baseline, alert rules, and “flash brief” on spikes.
+- **M3 (MVP request-driven brief)**: LLM summarizer consumes request inputs + trend context and outputs a `Brief`.
+- **M4 (Alerts + baselines)**: 30-day baseline and alert rules.
 - **M5 (Quality upgrades)**: better entity extraction, topic aliasing, suppression rules, and source diversity in evidence selection.
 
 ## Open Questions / Decisions

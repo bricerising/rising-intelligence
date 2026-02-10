@@ -7,49 +7,73 @@
 
 ## Overview
 
-The Brief Service consumes summary requests and produces evidence-grounded briefs:
+The Brief Service consumes summary requests and produces human-readable, evidence-grounded executive summaries.
 
-- **Daily brief**: scheduled summary of top trends with citations and suggested actions.
-- **Flash brief** (optional): short summary when a topic spikes.
+Brief generation is request-driven: briefs are produced only when a `SummaryRequest` is explicitly published to `summary.requests`.
+
+Summary generation supports two request modes:
+
+- **Query mode (default)**: if `topics` are omitted or empty, Brief resolves ranked topics from Trend service snapshots and then fetches evidence from Postgres for the last `N` days.
+- **Explicit mode (backward-compatible)**: if `topics[]` and `evidence[]` are provided, Brief uses those inputs directly.
+
+Key capabilities:
+
+- **Default lookback**: fetch last `7` days across all topics when no topic filter is provided (`BRIEF_DEFAULT_LOOKBACK_DAYS`).
+- **Lookback guardrail**: enforce max `30` days (`BRIEF_MAX_LOOKBACK_DAYS`).
+- **Topic filtering**: optional topic glob filters (for example `aws.*`, `ai.*`, `*.bedrock`).
+- **Trend reference**: query-mode ranking is derived from `trend_snapshots` (`TREND_WINDOW_60M`) using a recent-weighted average score.
+- **Executive output**: produce a concise executive summary intended for human reading (not raw metrics dump).
 - **Provider choice**: summary generation can run via `LLM_PROVIDER=internal`, `http`, or `codex-cli` (local Codex CLI).
-
-The service is intentionally isolated so LLM latency/failures do not impact ingestion or trend computation.
 
 ## User Scenarios & Testing
 
-### User Story 1 — Daily brief (Priority: P1)
+### User Story 1 — Default lookback summary (Priority: P1)
 
-As an operator, I receive a daily brief that explains what happened and what I should do next.
+As an operator, I can request a summary without preselecting topics, and Brief returns an executive summary of what happened over the last `N` days.
 
-**Independent Test**: Trigger a daily brief request and verify the resulting brief contains citations for each trend.
-
-**Acceptance Scenarios**:
-
-1. **Given** Top N trends and evidence, **When** a daily request arrives, **Then** a success `BriefResult` is published to `summary.results`.
-2. **Given** the LLM call fails, **When** retried within budget, **Then** the service recovers and emits a failure record if it ultimately cannot produce a brief.
-3. **Given** a configured daily budget, **When** multiple requests arrive, **Then** the service enforces the budget (drops/degrades gracefully).
-
-### User Story 2 — Evidence grounding (Priority: P1)
-
-As an operator, I want every claim in the brief to be backed by evidence, so I can verify information.
-
-**Independent Test**: Generate a brief and verify each highlight has at least one citation URL.
+**Independent Test**: Publish a `SummaryRequest` with empty `topics`; verify Brief ranks from `trend_snapshots` over last `N` days, fetches bounded evidence from `raw_events`, and returns a success `BriefResult`.
 
 **Acceptance Scenarios**:
 
-1. **Given** evidence items in the request, **When** brief is generated, **Then** each highlight includes at least one citation.
-2. **Given** a topic with no evidence, **When** brief is generated, **Then** the topic is either skipped or clearly marked as "no sources available".
+1. **Given** `topics` is omitted or empty, **When** a request arrives, **Then** Brief MUST rank candidate topics from `trend_snapshots` (`TREND_WINDOW_60M`) using recent-weighted average score before fetching evidence from `raw_events`.
+2. **Given** `query.lookback_days` is omitted, **When** query mode runs, **Then** Brief MUST use `BRIEF_DEFAULT_LOOKBACK_DAYS`.
+3. **Given** no events are found, **When** query mode runs, **Then** Brief MUST return a non-retryable failure result with clear reason.
+
+### User Story 2 — Topic glob filtering (Priority: P1)
+
+As an operator, I can scope summaries to topic patterns using glob expressions.
+
+**Independent Test**: Request with `topic_globs=["aws.*"]` and verify summarized topics only match the filter.
+
+**Acceptance Scenarios**:
+
+1. **Given** one or more valid glob filters, **When** query mode runs, **Then** only matching topic keys are eligible and filtering is applied before ranking.
+2. **Given** no `topic_globs`, **When** query mode runs, **Then** all topics are eligible (`*` default behavior).
+3. **Given** an invalid glob pattern, **When** request is parsed, **Then** Brief MUST fail fast with a parse/validation error.
+
+### User Story 3 — Executive summary readability (Priority: P1)
+
+As an operator, I want a concise executive summary I can read quickly, with citations for follow-up.
+
+**Independent Test**: Trigger a summary and verify output includes an executive summary section plus grounded highlights with citations.
+
+**Acceptance Scenarios**:
+
+1. **Given** valid evidence, **When** brief is generated, **Then** output includes a human-readable executive summary paragraph in `brief.notes`.
+2. **Given** multiple topics, **When** brief is generated, **Then** highlights are prioritized and concise (top themes, why they matter, suggested actions).
+3. **Given** uncertain or conflicting evidence, **When** brief is generated, **Then** uncertainty is explicitly called out.
 
 ### Edge Cases
 
-- Evidence set contains duplicates or near-duplicates.
-- Evidence is missing (no curated sources for a topic).
-- Model returns hallucinated facts → require grounding and "say uncertain" behavior.
-- Context window exceeded → truncate evidence intelligently.
+- `lookback_days` is zero, negative, or above max configured limit.
+- `topic_globs` match no topics.
+- Large lookback + broad topic filter produces too much context (must cap by request budget).
+- Duplicate or near-duplicate events appear in `raw_events`.
+- No `TREND_WINDOW_60M` snapshots exist in the requested lookback window.
 
 ## Constitution Requirements
 
-- **Grounding**: every highlight MUST include citations.
+- **Grounding**: every highlight MUST include citations from selected evidence.
 - **Budgeting**: enforce daily cost/token budgets.
 - **Safety**: do not emit secrets; redact sensitive content if configured.
 - **Honesty**: if uncertain, say so; never fabricate sources.
@@ -101,19 +125,49 @@ async function processRequest(request: SummaryRequest): Promise<void> {
 - **FR-007**: Service MUST use structured output (JSON mode or function calling) for reliable parsing.
 - **FR-008**: Service MUST be idempotent: duplicate `SummaryRequest` messages MUST NOT generate duplicate briefs.
 - **FR-009**: Service MUST emit alerts (metrics + logs) when brief generation fails.
+- **FR-010 (Query mode ranking source)**: If `topics` is missing or empty, service MUST derive candidate topics from `trend_snapshots` in `TREND_WINDOW_60M` over the lookback window.
+- **FR-011 (Ranking method)**: Query-mode ranking MUST use recent-weighted average score and deterministic tie-breaking.
+- **FR-012 (Lookback default + limits)**: `query.lookback_days` defaults to `BRIEF_DEFAULT_LOOKBACK_DAYS=7` and MUST be bounded by `BRIEF_MAX_LOOKBACK_DAYS=30`.
+- **FR-013 (Topic globs)**: Service MUST support optional `query.topic_globs[]` using glob semantics over canonical topic keys; missing filter means all topics, and filtering MUST be applied before ranking.
+- **FR-014 (Evidence fetch)**: After ranking, service MUST load bounded evidence from Postgres `raw_events` for selected topics.
+- **FR-015 (Executive summary)**: Service MUST produce a human-readable executive summary in `brief.notes`, followed by grounded highlights.
+- **FR-016 (Mode compatibility)**: Service MUST support both query mode (self-fetch) and explicit mode (pre-supplied topics/evidence).
 
 ### Non-Functional Requirements
 
 - **NFR-001**: Daily brief SHOULD complete within 2 minutes (LLM-dependent).
 - **NFR-002**: Failures MUST be observable (metrics + logs + traces).
 - **NFR-003**: Service MUST handle context window limits gracefully.
+- **NFR-004**: Query mode database fetch MUST be bounded (lookback/topic caps) to avoid unbounded scans.
+- **NFR-005**: Glob filtering behavior MUST be deterministic and test-covered.
+- **NFR-006**: Query-mode ranking inputs MUST come from Trend service outputs (`trend_snapshots`) instead of re-scoring raw events directly.
+
+## SummaryRequest Query Extension (Spec)
+
+When clients rely on Brief query mode, `SummaryRequest` payloads SHOULD include:
+
+```json
+{
+  "query": {
+    "lookback_days": 7,
+    "topic_globs": ["aws.*", "ai.*"],
+    "max_events_per_topic": 25
+  }
+}
+```
+
+Semantics:
+
+- `lookback_days`: optional, defaults to `BRIEF_DEFAULT_LOOKBACK_DAYS=7`, max `BRIEF_MAX_LOOKBACK_DAYS=30`.
+- `topic_globs`: optional, defaults to `["*"]` (all topics).
+- `max_events_per_topic`: optional, bounded by service configuration.
 
 ## LLM Prompt Design
 
 ### System Prompt
 
 ```
-You are a technical intelligence analyst for a cloud/AI engineer. Your job is to produce concise, actionable briefings about trending technology topics.
+You are a technical intelligence analyst for a cloud/AI engineer. Your job is to produce concise, human-readable executive summaries about trending technology topics.
 
 RULES:
 1. ONLY use information from the provided evidence. Do not make up facts.
@@ -121,8 +175,9 @@ RULES:
 3. If evidence is insufficient, say "Limited coverage" - do not speculate.
 4. Focus on WHY something matters to a practicing engineer, not just WHAT happened.
 5. Suggested actions should be specific and practical (e.g., "Read the AWS blog post", "Test the new API", "Update your dependencies").
-6. Keep each section concise: 2-3 sentences for what_happened, 1-2 for why_it_matters, 1 for suggested_action.
-7. Use technical language appropriate for a senior engineer audience.
+6. Start with a short executive summary paragraph in notes.
+7. Keep each highlight concise: 2-3 sentences for what_happened, 1-2 for why_it_matters, 1 for suggested_action.
+8. Use technical language appropriate for a senior engineer audience.
 
 OUTPUT FORMAT:
 You MUST respond with valid JSON matching this schema:
@@ -137,7 +192,7 @@ You MUST respond with valid JSON matching this schema:
       "citations": ["https://...", "https://..."]
     }
   ],
-  "notes": "Any caveats about coverage gaps or limitations"
+  "notes": "Executive summary paragraph(s), caveats, and coverage limits"
 }
 ```
 

@@ -12,6 +12,7 @@ Both contracts are defined in `specs/001-real-time-personal-intelligence-system.
 - Rolling windows for each topic (15m/60m).
 - Optional baseline volumes per topic (30d, day-of-week/hour aware).
 - A bounded evidence buffer per topic/window (for `SummaryRequest` construction).
+- Historical `trend_snapshots` used by Brief query mode to rank topics across lookback windows.
 
 ## Idempotency (MVP)
 

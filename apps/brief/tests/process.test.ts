@@ -36,6 +36,7 @@ function makeRequest(): ParsedSummaryRequest {
       maxEvidencePerTopic: 3,
       maxOutputTokens: 1200,
     },
+    query: null,
     topics: [
       {
         topic: "aws.bedrock",
@@ -61,6 +62,27 @@ function makeRequest(): ParsedSummaryRequest {
         ],
       },
     ],
+  };
+}
+
+function makeQueryRequest(): ParsedSummaryRequest {
+  return {
+    requestId: "req-query-1",
+    requestedAt: new Date("2026-02-06T10:00:00.000Z"),
+    type: "daily",
+    windows: [],
+    budget: {
+      dailyBudgetUsd: 5,
+      maxTopics: 3,
+      maxEvidencePerTopic: 3,
+      maxOutputTokens: 1200,
+    },
+    query: {
+      lookbackDays: 7,
+      topicGlobs: ["aws.*"],
+      maxEventsPerTopic: 3,
+    },
+    topics: [],
   };
 }
 
@@ -93,6 +115,9 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       LLM_CODEX_MODEL: "",
       LLM_CODEX_PROFILE: "",
       LLM_CODEX_TIMEOUT_MS: 60000,
+      BRIEF_DEFAULT_LOOKBACK_DAYS: 7,
+      BRIEF_MAX_LOOKBACK_DAYS: 30,
+      BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: 25,
     },
     logger: makeLogger(),
     healthContext: createHealthContext(5),
@@ -100,6 +125,12 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       briefResult: {
         findUnique: vi.fn().mockResolvedValue(null),
         create,
+      },
+      trendSnapshot: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      rawEvent: {
+        findMany: vi.fn().mockResolvedValue([]),
       },
     },
     redis: {
@@ -380,6 +411,104 @@ describe("processSummaryRequest", () => {
     expect((persistedPayload as any).failure.error_code).toBe("grounding_error");
     expect((persistedPayload as any).failure.retryable).toBe(false);
     expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
+  });
+
+  it("hydrates query-mode requests from trend snapshots and raw events", async () => {
+    const request = makeQueryRequest();
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        trendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-06T09:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "aws.bedrock",
+                    score: 80,
+                    volume: 20,
+                    acceleration: 0.8,
+                  },
+                  {
+                    topic: "ai.openai",
+                    score: 90,
+                    volume: 30,
+                    acceleration: 1.1,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-query-1",
+              source: "rss",
+              url: "https://example.com/aws-bedrock",
+              title: "Bedrock release",
+              publishedAt: new Date("2026-02-06T08:30:00.000Z"),
+              fetchedAt: new Date("2026-02-06T08:40:00.000Z"),
+              text: "New update for bedrock workflows",
+            },
+          ]),
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(ctx.prisma.trendSnapshot.findMany).toHaveBeenCalledOnce();
+    expect(ctx.prisma.rawEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          topics: {
+            has: "aws.bedrock",
+          },
+        }),
+      })
+    );
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
+    expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
+  it("emits invalid_request failure when lookback exceeds configured max", async () => {
+    const request = makeQueryRequest();
+    request.query = {
+      ...request.query,
+      lookbackDays: 31,
+    };
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "internal",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+        BRIEF_DEFAULT_LOOKBACK_DAYS: 7,
+        BRIEF_MAX_LOOKBACK_DAYS: 30,
+        BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: 25,
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(ctx.redis.eval).not.toHaveBeenCalled();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("invalid_request");
+    expect(persistedPayload.failure.retryable).toBe(false);
     expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
   });
 });

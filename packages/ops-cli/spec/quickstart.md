@@ -6,6 +6,8 @@
 npm install
 npm run build
 ./node_modules/.bin/riops --help
+./node_modules/.bin/riops brief trigger --dry-run
+./node_modules/.bin/riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
 ./node_modules/.bin/riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock --dry-run
 ```
 

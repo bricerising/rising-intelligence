@@ -4,6 +4,7 @@
 
 - 2026-02-06: Implemented T001-T007 baseline path (service skeleton, Kafka consumer, deserialization, allowlist loading/filtering, window dedup, and Redis window counters with periodic snapshot publishing).
 - 2026-02-06: Implemented daily brief request triggering with freshness gating and `summary.requests` publishing (initial T014/T016 path).
+- 2026-02-10: Disabled automatic brief triggering; brief generation is now request-driven only (`summary.requests` published externally).
 
 ## Phase 1: Skeleton + contracts
 
@@ -73,23 +74,23 @@
 
 - **Acceptance**: `TrendSnapshot` written to `trend_snapshots` table.
 
-## Phase 5: Brief Triggering
+## Phase 5: Request-Driven Briefing
 
-### T014: Daily brief trigger
+### T014: Disable automatic brief trigger path
 
-- **Acceptance**: At configured UTC time, check freshness and publish `SummaryRequest`.
+- **Acceptance**: Trends runtime does not auto-publish `SummaryRequest` messages.
 
-### T015: Evidence retrieval
+### T015: Preserve ranking ownership for requestors
 
-- **Acceptance**: Query Postgres `raw_events` to build evidence items for top topics.
+- **Acceptance**: `trend_snapshots` continue to provide canonical ranking signals consumed by Brief query mode.
 
-### T016: Data freshness check
+### T016: Keep freshness telemetry
 
-- **Acceptance**: Brief is skipped if consumer lag exceeds threshold for either `trends-processor` or `persister` consumer groups; metric emitted.
+- **Acceptance**: Consumer lag and heartbeat freshness remain observable via metrics/logs for operators and requestor tooling.
 
-### T017: Threshold alert trigger (optional)
+### T017: External trigger compatibility
 
-- **Acceptance**: If topic score exceeds threshold, publish flash brief request.
+- **Acceptance**: Externally published `summary.requests` continue to work with Brief and reference Trends outputs.
 
 ## Phase 6: Baseline Computation
 
@@ -135,4 +136,4 @@
 
 ### T027: Collector health validation
 
-- **Acceptance**: Brief triggering validates Collector heartbeats in addition to consumer lag.
+- **Acceptance**: Collector heartbeats are ingested and exposed for health/freshness visibility.

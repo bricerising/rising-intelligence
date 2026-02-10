@@ -2,7 +2,7 @@
 
 **Service**: `@rising-intelligence/trends`
 **Created**: 2026-02-05
-**Updated**: 2026-02-05
+**Updated**: 2026-02-10
 **Status**: Planned
 
 ## Overview
@@ -11,7 +11,7 @@ The Trends Service consumes `RawEvent` from `events.raw`, uses the canonical top
 
 1. Publishes ranked `TrendSnapshot` messages to `trends.snapshots`
 2. Persists snapshots to Postgres for dashboards
-3. Triggers briefs when conditions are met (daily schedule or threshold)
+3. Provides the ranking source of truth consumed by Brief query mode (`trend_snapshots`)
 4. Maintains consumer lag tracking for data freshness validation
 
 ## User Scenarios & Testing
@@ -28,17 +28,17 @@ As an operator, I can see the Top N trending topics over a time window so I can 
 2. **Given** a topic's volume doubles window-over-window, **When** snapshots are produced, **Then** the topic ranks higher than stable-volume topics.
 3. **Given** the service restarts, **When** it resumes, **Then** it continues producing snapshots without corrupting counts (idempotent processing).
 
-### User Story 2 — Data freshness validation (Priority: P1)
+### User Story 2 — Request-Driven Brief Compatibility (Priority: P1)
 
-As an operator, I want briefs to only be generated when data is fresh, so I don't receive misleading summaries.
+As an operator, I want Trends to continuously infer rankings while brief generation remains request-driven.
 
-**Independent Test**: Pause the consumer, attempt to trigger a brief, verify it's skipped with appropriate logging.
+**Independent Test**: Run Trends through multiple snapshot intervals and verify no automatic `SummaryRequest` is emitted.
 
 **Acceptance Scenarios**:
 
-1. **Given** consumer lag < threshold, **When** daily brief time arrives, **Then** a `SummaryRequest` is published.
-2. **Given** consumer lag > threshold, **When** daily brief time arrives, **Then** NO `SummaryRequest` is published AND a warning is logged.
-3. **Given** lag records are stale (not updated recently), **When** brief trigger runs, **Then** it's treated as stale data.
+1. **Given** snapshot publishing is running, **When** time passes former daily trigger boundaries, **Then** no automatic `SummaryRequest` is published.
+2. **Given** a requestor publishes `summary.requests`, **When** Brief processes it, **Then** ranking signals are still sourced from Trends outputs.
+3. **Given** lag records are stale, **When** operators inspect Trends health, **Then** staleness remains observable.
 
 ### Edge Cases
 
@@ -52,7 +52,7 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 - **Determinism**: given the same event stream + allowlist, computed snapshots are stable.
 - **Idempotency**: safe under at-least-once delivery; duplicates do not inflate long-term results.
 - **Evidence**: snapshots include evidence references (event IDs / URLs) for traceability.
-- **Freshness**: briefs are only triggered when data is sufficiently fresh.
+- **Request-driven briefs**: Trends MUST NOT auto-trigger brief requests.
 
 ## Requirements
 
@@ -64,8 +64,8 @@ As an operator, I want briefs to only be generated when data is fresh, so I don'
 - **FR-004**: Service MUST persist snapshots to `trend_snapshots` (Postgres).
 - **FR-005**: Service MUST load the topics allowlist for validation/suppression/weighting of tracked topic keys (and to ignore unknown tags).
 - **FR-006**: Service SHOULD compute baselines (30-day, day-of-week/hour aware) once enough data exists.
-- **FR-007 (Daily brief trigger)**: Service MUST publish a daily `SummaryRequest` to `summary.requests` on a configured UTC schedule, **only if data freshness check passes**.
-- **FR-008 (Threshold trigger, optional)**: Service SHOULD publish a threshold-triggered `SummaryRequest` when a topic spike crosses configured thresholds, **only if data freshness check passes**.
+- **FR-007 (No auto brief triggers)**: Service MUST NOT publish automatic `SummaryRequest` messages (no daily/threshold auto-trigger path).
+- **FR-008 (Ranking ownership)**: Topic ranking signals (`score`, `volume`, `acceleration`) published by Trends MUST remain the source of truth consumed by Brief (directly or via `trend_snapshots` lookback reads).
 - **FR-009 (Consumer lag tracking)**: Service MUST periodically update `consumer_lag` table in Postgres.
 - **FR-010 (Window state)**: Service MUST maintain window state in Redis for fast aggregation.
 
@@ -198,9 +198,9 @@ Buckets align to clock time using **event time** (`fetched_at`):
 3. After one window period, counts stabilize
 4. Acceptable for MVP; can add dedup via event_id tracking later
 
-## Data Freshness Check
+## Data Freshness Signals
 
-Before triggering any brief:
+Trends continues to publish freshness signals for operators and requestor tooling:
 
 ```typescript
 async function isDataFresh(): Promise<boolean> {
@@ -415,8 +415,8 @@ function computeScore(metrics: TopicMetrics): number {
 - `ri_trends_duplicates_skipped_total`: Duplicate events skipped
 - `ri_trends_snapshot_published_total{window}`: Snapshots published
 - `ri_trends_snapshot_duration_seconds{window}`: Snapshot compute duration
-- `ri_trends_brief_triggered_total{type}`: Brief triggers (daily/threshold)
-- `ri_trends_brief_skipped_stale_data_total`: Brief triggers skipped due to stale data
+- `ri_trends_brief_triggered_total{type}`: Deprecated metric; remains zero when auto-triggering is disabled
+- `ri_trends_brief_skipped_stale_data_total`: Deprecated metric; remains zero when auto-triggering is disabled
 - `ri_trends_consumer_lag{partition}`: Current consumer lag
 - `ri_trends_topic_score{topic,window}`: Current score (Top N only)
 - `ri_trends_topic_volume{topic,window}`: Current volume (Top N only)
@@ -426,7 +426,7 @@ function computeScore(metrics: TopicMetrics): number {
 
 - **SC-001**: Top trends are plausible and evidence-backed.
 - **SC-002**: Lag stays under a configured threshold in local dev.
-- **SC-003**: Briefs are never generated when data is stale.
+- **SC-003**: Trends does not auto-generate briefs; brief generation occurs only on explicit `summary.requests`.
 - **SC-004**: Window counts stabilize after restart within one window period.
 
 ## Configuration
@@ -439,7 +439,6 @@ REDIS_URL=redis://localhost:6379
 TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
 
 # Scheduling (all times UTC)
-DAILY_BRIEF_CRON=0 1 * * *  # 1:00 UTC daily
 SNAPSHOT_INTERVAL_SECONDS=300
 
 # Freshness thresholds
@@ -461,12 +460,11 @@ BASELINE_LOOKBACK_DAYS=30
 
 - Window buckets align to UTC clock time (e.g., 14:00 UTC, 14:15 UTC)
 - `fetched_at` from events MUST be UTC ISO8601
-- Daily brief triggers at a fixed UTC time (configured via cron)
 - Baselines use UTC day-of-week and hour
 - Grafana dashboards handle timezone conversion for display only
 
 **Why UTC only?**
-- Avoids DST-related bugs (missed or duplicate briefs)
+- Avoids DST-related bugs (missed or duplicate windows)
 - Deterministic window alignment across restarts
 - Simpler baseline comparison (same UTC hour across days)
 - No timezone configuration to misconfigure

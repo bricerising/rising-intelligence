@@ -33,9 +33,13 @@ Flags (brief trigger):
   --request-id <id>                Default: manual-<timestamp>
   --requested-at <iso8601>         Default: current UTC timestamp
   --type <daily|threshold>         Default: daily
-  --windows <csv>                  Default: 1,2
-  --topic-key <key>                Required (example: aws.bedrock)
-  --evidence-url <url>             Required
+  --windows <csv>                  Default: 2 (query mode requires window 2)
+  --lookback-days <n>              Default: $BRIEF_DEFAULT_LOOKBACK_DAYS or 7
+  --max-lookback-days <n>          Default: $BRIEF_MAX_LOOKBACK_DAYS or 30
+  --topic-globs <csv>              Default: * (example: aws.*,ai.*)
+  --max-events-per-topic <n>       Default: $BRIEF_MAX_QUERY_EVENTS_PER_TOPIC or --max-evidence-per-topic
+  --topic-key <key>                Optional (enables explicit mode; example: aws.bedrock)
+  --evidence-url <url>             Optional with --topic-key (enables explicit mode)
   --evidence-source <source>       Default: rss
   --evidence-title <text>          Default: Manual summary request trigger
   --evidence-excerpt <text>        Default: generated text
@@ -52,6 +56,8 @@ Examples:
   riops schema-registry publish-protos
   riops schema-registry publish-protos --schema-registry-url http://localhost:8081
   SCHEMA_REGISTRY_URL=http://localhost:8081 riops schema-registry publish-protos
+  riops brief trigger --dry-run
+  riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
 `);
 }

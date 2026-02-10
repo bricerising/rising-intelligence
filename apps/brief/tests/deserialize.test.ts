@@ -21,6 +21,11 @@ describe("brief deserializeSummaryRequest", () => {
         max_evidence_per_topic: 4,
         max_output_tokens: 1200,
       },
+      query: {
+        lookback_days: 7,
+        topic_globs: ["aws.*", "ai.*"],
+        max_events_per_topic: 20,
+      },
       topics: [
         {
           topic: "aws.bedrock",
@@ -58,6 +63,11 @@ describe("brief deserializeSummaryRequest", () => {
       maxTopics: 3,
       maxEvidencePerTopic: 4,
       maxOutputTokens: 1200,
+    });
+    expect(parsed.query).toEqual({
+      lookbackDays: 7,
+      topicGlobs: ["aws.*", "ai.*"],
+      maxEventsPerTopic: 20,
     });
     expect(parsed.topics[0].topic).toBe("aws.bedrock");
     expect(parsed.topics[0].metrics).toHaveLength(1);
@@ -106,6 +116,26 @@ describe("brief deserializeSummaryRequest", () => {
       maxTopics: undefined,
       maxEvidencePerTopic: undefined,
       maxOutputTokens: undefined,
+    });
+  });
+
+  it("normalizes and validates query topic globs", () => {
+    const payload = {
+      request_id: "req-query",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        lookback_days: "7",
+        topic_globs: ["aws.*", "aws.*", "ai.?"],
+        max_events_per_topic: "15",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.query).toEqual({
+      lookbackDays: 7,
+      topicGlobs: ["aws.*", "ai.?"],
+      maxEventsPerTopic: 15,
     });
   });
 
@@ -175,6 +205,36 @@ describe("brief deserializeSummaryRequest", () => {
 
     expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
       "Unsupported trend window enum"
+    );
+  });
+
+  it("rejects invalid query lookback values", () => {
+    const payload = {
+      request_id: "req-query-lookback",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        lookback_days: "2oops",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid query.lookback_days"
+    );
+  });
+
+  it("rejects invalid query topic glob patterns", () => {
+    const payload = {
+      request_id: "req-query-glob",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        topic_globs: ["aws.[*]"],
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported topic glob pattern"
     );
   });
 

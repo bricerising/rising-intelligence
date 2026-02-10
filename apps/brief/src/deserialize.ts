@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { parseCanonicalSource } from "@rising-intelligence/shared";
-import type { ParsedSummaryRequest, SummaryRequestType } from "./types.js";
+import type {
+  EvidenceStrategy,
+  ParsedSummaryRequest,
+  ParsedTrendSnapshot,
+  SummaryRequestType,
+} from "./types.js";
+import { normalizeTopicGlobs } from "./topic-glob.js";
 
 const SummaryRequestWireSchema = z.object({
   request_id: z.string().min(1),
@@ -45,6 +51,29 @@ const SummaryRequestWireSchema = z.object({
       max_evidence_per_topic: z.number().int().positive().optional(),
       max_output_tokens: z.number().int().positive().optional(),
     })
+    .optional(),
+  query: z
+    .object({
+      lookback_days: z.union([z.number().int(), z.string().min(1)]).optional(),
+      topic_globs: z.array(z.string().min(1)).optional(),
+      max_events_per_topic: z.union([z.number().int(), z.string().min(1)]).optional(),
+      evidence_strategy: z.string().optional(),
+    })
+    .optional(),
+});
+
+const TrendSnapshotWireSchema = z.object({
+  generated_at: z.string().min(1),
+  window: z.union([z.number().int(), z.string().min(1)]),
+  topics: z
+    .array(
+      z.object({
+        topic: z.string().min(1),
+        score: z.number().default(0),
+        volume: z.number().default(0),
+        acceleration: z.number().default(0),
+      })
+    )
     .optional(),
 });
 
@@ -110,6 +139,43 @@ function parseEvidenceSource(value: number | string | undefined): string {
   return parseCanonicalSource(value);
 }
 
+function parseOptionalPositiveInteger(
+  value: number | string | undefined,
+  fieldName: string
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed =
+    typeof value === "number"
+      ? value
+      : (() => {
+          const normalized = value.trim();
+          if (!/^\d+$/.test(normalized)) {
+            return Number.NaN;
+          }
+          return Number.parseInt(normalized, 10);
+        })();
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${fieldName}: expected positive integer, received ${value}`);
+  }
+  return parsed;
+}
+
+function parseEvidenceStrategy(value: string | undefined): EvidenceStrategy {
+  if (!value) {
+    return "diversity"; // Default
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "diversity" || normalized === "recency" || normalized === "engagement") {
+    return normalized;
+  }
+
+  throw new Error(`Unsupported evidence strategy: ${value}`);
+}
+
 export function parseSummaryRequestType(value: number | string): SummaryRequestType {
   if (typeof value === "number") {
     if (value === 1) {
@@ -157,6 +223,17 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
           maxOutputTokens: wire.budget.max_output_tokens,
         }
       : null,
+    query: wire.query
+      ? {
+          lookbackDays: parseOptionalPositiveInteger(wire.query.lookback_days, "query.lookback_days"),
+          topicGlobs: normalizeTopicGlobs(wire.query.topic_globs),
+          maxEventsPerTopic: parseOptionalPositiveInteger(
+            wire.query.max_events_per_topic,
+            "query.max_events_per_topic"
+          ),
+          evidenceStrategy: parseEvidenceStrategy(wire.query.evidence_strategy),
+        }
+      : null,
     topics: (wire.topics ?? []).map((topic) => {
       const parsedTopic = topic.topic.trim();
       return {
@@ -179,5 +256,22 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
         })),
       };
     }),
+  };
+}
+
+export function deserializeTrendSnapshot(messageValue: Buffer): ParsedTrendSnapshot {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(messageValue.toString("utf-8"));
+  } catch (error) {
+    throw new Error(`Invalid JSON payload: ${(error as Error).message}`);
+  }
+
+  const wire = TrendSnapshotWireSchema.parse(decoded);
+
+  return {
+    generatedAt: parseRequestedAt(wire.generated_at),
+    window: parseTrendWindow(wire.window),
+    snapshot: decoded,
   };
 }

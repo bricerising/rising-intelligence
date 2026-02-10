@@ -78,13 +78,13 @@ All metrics follow Prometheus naming conventions:
 | `ri_trends_topic_score` | gauge | `topic`, `window` | Current score (top 30) |
 | `ri_trends_snapshot_published_total` | counter | `window` | Snapshots to Kafka |
 | `ri_trends_snapshot_duration_seconds` | histogram | `window` | Time to compute snapshot |
-| `ri_trends_brief_triggered_total` | counter | `type` | Daily or threshold triggers |
-| `ri_trends_brief_skipped_stale_data_total` | counter | — | Skipped due to lag |
+| `ri_trends_brief_triggered_total` | counter | `type` | Deprecated in request-driven mode (expected 0) |
+| `ri_trends_brief_skipped_stale_data_total` | counter | — | Deprecated in request-driven mode (expected 0) |
 | `ri_trends_consumer_lag` | gauge | `partition` | Messages behind latest |
 | `ri_trends_baseline_compute_duration_seconds` | histogram | — | Baseline computation time |
 | `ri_trends_up` | gauge | — | 1 if service is healthy |
 
-**Trigger types**: `daily`, `threshold`
+**Trigger types** (legacy): `daily`, `threshold`
 
 ### Brief Service
 

@@ -15,6 +15,8 @@
 
 Guiding rule: future agents SHOULD extend `riops` rather than adding one-off shell scripts.
 
+Brief generation is request-driven. In this architecture, `riops brief trigger` is the primary supported way to initiate briefs.
+
 ## Constitution Requirements
 
 - **Idempotency**: commands MUST be safe to re-run (no repeated side effects).
@@ -33,7 +35,7 @@ As an operator, I can bootstrap Schema Registry consistently on stack startup.
 
 As an operator, I can publish a valid `SummaryRequest` from the terminal to force brief generation on demand.
 
-**Independent Test**: `riops brief trigger --topic-key ... --evidence-url ...` publishes a keyed message to `summary.requests`.
+**Independent Test**: `riops brief trigger --dry-run` emits query-mode `SummaryRequest` (`topics=[]`, `query.lookback_days=7`, `query.topic_globs=["*"]`) and publishes keyed payload to `summary.requests`.
 
 ## Requirements
 
@@ -43,6 +45,10 @@ As an operator, I can publish a valid `SummaryRequest` from the terminal to forc
 - **FR-002**: CLI SHOULD be runnable both locally and from Docker Compose.
 - **FR-003**: CLI MUST load `.env` automatically in local runs (dev convenience).
 - **FR-004**: CLI MUST support generating and publishing a manual `SummaryRequest` to Kafka for brief triggering.
+- **FR-005**: `brief trigger` MUST default to query-mode requests (no required topic/evidence flags).
+- **FR-006**: `brief trigger` MUST support query filters (`lookback_days`, `topic_globs`, `max_events_per_topic`) and enforce lookback guardrails.
+- **FR-007**: `brief trigger` SHOULD preserve explicit mode as an opt-in backward-compatible path when topic/evidence flags are provided.
+- **FR-008**: `brief trigger` is the canonical operator path for creating briefs; Trends no longer auto-publishes brief requests.
 
 ### Non-Functional Requirements
 

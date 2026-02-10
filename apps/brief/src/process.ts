@@ -1,4 +1,4 @@
-import { BriefStatus, Prisma, type PrismaClient } from "@rising-intelligence/db";
+import { BriefStatus, Prisma, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import { serializeError } from "@rising-intelligence/shared";
@@ -20,6 +20,9 @@ import {
 import { executeCodexCli } from "./llm/codex-cli.js";
 import { publishBriefResult } from "./kafka/producer.js";
 import type { ParsedSummaryRequest, ParsedSummaryTopic } from "./types.js";
+import { compileTopicGlobMatchers, matchesAnyTopicGlob } from "./topic-glob.js";
+import type { EvidenceStrategy } from "./types.js";
+import { Source } from "@rising-intelligence/db";
 
 interface ProcessContext {
   config: Config;
@@ -32,6 +35,9 @@ interface ProcessContext {
 
 const BUDGET_KEY_PREFIX = "brief:budget";
 const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
+const TREND_WINDOW_60M_PROTO = 2;
+const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
+const DEFAULT_QUERY_MAX_TOPICS = 10;
 const BUDGET_RESERVATION_SCRIPT = `
 local key = KEYS[1]
 local max_budget = tonumber(ARGV[1])
@@ -105,6 +111,17 @@ const LlmResponseSchema = z.object({
     .optional(),
 });
 
+const TrendSnapshotTopicSchema = z.object({
+  topic: z.string().min(1),
+  score: z.coerce.number().default(0),
+  volume: z.coerce.number().default(0),
+  acceleration: z.coerce.number().default(0),
+});
+
+const TrendSnapshotPayloadSchema = z.object({
+  topics: z.array(TrendSnapshotTopicSchema).default([]),
+});
+
 type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
 
 interface SuccessResult {
@@ -144,9 +161,12 @@ class LlmGenerationError extends Error {
 }
 
 class NonRetryableProcessingError extends Error {
-  constructor(message: string) {
+  public readonly code: string;
+
+  constructor(message: string, code = "grounding_error") {
     super(message);
     this.name = "NonRetryableProcessingError";
+    this.code = code;
   }
 }
 
@@ -165,6 +185,448 @@ function estimateTokenCount(text: string): number {
 function estimateRequestCostUsd(request: ParsedSummaryRequest): number {
   const evidenceCount = request.topics.reduce((sum, topic) => sum + topic.evidence.length, 0);
   return Number((0.01 + request.topics.length * 0.002 + evidenceCount * 0.0005).toFixed(4));
+}
+
+function isQueryModeRequest(request: ParsedSummaryRequest): boolean {
+  return request.topics.length === 0;
+}
+
+function resolveLookbackDays(config: Config, request: ParsedSummaryRequest): number {
+  const lookbackDays = request.query?.lookbackDays ?? config.BRIEF_DEFAULT_LOOKBACK_DAYS;
+  if (!Number.isInteger(lookbackDays) || lookbackDays <= 0) {
+    throw new NonRetryableProcessingError(
+      `Invalid query.lookback_days: ${lookbackDays}`,
+      "invalid_request"
+    );
+  }
+  if (lookbackDays > config.BRIEF_MAX_LOOKBACK_DAYS) {
+    throw new NonRetryableProcessingError(
+      `query.lookback_days must be <= ${config.BRIEF_MAX_LOOKBACK_DAYS}`,
+      "invalid_request"
+    );
+  }
+  return lookbackDays;
+}
+
+function resolveTopicGlobs(request: ParsedSummaryRequest): string[] {
+  const topicGlobs = request.query?.topicGlobs;
+  if (!topicGlobs || topicGlobs.length === 0) {
+    return DEFAULT_QUERY_TOPIC_GLOBS;
+  }
+  return topicGlobs;
+}
+
+function resolveMaxTopics(request: ParsedSummaryRequest): number {
+  const maxTopics = request.budget?.maxTopics ?? DEFAULT_QUERY_MAX_TOPICS;
+  if (!Number.isInteger(maxTopics) || maxTopics <= 0) {
+    throw new NonRetryableProcessingError(
+      `Invalid max_topics budget value: ${maxTopics}`,
+      "invalid_request"
+    );
+  }
+  return maxTopics;
+}
+
+function resolveMaxEventsPerTopic(config: Config, request: ParsedSummaryRequest): number {
+  const budgetCap = request.budget?.maxEvidencePerTopic;
+  const requested = request.query?.maxEventsPerTopic ?? budgetCap ?? config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC;
+  if (!Number.isInteger(requested) || requested <= 0) {
+    throw new NonRetryableProcessingError(
+      `Invalid query.max_events_per_topic: ${requested}`,
+      "invalid_request"
+    );
+  }
+
+  let resolved = requested;
+  if (budgetCap && Number.isInteger(budgetCap) && budgetCap > 0) {
+    resolved = Math.min(resolved, budgetCap);
+  }
+  resolved = Math.min(resolved, config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC);
+  return Math.max(1, resolved);
+}
+
+const CURATED_SOURCES = new Set<Source>([Source.rss, Source.news, Source.github]);
+const DISCUSSION_SOURCES = new Set<Source>([
+  Source.reddit,
+  Source.hackernews,
+  Source.bluesky,
+  Source.mastodon,
+]);
+
+interface RawEventForSelection {
+  eventId: string;
+  source: Source;
+  fetchedAt: Date;
+  engagementScore: number | null;
+}
+
+function selectEvidence<T extends RawEventForSelection>(
+  events: T[],
+  strategy: EvidenceStrategy,
+  maxCount: number
+): T[] {
+  if (events.length === 0) {
+    return [];
+  }
+
+  if (strategy === "recency") {
+    // Already ordered by fetchedAt desc from query
+    return events.slice(0, maxCount);
+  }
+
+  if (strategy === "engagement") {
+    const sorted = [...events].sort((a, b) => {
+      const scoreA = a.engagementScore ?? 0;
+      const scoreB = b.engagementScore ?? 0;
+      if (scoreB !== scoreA) {
+        return scoreB - scoreA;
+      }
+      // Tie-break by recency
+      return b.fetchedAt.getTime() - a.fetchedAt.getTime();
+    });
+    return sorted.slice(0, maxCount);
+  }
+
+  // Diversity strategy
+  const curated: T[] = [];
+  const discussion: T[] = [];
+  const other: T[] = [];
+
+  for (const event of events) {
+    if (CURATED_SOURCES.has(event.source)) {
+      curated.push(event);
+    } else if (DISCUSSION_SOURCES.has(event.source)) {
+      discussion.push(event);
+    } else {
+      other.push(event);
+    }
+  }
+
+  const selected: T[] = [];
+
+  // Try to get at least 1 from curated and 1 from discussion
+  if (curated.length > 0) {
+    selected.push(curated[0]);
+  }
+  if (discussion.length > 0 && selected.length < maxCount) {
+    selected.push(discussion[0]);
+  }
+
+  // Fill remaining slots by engagement score across all categories
+  const remaining: T[] = [];
+  if (selected.length < curated.length) {
+    remaining.push(...curated.slice(selected.includes(curated[0]) ? 1 : 0));
+  }
+  if (selected.length < discussion.length) {
+    remaining.push(...discussion.slice(selected.includes(discussion[0]) ? 1 : 0));
+  }
+  remaining.push(...other);
+
+  remaining.sort((a, b) => {
+    const scoreA = a.engagementScore ?? 0;
+    const scoreB = b.engagementScore ?? 0;
+    if (scoreB !== scoreA) {
+      return scoreB - scoreA;
+    }
+    return b.fetchedAt.getTime() - a.fetchedAt.getTime();
+  });
+
+  const slotsRemaining = maxCount - selected.length;
+  selected.push(...remaining.slice(0, slotsRemaining));
+
+  return selected;
+}
+
+function computeRecentWeight(snapshotGeneratedAt: Date, requestedAt: Date): number {
+  const ageMs = Math.max(0, requestedAt.getTime() - snapshotGeneratedAt.getTime());
+  const ageHours = ageMs / (60 * 60 * 1000);
+  return 1 / (1 + ageHours);
+}
+
+interface RankedTopicAccumulator {
+  weightedScore: number;
+  weightedVolume: number;
+  weightedAcceleration: number;
+  weightSum: number;
+  latestGeneratedAtMs: number;
+}
+
+interface RankedTopicScore {
+  topic: string;
+  score: number;
+  volume: number;
+  acceleration: number;
+  latestGeneratedAtMs: number;
+}
+
+function rankTopicsFromSnapshots(
+  snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>,
+  requestedAt: Date,
+  topicMatchers: RegExp[],
+  maxTopics: number
+): RankedTopicScore[] {
+  const byTopic = new Map<string, RankedTopicAccumulator>();
+
+  for (const row of snapshots) {
+    const parsedSnapshot = TrendSnapshotPayloadSchema.safeParse(row.snapshot);
+    if (!parsedSnapshot.success) {
+      continue;
+    }
+
+    const weight = computeRecentWeight(row.generatedAt, requestedAt);
+    const generatedAtMs = row.generatedAt.getTime();
+    for (const metric of parsedSnapshot.data.topics) {
+      const topic = metric.topic.trim();
+      if (!topic || !matchesAnyTopicGlob(topic, topicMatchers)) {
+        continue;
+      }
+
+      const existing = byTopic.get(topic) ?? {
+        weightedScore: 0,
+        weightedVolume: 0,
+        weightedAcceleration: 0,
+        weightSum: 0,
+        latestGeneratedAtMs: generatedAtMs,
+      };
+      existing.weightedScore += metric.score * weight;
+      existing.weightedVolume += metric.volume * weight;
+      existing.weightedAcceleration += metric.acceleration * weight;
+      existing.weightSum += weight;
+      existing.latestGeneratedAtMs = Math.max(existing.latestGeneratedAtMs, generatedAtMs);
+      byTopic.set(topic, existing);
+    }
+  }
+
+  const rankedTopics = [...byTopic.entries()]
+    .map(([topic, accumulator]) => {
+      const denominator = accumulator.weightSum <= 0 ? 1 : accumulator.weightSum;
+      return {
+        topic,
+        score: accumulator.weightedScore / denominator,
+        volume: accumulator.weightedVolume / denominator,
+        acceleration: accumulator.weightedAcceleration / denominator,
+        latestGeneratedAtMs: accumulator.latestGeneratedAtMs,
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      if (right.latestGeneratedAtMs !== left.latestGeneratedAtMs) {
+        return right.latestGeneratedAtMs - left.latestGeneratedAtMs;
+      }
+      return left.topic.localeCompare(right.topic);
+    });
+
+  return rankedTopics.slice(0, maxTopics);
+}
+
+async function buildQueryModeRequest(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest,
+  logger: pino.Logger
+): Promise<ParsedSummaryRequest> {
+  const lookbackDays = resolveLookbackDays(ctx.config, request);
+  const topicGlobs = resolveTopicGlobs(request);
+  let topicMatchers: RegExp[];
+  try {
+    topicMatchers = compileTopicGlobMatchers(topicGlobs);
+  } catch (error) {
+    throw new NonRetryableProcessingError(
+      `Invalid topic glob filter: ${error instanceof Error ? error.message : "unknown error"}`,
+      "invalid_request"
+    );
+  }
+  const maxTopics = resolveMaxTopics(request);
+  const maxEventsPerTopic = resolveMaxEventsPerTopic(ctx.config, request);
+
+  const lookbackStart = new Date(request.requestedAt.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+
+  let snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>;
+  try {
+    snapshots = await ctx.prisma.briefTrendSnapshot.findMany({
+      where: {
+        window: TrendWindow.WINDOW_60M,
+        generatedAt: {
+          gte: lookbackStart,
+          lte: request.requestedAt,
+        },
+      },
+      orderBy: {
+        generatedAt: "desc",
+      },
+      select: {
+        generatedAt: true,
+        snapshot: true,
+      },
+    });
+    ctx.healthContext.postgresHealthy = true;
+  } catch (error) {
+    ctx.healthContext.postgresHealthy = false;
+    throw error;
+  }
+
+  const coverageWarnings: string[] = [];
+
+  if (snapshots.length === 0) {
+    logger.warn({ lookbackDays }, "No trend snapshots found in lookback window");
+    coverageWarnings.push("No trend data available for the requested lookback period.");
+  }
+
+  const rankedTopics = rankTopicsFromSnapshots(
+    snapshots,
+    request.requestedAt,
+    topicMatchers,
+    maxTopics
+  );
+
+  if (rankedTopics.length === 0) {
+    logger.warn(
+      { topicGlobCount: topicGlobs.length, lookbackDays },
+      "No topics matched query filters"
+    );
+    coverageWarnings.push(
+      "No topics matched the specified filters. Consider broadening topic_globs or lookback window."
+    );
+  }
+
+  // Fetch all evidence in a single query
+  const evidenceStrategy = request.query?.evidenceStrategy ?? "diversity";
+  let allEvents: Array<{
+    eventId: string;
+    source: Source;
+    url: string | null;
+    title: string | null;
+    publishedAt: Date | null;
+    fetchedAt: Date;
+    text: string;
+    topics: string[];
+    engagementScore: number | null;
+  }>;
+
+  try {
+    const topicKeys = rankedTopics.map((t) => t.topic);
+    allEvents = await ctx.prisma.rawEvent.findMany({
+      where: {
+        topics: {
+          hasSome: topicKeys,
+        },
+        fetchedAt: {
+          gte: lookbackStart,
+          lte: request.requestedAt,
+        },
+      },
+      orderBy: {
+        fetchedAt: "desc",
+      },
+      select: {
+        eventId: true,
+        source: true,
+        url: true,
+        title: true,
+        publishedAt: true,
+        fetchedAt: true,
+        text: true,
+        topics: true,
+        engagementScore: true,
+      },
+    });
+    ctx.healthContext.postgresHealthy = true;
+  } catch (error) {
+    ctx.healthContext.postgresHealthy = false;
+    throw error;
+  }
+
+  // Partition events by topic
+  const eventsByTopic = new Map<string, typeof allEvents>();
+  for (const event of allEvents) {
+    for (const topicKey of event.topics) {
+      if (!rankedTopics.some((t) => t.topic === topicKey)) {
+        continue;
+      }
+      const existing = eventsByTopic.get(topicKey);
+      if (existing) {
+        existing.push(event);
+      } else {
+        eventsByTopic.set(topicKey, [event]);
+      }
+    }
+  }
+
+  // Apply evidence selection strategy per topic
+  const hydratedTopics: ParsedSummaryTopic[] = rankedTopics.map((rankedTopic) => {
+    const topicEvents = eventsByTopic.get(rankedTopic.topic) ?? [];
+    const selectedEvents = selectEvidence(topicEvents, evidenceStrategy, maxEventsPerTopic);
+
+    return {
+      topic: rankedTopic.topic,
+      metrics: [
+        {
+          topic: rankedTopic.topic,
+          window: TREND_WINDOW_60M_PROTO,
+          score: rankedTopic.score,
+          volume: rankedTopic.volume,
+          acceleration: rankedTopic.acceleration,
+        },
+      ],
+      evidence: selectedEvents.map((event) => ({
+        eventId: event.eventId,
+        source: event.source,
+        url: event.url ?? null,
+        title: event.title ?? null,
+        publishedAt: event.publishedAt,
+        fetchedAt: event.fetchedAt,
+        textExcerpt: event.text.slice(0, 500),
+      })),
+    };
+  });
+
+  const topicsWithEvidence = hydratedTopics.filter((topic) => topic.evidence.length > 0);
+
+  if (topicsWithEvidence.length === 0) {
+    logger.warn(
+      { rankedTopicCount: rankedTopics.length, lookbackDays },
+      "No evidence found for any ranked topics"
+    );
+    coverageWarnings.push(
+      "No recent activity found for trending topics in the lookback window."
+    );
+  }
+
+  logger.info(
+    {
+      lookbackDays,
+      topicGlobCount: topicGlobs.length,
+      rankedTopicCount: rankedTopics.length,
+      selectedTopicCount: topicsWithEvidence.length,
+      maxEventsPerTopic,
+      coverageWarningCount: coverageWarnings.length,
+    },
+    "Resolved query-mode summary request using trend snapshots and raw events"
+  );
+
+  return {
+    ...request,
+    windows: [TREND_WINDOW_60M_PROTO],
+    query: {
+      lookbackDays,
+      topicGlobs,
+      maxEventsPerTopic,
+    },
+    topics: topicsWithEvidence.length > 0 ? topicsWithEvidence : hydratedTopics,
+    coverageWarnings,
+  };
+}
+
+async function resolveRequestForGeneration(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest,
+  logger: pino.Logger
+): Promise<ParsedSummaryRequest> {
+  if (!isQueryModeRequest(request)) {
+    return request;
+  }
+  return buildQueryModeRequest(ctx, request, logger);
 }
 
 function normalizeUsd(value: number): number {
@@ -261,10 +723,20 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
   };
 }
 
-function deriveDefaultNotes(highlights: NormalizedHighlight[]): string {
-  return highlights.length === 0
-    ? "No grounded highlights were produced for this request."
-    : "All highlights include source citations.";
+function deriveDefaultNotes(request: ParsedSummaryRequest, highlights: NormalizedHighlight[]): string {
+  if (highlights.length === 0) {
+    return "Executive summary: Limited coverage. No grounded highlights were produced for this request.";
+  }
+
+  const lookbackDays = request.query?.lookbackDays;
+  const lookbackSuffix =
+    lookbackDays && lookbackDays > 0 ? ` over the last ${lookbackDays} day(s)` : "";
+  const primaryTopic = highlights[0]?.topic ?? "the selected topics";
+  const additionalTopics = highlights.length - 1;
+  const topicTail =
+    additionalTopics > 0 ? ` with ${additionalTopics} additional topic(s)` : "";
+
+  return `Executive summary: ${primaryTopic} led the strongest grounded signals${lookbackSuffix}${topicTail}.`;
 }
 
 function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<string, unknown> {
@@ -298,6 +770,13 @@ function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<strin
           max_topics: request.budget.maxTopics,
           max_evidence_per_topic: request.budget.maxEvidencePerTopic,
           max_output_tokens: request.budget.maxOutputTokens,
+        }
+      : null,
+    query: request.query
+      ? {
+          lookback_days: request.query.lookbackDays,
+          topic_globs: request.query.topicGlobs,
+          max_events_per_topic: request.query.maxEventsPerTopic,
         }
       : null,
   };
@@ -480,7 +959,13 @@ function buildInternalSuccessResult(
   );
   const inputTokens = estimateTokenCount(JSON.stringify(request));
   const outputTokens = estimateTokenCount(JSON.stringify(highlights));
-  const notes = deriveDefaultNotes(highlights);
+  let notes = deriveDefaultNotes(request, highlights);
+
+  // Append coverage warnings from query mode
+  if (request.coverageWarnings && request.coverageWarnings.length > 0) {
+    const warningsText = request.coverageWarnings.join(" ");
+    notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
+  }
 
   return buildSuccessPayload(
     request,
@@ -511,7 +996,14 @@ async function buildHttpSuccessResult(
   const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
   const outputTokens =
     llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
-  const notes = llmResponse.notes?.trim() || deriveDefaultNotes(highlights);
+  let notes = llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
+
+  // Append coverage warnings from query mode
+  if (request.coverageWarnings && request.coverageWarnings.length > 0) {
+    const warningsText = request.coverageWarnings.join(" ");
+    notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
+  }
+
   const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
 
   return buildSuccessPayload(
@@ -543,7 +1035,14 @@ async function buildCodexCliSuccessResult(
   const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
   const outputTokens =
     llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
-  const notes = llmResponse.notes?.trim() || deriveDefaultNotes(highlights);
+  let notes = llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
+
+  // Append coverage warnings from query mode
+  if (request.coverageWarnings && request.coverageWarnings.length > 0) {
+    const warningsText = request.coverageWarnings.join(" ");
+    notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
+  }
+
   const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
   const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";
 
@@ -647,53 +1146,138 @@ function parseBudgetReservationResult(result: unknown): { reserved: boolean; spe
 }
 
 async function reserveBudgetSpendUsd(
+  prisma: PrismaClient,
   redis: Redis,
   dateKey: string,
   dailyBudgetUsd: number,
   amountUsd: number
 ): Promise<{ reserved: boolean; spentUsd: number }> {
+  // Try Redis first (fast path)
   const key = getBudgetKey(dateKey);
-  const result = await redis.eval(
-    BUDGET_RESERVATION_SCRIPT,
-    1,
-    key,
-    dailyBudgetUsd.toString(),
-    amountUsd.toString(),
-    BUDGET_KEY_TTL_SECONDS.toString()
-  );
-  return parseBudgetReservationResult(result);
+  try {
+    const result = await redis.eval(
+      BUDGET_RESERVATION_SCRIPT,
+      1,
+      key,
+      dailyBudgetUsd.toString(),
+      amountUsd.toString(),
+      BUDGET_KEY_TTL_SECONDS.toString()
+    );
+    const cached = parseBudgetReservationResult(result);
+    if (cached.reserved) {
+      // Async write to Postgres (fire and forget for performance)
+      void prisma.briefBudgetTracking.upsert({
+        where: { date: dateKey },
+        create: {
+          date: dateKey,
+          spentUsd: amountUsd,
+          budgetUsd: dailyBudgetUsd,
+          requestCount: 1,
+        },
+        update: {
+          spentUsd: { increment: amountUsd },
+          requestCount: { increment: 1 },
+        },
+      });
+      return cached;
+    }
+  } catch (redisError) {
+    // Redis failed, fall back to Postgres
+  }
+
+  // Postgres slow path (or Redis returned false)
+  const record = await prisma.briefBudgetTracking.upsert({
+    where: { date: dateKey },
+    create: {
+      date: dateKey,
+      spentUsd: 0,
+      budgetUsd: dailyBudgetUsd,
+      requestCount: 0,
+    },
+    update: {},
+    select: { spentUsd: true },
+  });
+
+  const currentSpent = Number(record.spentUsd);
+  if (currentSpent + amountUsd > dailyBudgetUsd) {
+    // Sync Redis with Postgres
+    await redis.set(key, currentSpent.toString(), "EX", BUDGET_KEY_TTL_SECONDS);
+    return { reserved: false, spentUsd: currentSpent };
+  }
+
+  // Reserve in Postgres
+  await prisma.briefBudgetTracking.update({
+    where: { date: dateKey },
+    data: {
+      spentUsd: { increment: amountUsd },
+      requestCount: { increment: 1 },
+    },
+  });
+
+  const newSpent = currentSpent + amountUsd;
+  // Update Redis cache
+  await redis.set(key, newSpent.toString(), "EX", BUDGET_KEY_TTL_SECONDS);
+  return { reserved: true, spentUsd: newSpent };
 }
 
 async function releaseBudgetReservationUsd(
+  prisma: PrismaClient,
   redis: Redis,
   dateKey: string,
   amountUsd: number
 ): Promise<number> {
+  // Update Postgres first (source of truth)
+  const record = await prisma.briefBudgetTracking.findUnique({
+    where: { date: dateKey },
+    select: { spentUsd: true },
+  });
+
+  if (!record) {
+    return 0;
+  }
+
+  const currentSpent = Number(record.spentUsd);
+  const newSpent = Math.max(0, currentSpent - amountUsd);
+
+  await prisma.briefBudgetTracking.update({
+    where: { date: dateKey },
+    data: { spentUsd: newSpent },
+  });
+
+  // Sync to Redis
   const key = getBudgetKey(dateKey);
-  const result = await redis.eval(
-    BUDGET_RELEASE_SCRIPT,
-    1,
-    key,
-    amountUsd.toString(),
-    BUDGET_KEY_TTL_SECONDS.toString()
-  );
-  return toNumeric(result);
+  await redis.set(key, newSpent.toString(), "EX", BUDGET_KEY_TTL_SECONDS);
+  return newSpent;
 }
 
 async function settleBudgetSpendUsd(
+  prisma: PrismaClient,
   redis: Redis,
   dateKey: string,
   deltaUsd: number
 ): Promise<number> {
+  // Update Postgres first (source of truth)
+  const record = await prisma.briefBudgetTracking.findUnique({
+    where: { date: dateKey },
+    select: { spentUsd: true },
+  });
+
+  if (!record) {
+    return 0;
+  }
+
+  const currentSpent = Number(record.spentUsd);
+  const newSpent = Math.max(0, currentSpent + deltaUsd);
+
+  await prisma.briefBudgetTracking.update({
+    where: { date: dateKey },
+    data: { spentUsd: newSpent },
+  });
+
+  // Sync to Redis
   const key = getBudgetKey(dateKey);
-  const result = await redis.eval(
-    BUDGET_SETTLE_SCRIPT,
-    1,
-    key,
-    deltaUsd.toString(),
-    BUDGET_KEY_TTL_SECONDS.toString()
-  );
-  return toNumeric(result);
+  await redis.set(key, newSpent.toString(), "EX", BUDGET_KEY_TTL_SECONDS);
+  return newSpent;
 }
 
 function asResultPayload(value: unknown): Record<string, unknown> {
@@ -757,7 +1341,12 @@ async function rollbackBudgetReservation(
   reservedAmountUsd: number,
   dailyBudgetUsd: number
 ): Promise<void> {
-  const spentBudgetUsd = await releaseBudgetReservationUsd(ctx.redis, dateKey, reservedAmountUsd);
+  const spentBudgetUsd = await releaseBudgetReservationUsd(
+    ctx.prisma,
+    ctx.redis,
+    dateKey,
+    reservedAmountUsd
+  );
   ctx.healthContext.redisHealthy = true;
   setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
   logger.info({ spentBudgetUsd }, "Rolled back brief budget reservation");
@@ -833,15 +1422,44 @@ export async function processSummaryRequest(
     }
   }
 
+  let requestForGeneration: ParsedSummaryRequest;
+  try {
+    requestForGeneration = await resolveRequestForGeneration(ctx, request, logger);
+  } catch (error) {
+    if (error instanceof NonRetryableProcessingError) {
+      incrementError(
+        ctx.healthContext,
+        error.code === "grounding_error" ? "grounding_error" : "generation_error"
+      );
+      incrementGeneration(ctx.healthContext, "failure");
+      logger.warn({ error: serializeError(error) }, "Summary request failed non-retryable pre-processing");
+      await emitFailureResult(
+        ctx,
+        request.requestId,
+        producedAt,
+        error.code,
+        error.message,
+        false
+      );
+      return;
+    }
+
+    incrementError(ctx.healthContext, "generation_error");
+    incrementGeneration(ctx.healthContext, "failure");
+    logger.error({ error: serializeError(error) }, "Failed to resolve summary request");
+    throw error;
+  }
+
   const dateKey = getBudgetDateKey(producedAt);
-  const dailyBudgetUsd = request.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
-  const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(request));
+  const dailyBudgetUsd = requestForGeneration.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
+  const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(requestForGeneration));
   let budgetReserved = false;
   let spentBudgetUsd = 0;
   let reservedCostUsd = estimatedCostUsd;
 
   try {
     const reservation = await reserveBudgetSpendUsd(
+      ctx.prisma,
       ctx.redis,
       dateKey,
       dailyBudgetUsd,
@@ -882,7 +1500,12 @@ export async function processSummaryRequest(
 
   let persistedCreated = false;
   try {
-    const successResult = await buildSuccessResult(ctx, request, producedAt, estimatedCostUsd);
+    const successResult = await buildSuccessResult(
+      ctx,
+      requestForGeneration,
+      producedAt,
+      estimatedCostUsd
+    );
     const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
     ctx.healthContext.postgresHealthy = true;
     if (persisted === "duplicate") {
@@ -902,7 +1525,7 @@ export async function processSummaryRequest(
     const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
     if (costDeltaUsd !== 0) {
       try {
-        spentBudgetUsd = await settleBudgetSpendUsd(ctx.redis, dateKey, costDeltaUsd);
+        spentBudgetUsd = await settleBudgetSpendUsd(ctx.prisma, ctx.redis, dateKey, costDeltaUsd);
         reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
         ctx.healthContext.redisHealthy = true;
       } catch (error) {
@@ -959,14 +1582,17 @@ export async function processSummaryRequest(
     }
 
     if (error instanceof NonRetryableProcessingError) {
-      incrementError(ctx.healthContext, "grounding_error");
+      incrementError(
+        ctx.healthContext,
+        error.code === "grounding_error" ? "grounding_error" : "generation_error"
+      );
       incrementGeneration(ctx.healthContext, "failure");
       logger.warn({ error: serializeError(error) }, "Brief request failed non-retryable validation");
       await emitFailureResult(
         ctx,
         request.requestId,
         producedAt,
-        "grounding_error",
+        error.code,
         error.message,
         false
       );

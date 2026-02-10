@@ -28,9 +28,11 @@ import {
   disconnectKafkaProducer,
   type KafkaProducerContext,
 } from "./kafka/producer.js";
-import { deserializeSummaryRequest } from "./deserialize.js";
+import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deserialize.js";
 import { createRedisClient, disconnectRedis } from "./redis.js";
 import { processSummaryRequest } from "./process.js";
+import type { ParsedTrendSnapshot } from "./types.js";
+import { TrendWindow } from "@rising-intelligence/db";
 
 interface RuntimeContext {
   config: ReturnType<typeof getConfig>;
@@ -44,6 +46,38 @@ interface RuntimeContext {
 }
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
+
+function mapTrendWindowToEnum(window: number): TrendWindow {
+  switch (window) {
+    case 1:
+      return TrendWindow.WINDOW_15M;
+    case 2:
+      return TrendWindow.WINDOW_60M;
+    case 3:
+      return TrendWindow.WINDOW_24H;
+    default:
+      throw new Error(`Unsupported trend window: ${window}`);
+  }
+}
+
+async function persistTrendSnapshot(
+  ctx: RuntimeContext,
+  snapshot: ParsedTrendSnapshot
+): Promise<void> {
+  try {
+    await ctx.prisma.briefTrendSnapshot.create({
+      data: {
+        generatedAt: snapshot.generatedAt,
+        window: mapTrendWindowToEnum(snapshot.window),
+        snapshot: snapshot.snapshot,
+      },
+    });
+    ctx.healthContext.postgresHealthy = true;
+  } catch (error) {
+    ctx.healthContext.postgresHealthy = false;
+    throw error;
+  }
+}
 
 async function runWithInFlightHeartbeats(
   heartbeat: () => Promise<void>,
@@ -92,7 +126,7 @@ async function initialize(): Promise<RuntimeContext> {
 
   const kafkaConsumerContext = await createKafkaConsumer(logger);
   await kafkaConsumerContext.consumer.subscribe({
-    topic: config.KAFKA_TOPIC_SUMMARY_REQUESTS,
+    topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
     fromBeginning: false,
   });
   const kafkaProducerContext = await createKafkaProducer(
@@ -102,7 +136,7 @@ async function initialize(): Promise<RuntimeContext> {
 
   logger.info(
     {
-      consumeTopic: config.KAFKA_TOPIC_SUMMARY_REQUESTS,
+      consumeTopics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
       publishTopic: config.KAFKA_TOPIC_SUMMARY_RESULTS,
     },
     "Kafka subscriptions initialized"
@@ -138,9 +172,6 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
 
         const startTime = Date.now();
         if (!message.value) {
-          incrementError(ctx.healthContext, "parse_error");
-          incrementGeneration(ctx.healthContext, "failure");
-          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
           ctx.logger.warn(
             {
               kafkaTopic: batch.topic,
@@ -154,61 +185,85 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
           continue;
         }
 
-        let request: ReturnType<typeof deserializeSummaryRequest>;
-        try {
-          request = deserializeSummaryRequest(message.value);
-        } catch (error) {
-          incrementError(ctx.healthContext, "parse_error");
-          incrementGeneration(ctx.healthContext, "failure");
-          ctx.logger.warn(
-            {
-              kafkaTopic: batch.topic,
-              partition: batch.partition,
-              offset: message.offset,
-              error: serializeError(error),
-            },
-            "Failed to deserialize summary request"
-          );
-          resolveOffset(message.offset);
-          await commitOffsetsIfNecessary();
-          continue;
-        }
+        const messageLogger = ctx.logger.child({
+          kafkaTopic: batch.topic,
+          partition: batch.partition,
+          offset: message.offset,
+        });
 
-        try {
-          const messageLogger = ctx.logger.child({
-            kafkaTopic: batch.topic,
-            partition: batch.partition,
-            offset: message.offset,
-          });
-
-          await runWithInFlightHeartbeats(heartbeat, messageLogger, async () => {
-            await processSummaryRequest(
+        // Route based on topic
+        if (batch.topic === ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS) {
+          // Handle trend snapshot
+          try {
+            const snapshot = deserializeTrendSnapshot(message.value);
+            await persistTrendSnapshot(ctx, snapshot);
+            resolveOffset(message.offset);
+            await commitOffsetsIfNecessary();
+          } catch (error) {
+            messageLogger.warn(
               {
-                config: ctx.config,
-                logger: messageLogger,
-                healthContext: ctx.healthContext,
-                prisma: ctx.prisma,
-                redis: ctx.redis,
-                producer: ctx.kafkaProducerContext.producer,
+                error: serializeError(error),
               },
-              request
+              "Failed to process trend snapshot"
             );
-          });
+            resolveOffset(message.offset);
+            await commitOffsetsIfNecessary();
+          }
+        } else if (batch.topic === ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS) {
+          // Handle summary request
+          let request: ReturnType<typeof deserializeSummaryRequest>;
+          try {
+            request = deserializeSummaryRequest(message.value);
+          } catch (error) {
+            incrementError(ctx.healthContext, "parse_error");
+            incrementGeneration(ctx.healthContext, "failure");
+            messageLogger.warn(
+              {
+                error: serializeError(error),
+              },
+              "Failed to deserialize summary request"
+            );
+            resolveOffset(message.offset);
+            await commitOffsetsIfNecessary();
+            continue;
+          }
+
+          try {
+            await runWithInFlightHeartbeats(heartbeat, messageLogger, async () => {
+              await processSummaryRequest(
+                {
+                  config: ctx.config,
+                  logger: messageLogger,
+                  healthContext: ctx.healthContext,
+                  prisma: ctx.prisma,
+                  redis: ctx.redis,
+                  producer: ctx.kafkaProducerContext.producer,
+                },
+                request
+              );
+            });
+            resolveOffset(message.offset);
+            await commitOffsetsIfNecessary();
+          } catch (error) {
+            messageLogger.warn(
+              {
+                error: serializeError(error),
+              },
+              "Failed to process summary request"
+            );
+            throw error;
+          } finally {
+            observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
+          }
+        } else {
+          messageLogger.warn(
+            {
+              topic: batch.topic,
+            },
+            "Unknown topic, skipping message"
+          );
           resolveOffset(message.offset);
           await commitOffsetsIfNecessary();
-        } catch (error) {
-          ctx.logger.warn(
-            {
-              kafkaTopic: batch.topic,
-              partition: batch.partition,
-              offset: message.offset,
-              error: serializeError(error),
-            },
-            "Failed to process summary request"
-          );
-          throw error;
-        } finally {
-          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         }
 
         messagesSinceHeartbeat += 1;

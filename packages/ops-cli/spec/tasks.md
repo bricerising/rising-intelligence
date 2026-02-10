@@ -17,3 +17,11 @@
 ### T004: Manual SummaryRequest trigger command
 
 - **Acceptance**: `riops brief trigger` publishes a valid `summary.requests` message with configurable topic/evidence and supports `--dry-run`.
+
+### T005: Query-mode defaults + filters
+
+- **Acceptance**: `riops brief trigger` defaults to query mode (`topics=[]`) with configurable `--lookback-days`, `--topic-globs`, and `--max-events-per-topic`.
+
+### T006: Explicit mode compatibility
+
+- **Acceptance**: Existing explicit mode flags (`--topic-key`, `--evidence-url`, etc.) continue to work when provided.

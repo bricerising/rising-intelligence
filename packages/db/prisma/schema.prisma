@@ -114,6 +114,29 @@ model BriefResult {
   @@map("brief_results")
 }
 
+/// Brief's local copy of trend snapshots consumed from Kafka.
+/// Used for query-mode lookback aggregation.
+model BriefTrendSnapshot {
+  id          BigInt      @id @default(autoincrement())
+  generatedAt DateTime    @map("generated_at") @db.Timestamptz
+  window      TrendWindow
+  snapshot    Json // Full TrendSnapshot protobuf as JSON
+
+  @@index([window, generatedAt(sort: Desc)], name: "idx_brief_trend_snapshots_window_generated")
+  @@map("brief_trend_snapshots")
+}
+
+/// Tracks daily LLM budget spending for Brief generation.
+model BriefBudgetTracking {
+  date       String   @id @db.Date // YYYY-MM-DD
+  spentUsd   Decimal  @default(0) @map("spent_usd") @db.Decimal(10, 4)
+  budgetUsd  Decimal  @map("budget_usd") @db.Decimal(10, 4)
+  requestCount Int    @default(0) @map("request_count")
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("brief_budget_tracking")
+}
+
 // =============================================================================
 // Consumer Lag (Persister/Trends writes, Trends reads for freshness check)
 // =============================================================================
