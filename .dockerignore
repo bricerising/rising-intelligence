@@ -5,6 +5,8 @@ node_modules
 # Build outputs (will be built in container)
 dist
 **/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
 coverage
 **/coverage
 

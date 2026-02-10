@@ -190,8 +190,9 @@ export function observeBaselineComputeDuration(
 }
 
 export function getHealthStatus(ctx: HealthContext): HealthStatus {
+  const config = getConfig();
   const maxLag = getMaxConsumerLag(ctx.metrics.consumerLag);
-  const hasLagIssue = maxLag > 5000n;
+  const hasLagIssue = maxLag > BigInt(config.MAX_LAG_MESSAGES);
 
   let status: "healthy" | "degraded" | "unhealthy";
   if (!ctx.kafkaHealthy || !ctx.postgresHealthy || !ctx.redisHealthy || !ctx.allowlistHealthy) {

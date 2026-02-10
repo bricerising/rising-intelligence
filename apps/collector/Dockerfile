@@ -15,8 +15,10 @@ COPY package.json package-lock.json* ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/collector/package.json ./apps/collector/
 
-# Install dependencies
-RUN npm ci --workspace=@rising-intelligence/collector
+# Install dependencies for all workspaces needed by this service build
+RUN npm ci \
+    --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/collector
 
 # =============================================================================
 # Stage 2: Build
@@ -25,10 +27,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Copy root package files for workspace commands
+COPY package.json package-lock.json* ./
+
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/apps/collector/node_modules ./apps/collector/node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared

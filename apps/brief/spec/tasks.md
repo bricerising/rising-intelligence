@@ -6,6 +6,8 @@
 - 2026-02-06: Implemented idempotent processing, Postgres persistence, and `summary.results` publishing with budget-aware failure handling (initial T008-T010/T013 path).
 - 2026-02-08: Added configurable `LLM_PROVIDER` with `http` provider support and schema validation for remote LLM responses.
 - 2026-02-08: Added Docker Compose E2E harness with mock LLM server and end-to-end verification script (`test:e2e:brief:compose`).
+- 2026-02-10: Added `LLM_PROVIDER=codex-cli` path to generate human-readable briefs via local Codex CLI, with response schema validation.
+- 2026-02-10: Updated Docker image + Compose to support `LLM_PROVIDER=codex-cli` in containerized runs (Codex CLI install + host `${HOME}/.codex` mount).
 
 ## Phase 1: Skeleton + contracts
 

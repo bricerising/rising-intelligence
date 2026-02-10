@@ -12,7 +12,8 @@ COPY packages/ops-cli/package.json packages/ops-cli/tsconfig.json packages/ops-c
 COPY packages/ops-cli/src ./packages/ops-cli/src
 
 RUN npm install
-RUN npm run build
+RUN npm run build --workspace=@rising-intelligence/shared
+RUN npm run build --workspace=@rising-intelligence/ops-cli
 
 FROM node:20-slim
 

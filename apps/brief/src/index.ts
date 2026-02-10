@@ -43,6 +43,30 @@ interface RuntimeContext {
   redis: Redis;
 }
 
+const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
+
+async function runWithInFlightHeartbeats(
+  heartbeat: () => Promise<void>,
+  logger: pino.Logger,
+  work: () => Promise<void>
+): Promise<void> {
+  const interval = setInterval(() => {
+    void heartbeat().catch((error) => {
+      logger.warn(
+        { error: serializeError(error) },
+        "Background Kafka heartbeat failed while processing summary request"
+      );
+    });
+  }, IN_FLIGHT_HEARTBEAT_INTERVAL_MS);
+  interval.unref();
+
+  try {
+    await work();
+  } finally {
+    clearInterval(interval);
+  }
+}
+
 async function initialize(): Promise<RuntimeContext> {
   const config = getConfig();
   const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
@@ -151,21 +175,25 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
         }
 
         try {
-          await processSummaryRequest(
-            {
-              config: ctx.config,
-              logger: ctx.logger.child({
-                kafkaTopic: batch.topic,
-                partition: batch.partition,
-                offset: message.offset,
-              }),
-              healthContext: ctx.healthContext,
-              prisma: ctx.prisma,
-              redis: ctx.redis,
-              producer: ctx.kafkaProducerContext.producer,
-            },
-            request
-          );
+          const messageLogger = ctx.logger.child({
+            kafkaTopic: batch.topic,
+            partition: batch.partition,
+            offset: message.offset,
+          });
+
+          await runWithInFlightHeartbeats(heartbeat, messageLogger, async () => {
+            await processSummaryRequest(
+              {
+                config: ctx.config,
+                logger: messageLogger,
+                healthContext: ctx.healthContext,
+                prisma: ctx.prisma,
+                redis: ctx.redis,
+                producer: ctx.kafkaProducerContext.producer,
+              },
+              request
+            );
+          });
           resolveOffset(message.offset);
           await commitOffsetsIfNecessary();
         } catch (error) {

@@ -71,7 +71,7 @@ official_blogs:
 
   # Cloudflare
   - name: Cloudflare Blog
-    url: https://blog.cloudflare.com/feed/
+    url: https://blog.cloudflare.com/rss
     poll_interval_seconds: 7200  # Every 2 hours
     priority: 80
     category: official_blog
@@ -290,68 +290,68 @@ opensource:
     enabled: false
     topics: ["lang.rust"]
 
-  # GitHub Releases - Key projects to track
-  # Format: https://github.com/{owner}/{repo}/releases.atom
-  github_releases:
-    poll_interval_seconds: 86400  # Daily
-    priority: 70
-    repos:
-      # Cloud & Infrastructure
-      - owner: kubernetes
-        repo: kubernetes
-        topics: ["cloud.kubernetes"]
+# GitHub Releases - Key projects to track
+# Format: https://github.com/{owner}/{repo}/releases.atom
+github_releases:
+  poll_interval_seconds: 86400  # Daily
+  priority: 70
+  repos:
+    # Cloud & Infrastructure
+    - owner: kubernetes
+      repo: kubernetes
+      topics: ["cloud.kubernetes"]
 
-      - owner: hashicorp
-        repo: terraform
-        topics: ["cloud.terraform"]
+    - owner: hashicorp
+      repo: terraform
+      topics: ["cloud.terraform"]
 
-      - owner: docker
-        repo: compose
-        topics: ["cloud.docker"]
+    - owner: docker
+      repo: compose
+      topics: ["cloud.docker"]
 
-      # Languages & Runtimes
-      - owner: nodejs
-        repo: node
-        topics: ["framework.node"]
+    # Languages & Runtimes
+    - owner: nodejs
+      repo: node
+      topics: ["framework.node"]
 
-      - owner: python
-        repo: cpython
-        topics: ["lang.python"]
+    - owner: python
+      repo: cpython
+      topics: ["lang.python"]
 
-      - owner: rust-lang
-        repo: rust
-        topics: ["lang.rust"]
+    - owner: rust-lang
+      repo: rust
+      topics: ["lang.rust"]
 
-      # AI & ML
-      - owner: openai
-        repo: openai-python
-        topics: ["ai.openai"]
+    # AI & ML
+    - owner: openai
+      repo: openai-python
+      topics: ["ai.openai"]
 
-      - owner: langchain-ai
-        repo: langchain
-        topics: ["ai.agents", "ai.rag"]
+    - owner: langchain-ai
+      repo: langchain
+      topics: ["ai.agents", "ai.rag"]
 
-      - owner: huggingface
-        repo: transformers
-        topics: ["ai.llm"]
+    - owner: huggingface
+      repo: transformers
+      topics: ["ai.llm"]
 
-      # Databases
-      - owner: redis
-        repo: redis
-        topics: ["data.redis"]
+    # Databases
+    - owner: redis
+      repo: redis
+      topics: ["data.redis"]
 
-      - owner: apache
-        repo: kafka
-        topics: ["data.kafka"]
+    - owner: apache
+      repo: kafka
+      topics: ["data.kafka"]
 
-      # Observability
-      - owner: grafana
-        repo: grafana
-        topics: ["observability.grafana"]
+    # Observability
+    - owner: grafana
+      repo: grafana
+      topics: ["observability.grafana"]
 
-      - owner: open-telemetry
-        repo: opentelemetry-js
-        topics: ["observability.opentelemetry"]
+    - owner: open-telemetry
+      repo: opentelemetry-js
+      topics: ["observability.opentelemetry"]
 
 # =============================================================================
 # Advanced: Custom HN Feeds via hnrss.org

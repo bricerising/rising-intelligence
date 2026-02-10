@@ -17,6 +17,7 @@ import {
   setBudgetRemainingUsd,
   type HealthContext,
 } from "./health.js";
+import { executeCodexCli } from "./llm/codex-cli.js";
 import { publishBriefResult } from "./kafka/producer.js";
 import type { ParsedSummaryRequest, ParsedSummaryTopic } from "./types.js";
 
@@ -53,6 +54,21 @@ local ttl_seconds = tonumber(ARGV[2])
 
 local current = tonumber(redis.call("GET", key) or "0")
 local next = current - amount
+if next < 0 then
+  next = 0
+end
+
+redis.call("SET", key, tostring(next))
+redis.call("EXPIRE", key, ttl_seconds)
+return tostring(next)
+`;
+const BUDGET_SETTLE_SCRIPT = `
+local key = KEYS[1]
+local delta = tonumber(ARGV[1])
+local ttl_seconds = tonumber(ARGV[2])
+
+local current = tonumber(redis.call("GET", key) or "0")
+local next = current + delta
 if next < 0 then
   next = 0
 end
@@ -116,7 +132,7 @@ interface SuccessResult {
     citationsCount: number;
     inputTokens: number;
     outputTokens: number;
-    estimatedCostUsd: number;
+    costUsd: number;
   };
 }
 
@@ -149,6 +165,26 @@ function estimateTokenCount(text: string): number {
 function estimateRequestCostUsd(request: ParsedSummaryRequest): number {
   const evidenceCount = request.topics.reduce((sum, topic) => sum + topic.evidence.length, 0);
   return Number((0.01 + request.topics.length * 0.002 + evidenceCount * 0.0005).toFixed(4));
+}
+
+function normalizeUsd(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+
+  return Number(value.toFixed(6));
+}
+
+function normalizeUsdDelta(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const rounded = Number(value.toFixed(6));
+  return rounded === 0 ? 0 : rounded;
 }
 
 function canonicalizeUrl(value: string): string | null {
@@ -267,6 +303,27 @@ function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<strin
   };
 }
 
+function buildCodexCliPrompt(request: ParsedSummaryRequest): string {
+  const payload = buildSummaryRequestPayload(request);
+  const maxTopics = request.budget?.maxTopics ?? request.topics.length;
+  const maxEvidencePerTopic =
+    request.budget?.maxEvidencePerTopic ??
+    Math.max(...request.topics.map((topic) => topic.evidence.length), 0);
+  const maxOutputTokens = request.budget?.maxOutputTokens ?? 1200;
+
+  return [
+    "You are generating a human-readable engineering intelligence brief from a structured summary request.",
+    "Use only the evidence included in SUMMARY_REQUEST_JSON. Do not invent facts or URLs.",
+    "Each highlight must include concrete what_happened, why_it_matters, suggested_action, and citations.",
+    `Keep output concise and practical. Limit highlights to at most ${maxTopics} and per-topic evidence references to at most ${maxEvidencePerTopic}.`,
+    `Target no more than ${maxOutputTokens} tokens in total output.`,
+    "Return valid JSON only with this shape:",
+    '{ "title": string, "highlights": [{ "topic": string, "what_happened": string, "why_it_matters": string, "suggested_action": string, "citations": string[] }], "notes": string, "usage": { "prompt_tokens": number, "completion_tokens": number }, "meta": { "provider": string, "model": string, "estimated_cost_usd": number } }',
+    "If usage or cost are unknown, set them to 0.",
+    `SUMMARY_REQUEST_JSON:\n${JSON.stringify(payload, null, 2)}`,
+  ].join("\n\n");
+}
+
 async function callHttpLlm(
   config: Config,
   request: ParsedSummaryRequest,
@@ -315,6 +372,31 @@ async function callHttpLlm(
   return parsed.data;
 }
 
+async function callCodexCliLlm(
+  config: Config,
+  request: ParsedSummaryRequest,
+  logger: pino.Logger
+): Promise<z.infer<typeof LlmResponseSchema>> {
+  const prompt = buildCodexCliPrompt(request);
+  let decoded: unknown;
+  try {
+    decoded = await executeCodexCli(config, prompt, logger);
+  } catch (error) {
+    throw new LlmGenerationError(
+      `Codex CLI request failed: ${error instanceof Error ? error.message : "unknown error"}`
+    );
+  }
+
+  const parsed = LlmResponseSchema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new LlmGenerationError(
+      `Codex CLI response validation failed: ${parsed.error.issues[0]?.message}`
+    );
+  }
+
+  return parsed.data;
+}
+
 function buildSuccessPayload(
   request: ParsedSummaryRequest,
   producedAt: Date,
@@ -325,7 +407,7 @@ function buildSuccessPayload(
   model: string,
   inputTokens: number,
   outputTokens: number,
-  estimatedCostUsd: number
+  costUsd: number
 ): SuccessResult {
   const window = request.type === "daily" ? 1 : 2;
   const totalCitations = highlights.reduce((sum, highlight) => sum + highlight.citations.length, 0);
@@ -346,7 +428,7 @@ function buildSuccessPayload(
           model,
           input_tokens: inputTokens,
           output_tokens: outputTokens,
-          estimated_cost_usd: estimatedCostUsd,
+          estimated_cost_usd: costUsd,
         },
       },
     },
@@ -355,7 +437,7 @@ function buildSuccessPayload(
       citationsCount: totalCitations,
       inputTokens,
       outputTokens,
-      estimatedCostUsd,
+      costUsd,
     },
   };
 }
@@ -410,7 +492,7 @@ function buildInternalSuccessResult(
     "rule-based-v1",
     inputTokens,
     outputTokens,
-    estimatedCostUsd
+    normalizeUsd(estimatedCostUsd)
   );
 }
 
@@ -430,6 +512,7 @@ async function buildHttpSuccessResult(
   const outputTokens =
     llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
   const notes = llmResponse.notes?.trim() || deriveDefaultNotes(highlights);
+  const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
 
   return buildSuccessPayload(
     request,
@@ -441,7 +524,40 @@ async function buildHttpSuccessResult(
     llmResponse.meta?.model?.trim() || "http-v1",
     inputTokens,
     outputTokens,
-    estimatedCostUsd
+    costUsd
+  );
+}
+
+async function buildCodexCliSuccessResult(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest,
+  producedAt: Date,
+  estimatedCostUsd: number
+): Promise<SuccessResult> {
+  const llmResponse = await callCodexCliLlm(ctx.config, request, ctx.logger);
+  const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
+  const highlights = enforceGroundedHighlights(
+    request,
+    llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight)
+  );
+  const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
+  const outputTokens =
+    llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
+  const notes = llmResponse.notes?.trim() || deriveDefaultNotes(highlights);
+  const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
+  const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";
+
+  return buildSuccessPayload(
+    request,
+    producedAt,
+    llmResponse.title,
+    highlights,
+    notes,
+    llmResponse.meta?.provider?.trim() || "codex-cli",
+    llmResponse.meta?.model?.trim() || defaultModel,
+    inputTokens,
+    outputTokens,
+    costUsd
   );
 }
 
@@ -456,6 +572,9 @@ async function buildSuccessResult(
   }
   if (ctx.config.LLM_PROVIDER === "http") {
     return buildHttpSuccessResult(ctx, request, producedAt, estimatedCostUsd);
+  }
+  if (ctx.config.LLM_PROVIDER === "codex-cli") {
+    return buildCodexCliSuccessResult(ctx, request, producedAt, estimatedCostUsd);
   }
 
   throw new LlmGenerationError(`Unsupported LLM provider: ${ctx.config.LLM_PROVIDER}`);
@@ -556,6 +675,22 @@ async function releaseBudgetReservationUsd(
     1,
     key,
     amountUsd.toString(),
+    BUDGET_KEY_TTL_SECONDS.toString()
+  );
+  return toNumeric(result);
+}
+
+async function settleBudgetSpendUsd(
+  redis: Redis,
+  dateKey: string,
+  deltaUsd: number
+): Promise<number> {
+  const key = getBudgetKey(dateKey);
+  const result = await redis.eval(
+    BUDGET_SETTLE_SCRIPT,
+    1,
+    key,
+    deltaUsd.toString(),
     BUDGET_KEY_TTL_SECONDS.toString()
   );
   return toNumeric(result);
@@ -698,18 +833,19 @@ export async function processSummaryRequest(
     }
   }
 
-  const dateKey = getBudgetDateKey(request.requestedAt);
+  const dateKey = getBudgetDateKey(producedAt);
   const dailyBudgetUsd = request.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
-  const estimatedCostUsd = estimateRequestCostUsd(request);
+  const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(request));
   let budgetReserved = false;
   let spentBudgetUsd = 0;
+  let reservedCostUsd = estimatedCostUsd;
 
   try {
     const reservation = await reserveBudgetSpendUsd(
       ctx.redis,
       dateKey,
       dailyBudgetUsd,
-      estimatedCostUsd
+      reservedCostUsd
     );
     budgetReserved = reservation.reserved;
     spentBudgetUsd = reservation.spentUsd;
@@ -736,7 +872,7 @@ export async function processSummaryRequest(
     logger.info(
       {
         spentBudgetUsd,
-        estimatedCostUsd,
+        reservedCostUsd,
         dailyBudgetUsd,
       },
       "Skipped summary request due to budget limit"
@@ -750,7 +886,7 @@ export async function processSummaryRequest(
     const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
     ctx.healthContext.postgresHealthy = true;
     if (persisted === "duplicate") {
-      await rollbackBudgetReservation(ctx, logger, dateKey, estimatedCostUsd, dailyBudgetUsd);
+      await rollbackBudgetReservation(ctx, logger, dateKey, reservedCostUsd, dailyBudgetUsd);
       budgetReserved = false;
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
@@ -763,6 +899,25 @@ export async function processSummaryRequest(
     }
     persistedCreated = true;
 
+    const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
+    if (costDeltaUsd !== 0) {
+      try {
+        spentBudgetUsd = await settleBudgetSpendUsd(ctx.redis, dateKey, costDeltaUsd);
+        reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
+        ctx.healthContext.redisHealthy = true;
+      } catch (error) {
+        ctx.healthContext.redisHealthy = false;
+        incrementError(ctx.healthContext, "redis_error");
+        logger.warn(
+          {
+            costDeltaUsd,
+            error: serializeError(error),
+          },
+          "Failed to settle reserved budget to final brief cost"
+        );
+      }
+    }
+
     await publishBriefResult(
       ctx.producer,
       ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
@@ -772,7 +927,7 @@ export async function processSummaryRequest(
     );
 
     incrementGeneration(ctx.healthContext, "success");
-    incrementLlmCostUsd(ctx.healthContext, successResult.metrics.estimatedCostUsd);
+    incrementLlmCostUsd(ctx.healthContext, successResult.metrics.costUsd);
     incrementLlmTokens(ctx.healthContext, "input", successResult.metrics.inputTokens);
     incrementLlmTokens(ctx.healthContext, "output", successResult.metrics.outputTokens);
     observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
@@ -783,14 +938,14 @@ export async function processSummaryRequest(
       {
         topicCount: successResult.metrics.highlightsCount,
         citationsCount: successResult.metrics.citationsCount,
-        estimatedCostUsd: successResult.metrics.estimatedCostUsd,
+        costUsd: successResult.metrics.costUsd,
       },
       "Summary request processed"
     );
   } catch (error) {
     if (budgetReserved && !persistedCreated) {
       try {
-        await rollbackBudgetReservation(ctx, logger, dateKey, estimatedCostUsd, dailyBudgetUsd);
+        await rollbackBudgetReservation(ctx, logger, dateKey, reservedCostUsd, dailyBudgetUsd);
         budgetReserved = false;
       } catch (rollbackError) {
         ctx.healthContext.redisHealthy = false;

@@ -5,6 +5,7 @@ vi.mock("../src/config.js", () => ({
     SERVICE_NAME: "trends",
     PORT: 3000,
     LOG_LEVEL: "info",
+    MAX_LAG_MESSAGES: 100,
   }),
 }));
 
@@ -96,10 +97,21 @@ describe("trends health", () => {
       ctx.postgresHealthy = true;
       ctx.redisHealthy = true;
       ctx.allowlistHealthy = true;
-      setConsumerLag(ctx, 0, 6000n);
+      setConsumerLag(ctx, 0, 101n);
 
       const status = getHealthStatus(ctx);
       expect(status.status).toBe("degraded");
+    });
+
+    it("does not degrade when lag equals configured threshold", () => {
+      ctx.kafkaHealthy = true;
+      ctx.postgresHealthy = true;
+      ctx.redisHealthy = true;
+      ctx.allowlistHealthy = true;
+      setConsumerLag(ctx, 0, 100n);
+
+      const status = getHealthStatus(ctx);
+      expect(status.status).toBe("healthy");
     });
 
     it("returns unhealthy over degraded when deps are down", () => {

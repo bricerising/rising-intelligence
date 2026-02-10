@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { loadDotEnv } from "@rising-intelligence/shared";
+import { briefTrigger } from "./commands/brief/trigger.js";
 import { schemaRegistryPublishProtos } from "./commands/schema-registry/publish-protos.js";
 import { printHelp } from "./help.js";
 import { parseArgs } from "./lib/args.js";
@@ -45,6 +46,16 @@ async function main() {
       // eslint-disable-next-line no-console
       console.log(`${key}: ${value}`);
     }
+    return;
+  }
+
+  if (
+    group === "brief" &&
+    (subcommand === "trigger" ||
+      subcommand === "publish-summary-request" ||
+      subcommand === "generate-summary-request")
+  ) {
+    await briefTrigger(flags);
     return;
   }
 

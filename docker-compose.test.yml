@@ -55,15 +55,13 @@ services:
         "--advertise-kafka-addr",
         "internal://redpanda-test:9092,external://localhost:9093",
         "--schema-registry-addr",
-        "internal://0.0.0.0:8081,external://0.0.0.0:18081",
-        "--advertise-schema-registry-addr",
-        "internal://redpanda-test:8081,external://localhost:8082"
+        "internal://0.0.0.0:8081,external://0.0.0.0:18081"
       ]
     ports:
       - "127.0.0.1:9093:19092" # kafka external (different from dev)
       - "127.0.0.1:8082:18081" # schema registry external (different from dev)
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health --brokers=localhost:9092 >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 2s
       retries: 10

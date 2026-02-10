@@ -122,6 +122,8 @@ export class RSSAdapter implements SourceAdapter {
       timeout: 30000,
       headers: {
         "User-Agent": "RisingIntelligence/1.0 (https://github.com/rising-intelligence)",
+        // Some feeds (for example InfoQ) reject strict RSS-only Accept headers.
+        Accept: "*/*",
       },
     });
     this.feeds = loadFeedsConfig(feedsConfigPath);

@@ -11,4 +11,4 @@ Key outputs:
 
 - stdout/stderr (human-readable logs)
 - exit code (0 success, non-zero failure)
-
+- side-effecting network operations (for example: Schema Registry publish and Kafka `summary.requests` publish)

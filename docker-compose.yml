@@ -25,8 +25,6 @@ services:
         "internal://redpanda:9092,external://localhost:9092",
         "--schema-registry-addr",
         "internal://0.0.0.0:8081,external://0.0.0.0:18081",
-        "--advertise-schema-registry-addr",
-        "internal://redpanda:8081,external://localhost:8081",
         "--pandaproxy-addr",
         "internal://0.0.0.0:8082,external://0.0.0.0:18082",
         "--advertise-pandaproxy-addr",
@@ -40,7 +38,7 @@ services:
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health --brokers=localhost:9092 >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "rpk cluster health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 2s
       retries: 10
@@ -124,6 +122,7 @@ services:
     ports:
       - "127.0.0.1:3001:3000"
     environment:
+      GF_INSTALL_PLUGINS: hamedkarbasi93-kafka-datasource
       POSTGRES_USER: ${POSTGRES_USER:-rising}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rising}
       POSTGRES_DB: ${POSTGRES_DB:-rising_intelligence}
@@ -341,12 +340,28 @@ services:
         condition: service_healthy
       ops-cli:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       KAFKA_BROKERS: "redpanda:9092"
       KAFKA_CLIENT_ID: "brief"
       KAFKA_CONSUMER_GROUP: "brief-generator"
       KAFKA_TOPIC_SUMMARY_REQUESTS: "summary.requests"
+      KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-rising}:${POSTGRES_PASSWORD:-rising}@postgres:5432/${POSTGRES_DB:-rising_intelligence}"
+      REDIS_URL: "redis://redis:6379"
       LOG_LEVEL: "info"
+      LLM_PROVIDER: "${BRIEF_LLM_PROVIDER:-internal}"
+      LLM_CODEX_CLI_COMMAND: "${BRIEF_LLM_CODEX_COMMAND:-codex}"
+      LLM_CODEX_MODEL: "${BRIEF_LLM_CODEX_MODEL:-}"
+      LLM_CODEX_PROFILE: "${BRIEF_LLM_CODEX_PROFILE:-}"
+      LLM_CODEX_TIMEOUT_MS: "${BRIEF_LLM_CODEX_TIMEOUT_MS:-120000}"
+      CODEX_HOME: "/home/brief/.codex"
+      HOME: "/home/brief"
+    volumes:
+      - ${HOME}/.codex:/home/brief/.codex
     ports:
       - "127.0.0.1:3005:3000"
     healthcheck:

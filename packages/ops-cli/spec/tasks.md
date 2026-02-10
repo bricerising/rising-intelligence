@@ -14,3 +14,6 @@
 
 - **Acceptance**: `docker compose up` runs `ops-cli` and registers schemas on startup.
 
+### T004: Manual SummaryRequest trigger command
+
+- **Acceptance**: `riops brief trigger` publishes a valid `summary.requests` message with configurable topic/evidence and supports `--dry-run`.

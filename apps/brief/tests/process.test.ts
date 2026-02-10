@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const codexCliMocks = vi.hoisted(() => ({
+  executeCodexCli: vi.fn(),
+}));
+
+vi.mock("../src/llm/codex-cli.js", () => ({
+  executeCodexCli: codexCliMocks.executeCodexCli,
+}));
+
 import { createHealthContext } from "../src/health.js";
 import { processSummaryRequest } from "../src/process.js";
 import type { ParsedSummaryRequest } from "../src/types.js";
@@ -57,6 +66,22 @@ function makeRequest(): ParsedSummaryRequest {
 
 function makeContext(overrides: Record<string, unknown> = {}) {
   const create = vi.fn().mockResolvedValue(undefined);
+  const evalMock = vi.fn().mockImplementation((script: unknown) => {
+    if (typeof script !== "string") {
+      return [1, "0.02"];
+    }
+    if (script.includes("INCRBYFLOAT")) {
+      return [1, "0.02"];
+    }
+    if (script.includes("current + delta")) {
+      return "0.02";
+    }
+    if (script.includes("current - amount")) {
+      return "0";
+    }
+    return [1, "0.02"];
+  });
+
   return {
     config: {
       KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
@@ -64,6 +89,10 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       LLM_DAILY_BUDGET_USD: 5,
       LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
       LLM_TIMEOUT_MS: 5000,
+      LLM_CODEX_CLI_COMMAND: "codex",
+      LLM_CODEX_MODEL: "",
+      LLM_CODEX_PROFILE: "",
+      LLM_CODEX_TIMEOUT_MS: 60000,
     },
     logger: makeLogger(),
     healthContext: createHealthContext(5),
@@ -74,7 +103,7 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       },
     },
     redis: {
-      eval: vi.fn().mockResolvedValue([1, "0.02"]),
+      eval: evalMock,
     },
     producer: {
       send: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +114,8 @@ function makeContext(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  codexCliMocks.executeCodexCli.mockReset();
 });
 
 describe("processSummaryRequest", () => {
@@ -121,7 +152,7 @@ describe("processSummaryRequest", () => {
         meta: {
           provider: "test-llm",
           model: "mock-v1",
-          estimated_cost_usd: 0.02,
+          estimated_cost_usd: 0.0125,
         },
       }),
     });
@@ -142,8 +173,121 @@ describe("processSummaryRequest", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
     expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.redis.eval).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(120);
     expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(80);
+  });
+
+  it("uses codex-cli provider when configured", async () => {
+    codexCliMocks.executeCodexCli.mockResolvedValue({
+      title: "Codex Brief",
+      highlights: [
+        {
+          topic: "aws.bedrock",
+          what_happened: "Major model updates shipped this week.",
+          why_it_matters: "Teams can reduce latency by adopting new regional deployments.",
+          suggested_action: "Review rollout notes and validate runtime defaults.",
+          citations: ["https://example.com/1"],
+        },
+      ],
+      notes: "Coverage is limited to one grounded topic.",
+      usage: {
+        prompt_tokens: 160,
+        completion_tokens: 90,
+      },
+      meta: {
+        provider: "codex-cli",
+        model: "gpt-5-codex",
+        estimated_cost_usd: 0.03,
+      },
+    });
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(codexCliMocks.executeCodexCli).toHaveBeenCalledOnce();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.redis.eval).toHaveBeenCalledTimes(2);
+    expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(160);
+    expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(90);
+  });
+
+  it("charges budget on processing date instead of request timestamp date", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-10T00:05:00.000Z"));
+
+    const request = makeRequest();
+    request.requestedAt = new Date("2026-01-10T10:00:00.000Z");
+    const ctx = makeContext();
+
+    await processSummaryRequest(ctx, request);
+
+    const firstEvalCall = ctx.redis.eval.mock.calls[0];
+    expect(firstEvalCall[2]).toBe("brief:budget:2026-02-10");
+  });
+
+  it("settles reserved budget to provider-reported actual cost", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Mock Brief",
+        highlights: [
+          {
+            topic: "aws.bedrock",
+            what_happened: "Model update landed [1]",
+            why_it_matters: "Lower latency for key workloads",
+            suggested_action: "Re-check production defaults",
+            citations: ["https://example.com/1"],
+          },
+        ],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 80,
+        },
+        meta: {
+          provider: "test-llm",
+          model: "mock-v1",
+          estimated_cost_usd: 0.05,
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+      redis: {
+        eval: vi
+          .fn()
+          .mockResolvedValueOnce([1, "0.0125"])
+          .mockResolvedValueOnce("0.05"),
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.redis.eval).toHaveBeenCalledTimes(2);
+    expect(ctx.healthContext.metrics.llmCostUsdTotal).toBe(0.05);
+    expect(ctx.healthContext.metrics.budgetRemainingUsd).toBe(4.95);
   });
 
   it("republishes persisted result for duplicate requests", async () => {

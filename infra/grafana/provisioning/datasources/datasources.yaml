@@ -80,8 +80,9 @@ datasources:
     access: proxy
     url: postgres:5432
     editable: false
-    database: ${POSTGRES_DB:-rising_intelligence}
-    user: ${POSTGRES_USER:-rising}
+    # Grafana provisioning supports ${VAR} expansion, not shell-style ${VAR:-default}.
+    database: ${POSTGRES_DB}
+    user: ${POSTGRES_USER}
     jsonData:
       sslmode: disable
       maxOpenConns: 5
@@ -90,4 +91,16 @@ datasources:
       postgresVersion: 1600  # Postgres 16
       timescaledb: false
     secureJsonData:
-      password: ${POSTGRES_PASSWORD:-rising}
+      password: ${POSTGRES_PASSWORD}
+
+  # ===========================================================================
+  # Kafka / Redpanda (Event Stream)
+  # ===========================================================================
+  - name: Kafka
+    uid: KAFKA
+    type: hamedkarbasi93-kafka-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      bootstrapServers: 'redpanda:9092'
+      schemaRegistryUrl: 'http://redpanda:8081'

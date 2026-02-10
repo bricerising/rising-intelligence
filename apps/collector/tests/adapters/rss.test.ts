@@ -109,6 +109,28 @@ official_blogs:
       const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
       expect((adapter as any).feeds).toHaveLength(1);
     });
+
+    it("configures parser with a permissive Accept header", () => {
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: Test Feed
+    url: https://example.com/feed
+`
+      );
+
+      new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+
+      expect(Parser).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeout: 30000,
+          headers: expect.objectContaining({
+            Accept: "*/*",
+          }),
+        })
+      );
+    });
   });
 
   describe("fetch()", () => {

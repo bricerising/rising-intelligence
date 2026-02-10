@@ -16,8 +16,11 @@ COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
 COPY apps/brief/package.json ./apps/brief/
 
-# Install dependencies
-RUN npm ci --workspace=@rising-intelligence/brief
+# Install dependencies for all workspaces needed by this service build
+RUN npm ci \
+    --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/db \
+    --workspace=@rising-intelligence/brief
 
 # =============================================================================
 # Stage 2: Build
@@ -26,11 +29,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+RUN apk add --no-cache openssl
+
+# Copy root package files for workspace commands
+COPY package.json package-lock.json* ./
+
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
-COPY --from=deps /app/apps/brief/node_modules ./apps/brief/node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
@@ -56,20 +61,24 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 # Add non-root user for security
-RUN addgroup --system --gid 1001 nodejs && \
+RUN apk add --no-cache openssl && \
+    addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 brief
+
+# Install Codex CLI for LLM_PROVIDER=codex-cli mode.
+ARG CODEX_CLI_VERSION=0.98.0
+RUN npm install -g @openai/codex@${CODEX_CLI_VERSION}
 
 # Copy built artifacts
 COPY --from=builder --chown=brief:nodejs /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=brief:nodejs /app/packages/shared/package.json ./packages/shared/
 COPY --from=builder --chown=brief:nodejs /app/packages/db/dist ./packages/db/dist
 COPY --from=builder --chown=brief:nodejs /app/packages/db/package.json ./packages/db/
-COPY --from=builder --chown=brief:nodejs /app/packages/db/node_modules/.prisma ./packages/db/node_modules/.prisma
 COPY --from=builder --chown=brief:nodejs /app/apps/brief/dist ./apps/brief/dist
 COPY --from=builder --chown=brief:nodejs /app/apps/brief/package.json ./apps/brief/
 
 # Copy production dependencies only
-COPY --from=deps --chown=brief:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=brief:nodejs /app/node_modules ./node_modules
 
 # Copy topics allowlist (for display names)
 COPY --chown=brief:nodejs infra/config/topics.allowlist.yaml /config/topics.allowlist.yaml
@@ -78,6 +87,8 @@ USER brief
 
 # Environment defaults
 ENV NODE_ENV=production
+ENV HOME=/home/brief
+ENV CODEX_HOME=/home/brief/.codex
 ENV TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
 ENV LLM_DAILY_BUDGET_USD=1.00
 

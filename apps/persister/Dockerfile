@@ -16,8 +16,11 @@ COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
 COPY apps/persister/package.json ./apps/persister/
 
-# Install dependencies
-RUN npm ci --workspace=@rising-intelligence/persister
+# Install dependencies for all workspaces needed by this service build
+RUN npm ci \
+    --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/db \
+    --workspace=@rising-intelligence/persister
 
 # =============================================================================
 # Stage 2: Build
@@ -26,11 +29,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+RUN apk add --no-cache openssl
+
+# Copy root package files for workspace commands
+COPY package.json package-lock.json* ./
+
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
-COPY --from=deps /app/apps/persister/node_modules ./apps/persister/node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
@@ -56,7 +61,8 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 # Add non-root user for security
-RUN addgroup --system --gid 1001 nodejs && \
+RUN apk add --no-cache openssl && \
+    addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 persister
 
 # Copy built artifacts
@@ -64,12 +70,11 @@ COPY --from=builder --chown=persister:nodejs /app/packages/shared/dist ./package
 COPY --from=builder --chown=persister:nodejs /app/packages/shared/package.json ./packages/shared/
 COPY --from=builder --chown=persister:nodejs /app/packages/db/dist ./packages/db/dist
 COPY --from=builder --chown=persister:nodejs /app/packages/db/package.json ./packages/db/
-COPY --from=builder --chown=persister:nodejs /app/packages/db/node_modules/.prisma ./packages/db/node_modules/.prisma
 COPY --from=builder --chown=persister:nodejs /app/apps/persister/dist ./apps/persister/dist
 COPY --from=builder --chown=persister:nodejs /app/apps/persister/package.json ./apps/persister/
 
 # Copy production dependencies only
-COPY --from=deps --chown=persister:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=persister:nodejs /app/node_modules ./node_modules
 
 USER persister
 

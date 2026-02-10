@@ -7,7 +7,8 @@
     "riops": "./dist/bin.js"
   },
   "dependencies": {
-    "@rising-intelligence/shared": "0.1.0"
+    "@rising-intelligence/shared": "0.1.0",
+    "kafkajs": "^2.2.4"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

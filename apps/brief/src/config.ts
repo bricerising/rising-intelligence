@@ -8,7 +8,7 @@ import {
 } from "@rising-intelligence/shared";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
-const LLM_PROVIDERS = ["internal", "http"] as const;
+const LLM_PROVIDERS = ["internal", "http", "codex-cli"] as const;
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("brief"),
@@ -32,6 +32,10 @@ const ConfigSchema = z.object({
   LLM_PROVIDER: z.enum(LLM_PROVIDERS).default("internal"),
   LLM_ENDPOINT_URL: z.string().url().default("http://localhost:8088/v1/generate"),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  LLM_CODEX_CLI_COMMAND: z.string().min(1).default("codex"),
+  LLM_CODEX_MODEL: z.string().default(""),
+  LLM_CODEX_PROFILE: z.string().default(""),
+  LLM_CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   LLM_DAILY_BUDGET_USD: z.coerce.number().nonnegative().default(5),
 
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),

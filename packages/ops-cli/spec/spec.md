@@ -10,7 +10,7 @@
 
 - Schema Registry publishing and validation
 - LGTM stack discovery and basic health checks (future)
-- Kafka/Redpanda ops (future)
+- Kafka/Redpanda ops (including manual brief trigger requests)
 - Postgres read-model ops (future)
 
 Guiding rule: future agents SHOULD extend `riops` rather than adding one-off shell scripts.
@@ -29,6 +29,12 @@ As an operator, I can bootstrap Schema Registry consistently on stack startup.
 
 **Independent Test**: `docker compose up` runs `ops-cli` and registers subjects; repeated runs do not churn versions when schemas are unchanged.
 
+### Scenario 2 — Manual Brief Trigger (Priority: P2)
+
+As an operator, I can publish a valid `SummaryRequest` from the terminal to force brief generation on demand.
+
+**Independent Test**: `riops brief trigger --topic-key ... --evidence-url ...` publishes a keyed message to `summary.requests`.
+
 ## Requirements
 
 ### Functional Requirements
@@ -36,6 +42,7 @@ As an operator, I can bootstrap Schema Registry consistently on stack startup.
 - **FR-001**: CLI MUST support publishing Protobuf contracts to Schema Registry.
 - **FR-002**: CLI SHOULD be runnable both locally and from Docker Compose.
 - **FR-003**: CLI MUST load `.env` automatically in local runs (dev convenience).
+- **FR-004**: CLI MUST support generating and publishing a manual `SummaryRequest` to Kafka for brief triggering.
 
 ### Non-Functional Requirements
 
@@ -46,4 +53,3 @@ As an operator, I can bootstrap Schema Registry consistently on stack startup.
 
 - `ops-cli` can bootstrap the stack without manual steps.
 - Ops tasks are discoverable and standardized for future agents.
-

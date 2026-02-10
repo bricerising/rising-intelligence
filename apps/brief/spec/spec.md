@@ -2,7 +2,7 @@
 
 **Service**: `@rising-intelligence/brief`
 **Created**: 2026-02-05
-**Updated**: 2026-02-05
+**Updated**: 2026-02-10
 **Status**: Planned
 
 ## Overview
@@ -11,6 +11,7 @@ The Brief Service consumes summary requests and produces evidence-grounded brief
 
 - **Daily brief**: scheduled summary of top trends with citations and suggested actions.
 - **Flash brief** (optional): short summary when a topic spikes.
+- **Provider choice**: summary generation can run via `LLM_PROVIDER=internal`, `http`, or `codex-cli` (local Codex CLI).
 
 The service is intentionally isolated so LLM latency/failures do not impact ingestion or trend computation.
 
