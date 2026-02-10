@@ -33,6 +33,9 @@ interface TriggerBriefConfig {
   maxTopics: number;
   maxEvidencePerTopic: number;
   maxOutputTokens: number;
+  reportTimezone?: string;
+  reportStartAtIso?: string;
+  reportEndAtIso?: string;
   llmProvider?: string;
   dryRun: boolean;
   noWait: boolean;
@@ -169,6 +172,31 @@ function parseEvidenceStrategy(rawValue: string): "diversity" | "recency" | "eng
   );
 }
 
+function parseOptionalIsoDate(rawValue: string | undefined, flagName: string): string | undefined {
+  if (!rawValue || rawValue.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return parseIsoDate(rawValue);
+  } catch {
+    throw new Error(`Invalid ISO timestamp for ${flagName}: ${rawValue}`);
+  }
+}
+
+function parseOptionalTimezone(rawValue: string | undefined): string | undefined {
+  if (!rawValue || rawValue.trim().length === 0) {
+    return undefined;
+  }
+
+  const timezone = rawValue.trim();
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+  } catch {
+    throw new Error(`Invalid report timezone: ${rawValue}`);
+  }
+  return timezone;
+}
+
 function resolveMode(flags: Flags): { mode: TriggerMode; topicKey?: string; evidenceUrl?: string } {
   const topicKey = getStringFlag(flags, "topic-key")?.trim();
   const evidenceUrl = getStringFlag(flags, "evidence-url")?.trim();
@@ -262,6 +290,23 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
 
   const queryEvidenceStrategyRaw = getStringFlag(flags, "evidence-strategy") || "diversity";
   const queryEvidenceStrategy = parseEvidenceStrategy(queryEvidenceStrategyRaw);
+  const reportTimezone = parseOptionalTimezone(getStringFlag(flags, "report-timezone"));
+  const reportStartAtIso = parseOptionalIsoDate(
+    getStringFlag(flags, "report-start-at"),
+    "--report-start-at"
+  );
+  const reportEndAtIso = parseOptionalIsoDate(
+    getStringFlag(flags, "report-end-at"),
+    "--report-end-at"
+  );
+
+  if (reportStartAtIso && reportEndAtIso) {
+    const startAt = new Date(reportStartAtIso).getTime();
+    const endAt = new Date(reportEndAtIso).getTime();
+    if (startAt > endAt) {
+      throw new Error("--report-start-at must be <= --report-end-at");
+    }
+  }
 
   const topicKey = modeConfig.topicKey;
   const evidenceUrl = modeConfig.evidenceUrl;
@@ -306,6 +351,9 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     maxTopics: assertPositiveInteger(maxTopics, "--max-topics"),
     maxEvidencePerTopic: assertPositiveInteger(maxEvidencePerTopic, "--max-evidence-per-topic"),
     maxOutputTokens: assertPositiveInteger(maxOutputTokens, "--max-output-tokens"),
+    reportTimezone,
+    reportStartAtIso,
+    reportEndAtIso,
     llmProvider: getStringFlag(flags, "llm-provider"),
     dryRun: getBooleanFlag(flags, "dry-run"),
     noWait: getBooleanFlag(flags, "no-wait"),
@@ -319,6 +367,16 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
 
 function buildSummaryRequest(config: TriggerBriefConfig) {
   const nowIso = config.requestedAtIso;
+  const report =
+    config.reportTimezone !== undefined ||
+    config.reportStartAtIso !== undefined ||
+    config.reportEndAtIso !== undefined
+      ? {
+          ...(config.reportTimezone && { timezone: config.reportTimezone }),
+          ...(config.reportStartAtIso && { start_at: config.reportStartAtIso }),
+          ...(config.reportEndAtIso && { end_at: config.reportEndAtIso }),
+        }
+      : undefined;
   const basePayload = {
     request_id: config.requestId,
     requested_at: nowIso,
@@ -330,6 +388,7 @@ function buildSummaryRequest(config: TriggerBriefConfig) {
       max_evidence_per_topic: config.maxEvidencePerTopic,
       max_output_tokens: config.maxOutputTokens,
     },
+    ...(report && { report }),
     ...(config.llmProvider && { llm_provider: config.llmProvider }),
   };
 

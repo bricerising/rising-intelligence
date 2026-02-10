@@ -19,6 +19,13 @@
 # IMPORTANT: When an event matches more than max_topics_per_event topics,
 # the topics with highest priority are kept. Topics with equal priority
 # are sorted alphabetically by key for determinism.
+#
+# PRECISION IMPROVEMENTS (2026-02-10):
+# - Generic topics (aws.general, ai.general, cloud.general) now require substantive context
+# - Short acronyms (RAG, EKS) require surrounding context to avoid false positives
+# - Removed over-broad keywords ("serverless", "container") that matched tangentially
+# - Lowered priority of fallback topics (general/broad topics) to 10-20 range
+# - Added specific services (aws.ecs, aws.fargate) to capture granular signals
 
 defaults:
   # Maximum topics to extract per event (prevents over-tagging)
@@ -28,19 +35,29 @@ defaults:
   # Default priority for topics without explicit priority
   default_priority: 50
 
+  # Priority Ranges (for reference):
+  # 90-100: Highest - specific AI services, critical infra (Bedrock, Agents)
+  # 75-85: High - specific cloud services, major platforms (EC2, ECS, SageMaker)
+  # 60-70: Medium - supporting tools, frameworks (Kubernetes, Terraform)
+  # 40-55: Low-Medium - languages, databases, general dev tools
+  # 20-30: Low - broad services that often co-occur (aws.general)
+  # 10-15: Lowest - catch-all categories (ai.general, cloud.general)
+
 topics:
   # ===========================================================================
   # AWS Core Services (Priority 80-90: High importance, specific)
   # ===========================================================================
   - key: aws.general
     display_name: AWS (General)
-    priority: 30  # Low priority - too broad, prefer specific services
+    priority: 20  # Very low priority - only when no specific service matches
     aliases: ["Amazon Web Services"]
     matchers:
-      - type: keyword
-        value: "AWS"
+      # Only match full "Amazon Web Services" to avoid polluting specific service topics
       - type: keyword
         value: "Amazon Web Services"
+      # Or AWS in platform/strategy context (not service-specific)
+      - type: regex
+        pattern: "\\bAWS\\b.*(platform strategy|cloud strategy|aws summit|re:invent|aws overview)"
 
   - key: aws.bedrock
     display_name: AWS Bedrock
@@ -59,8 +76,7 @@ topics:
     matchers:
       - type: regex
         pattern: "\\b(AWS\\s+)?Lambda\\b"
-      - type: keyword
-        value: "serverless"
+      # Removed generic "serverless" - too broad without context
 
   - key: aws.ec2
     display_name: AWS EC2
@@ -87,10 +103,11 @@ topics:
     priority: 80
     aliases: ["EKS", "Elastic Kubernetes"]
     matchers:
-      - type: keyword
-        value: "EKS"
+      # Require EKS in AWS/Amazon context to avoid false positives
       - type: regex
-        pattern: "\\bEKS\\b"
+        pattern: "\\b(AWS|Amazon)\\s+(EKS|Elastic\\s+Kubernetes)"
+      - type: regex
+        pattern: "\\bEKS\\b.*\\b(cluster|node|pod|deployment)"
 
   - key: aws.sagemaker
     display_name: AWS SageMaker
@@ -108,16 +125,39 @@ topics:
       - type: keyword
         value: "DynamoDB"
 
+  - key: aws.ecs
+    display_name: AWS ECS
+    priority: 80
+    aliases: ["ECS", "Elastic Container Service"]
+    matchers:
+      - type: regex
+        pattern: "\\b(AWS\\s+)?ECS\\b"
+      - type: keyword
+        value: "Elastic Container Service"
+      - type: regex
+        pattern: "\\bECS\\b.*\\b(task|service|cluster|Fargate)"
+
+  - key: aws.fargate
+    display_name: AWS Fargate
+    priority: 75
+    aliases: ["Fargate"]
+    matchers:
+      - type: keyword
+        value: "Fargate"
+
   # ===========================================================================
   # AI / ML General (Priority 40-85: Varies by specificity)
   # ===========================================================================
   - key: ai.general
     display_name: AI / ML
-    priority: 25  # Low priority - too broad, prefer specific topics
+    priority: 15  # Very low priority - only when no specific AI topic matches
     aliases: ["Artificial Intelligence", "Machine Learning", "ML"]
     matchers:
+      # Only match when AI/ML is the main subject (title context)
       - type: regex
-        pattern: "\\b(AI|artificial intelligence|machine learning|ML)\\b"
+        pattern: "^.*\\b(AI|artificial intelligence)\\b.*(breakthrough|research|model|advancement).*$"
+      - type: regex
+        pattern: "^.*\\bmachine learning\\b.*(algorithm|model|training|dataset).*$"
 
   - key: ai.llm
     display_name: Large Language Models
@@ -156,12 +196,15 @@ topics:
     priority: 80
     aliases: ["RAG"]
     matchers:
-      - type: keyword
-        value: "RAG"
+      # Require full context to avoid false positives on "rag" abbreviation
+      - type: regex
+        pattern: "\\bRAG\\b.*\\b(retrieval|generation|embedding|vector)"
       - type: keyword
         value: "retrieval-augmented"
       - type: keyword
         value: "retrieval augmented"
+      - type: regex
+        pattern: "\\bretrieval.?augmented.?generation\\b"
 
   # ===========================================================================
   # AI Providers / Models (Priority 75-85: Specific providers)
@@ -240,8 +283,9 @@ topics:
     matchers:
       - type: keyword
         value: "Docker"
-      - type: keyword
-        value: "container"
+      - type: regex
+        pattern: "\\bDockerfile\\b"
+      # Removed generic "container" - too broad (matches ECS, K8s context)
 
   - key: cloud.terraform
     display_name: Terraform
@@ -409,15 +453,14 @@ topics:
 
   - key: cloud.general
     display_name: Cloud Computing
-    priority: 30  # Low priority - too broad
+    priority: 10  # Very low priority - only for cloud strategy discussions
     aliases: ["Cloud"]
     matchers:
+      # Only match substantive cloud strategy/architecture discussions
       - type: regex
-        pattern: "\\bcloud\\s+(computing|infrastructure|native)\\b"
-      - type: keyword
-        value: "multi-cloud"
-      - type: keyword
-        value: "hybrid cloud"
+        pattern: "\\b(multi-cloud|hybrid.cloud)\\b.*\\b(strategy|migration|architecture)"
+      - type: regex
+        pattern: "\\bcloud.native\\b.*\\b(architecture|design|pattern|application)"
 
   # ===========================================================================
   # Developer Tools & Platforms (Priority 60-75)

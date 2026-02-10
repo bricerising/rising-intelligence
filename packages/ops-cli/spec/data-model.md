@@ -20,5 +20,7 @@ Key outputs:
    - `query.lookback_days` (default `7`, max `30`)
    - `query.topic_globs` (default `["*"]`)
    - `query.max_events_per_topic` (optional)
+   - `report.timezone` (optional IANA timezone string)
+   - `report.start_at` / `report.end_at` (optional ISO8601 framing bounds)
 2. **Explicit mode (optional)**:
    - `topics[]` with metric/evidence fields from CLI flags

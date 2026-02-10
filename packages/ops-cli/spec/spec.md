@@ -49,6 +49,7 @@ As an operator, I can publish a valid `SummaryRequest` from the terminal to forc
 - **FR-006**: `brief trigger` MUST support query filters (`lookback_days`, `topic_globs`, `max_events_per_topic`) and enforce lookback guardrails.
 - **FR-007**: `brief trigger` SHOULD preserve explicit mode as an opt-in backward-compatible path when topic/evidence flags are provided.
 - **FR-008**: `brief trigger` is the canonical operator path for creating briefs; Trends no longer auto-publishes brief requests.
+- **FR-009**: `brief trigger` SHOULD support optional notes-framing hints (`report.timezone`, `report.start_at`, `report.end_at`) for structured brief rendering.
 
 ### Non-Functional Requirements
 

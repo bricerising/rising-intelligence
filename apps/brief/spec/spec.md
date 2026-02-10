@@ -23,6 +23,8 @@ Key capabilities:
 - **Topic filtering**: optional topic glob filters (for example `aws.*`, `ai.*`, `*.bedrock`).
 - **Trend reference**: query-mode ranking is derived from `trend_snapshots` (`TREND_WINDOW_60M`) using a recent-weighted average score.
 - **Executive output**: produce a concise executive summary intended for human reading (not raw metrics dump).
+- **Structured notes format**: render `brief.notes` as sectioned, domain-neutral markdown suitable for deeper review and sharing.
+- **Notes grounding enforcement**: URLs present in generated `brief.notes` MUST resolve to evidence URLs from the request.
 - **Provider choice**: summary generation can run via `LLM_PROVIDER=internal`, `http`, or `codex-cli` (local Codex CLI).
 
 ## User Scenarios & Testing
@@ -63,6 +65,18 @@ As an operator, I want a concise executive summary I can read quickly, with cita
 2. **Given** multiple topics, **When** brief is generated, **Then** highlights are prioritized and concise (top themes, why they matter, suggested actions).
 3. **Given** uncertain or conflicting evidence, **When** brief is generated, **Then** uncertainty is explicitly called out.
 
+### User Story 4 — Structured notes output (Priority: P2)
+
+As an operator, I get a long-form, sectioned notes output by default so briefs are structured for deeper review and sharing across domains.
+
+**Independent Test**: Trigger query-mode summary and verify `brief.notes` is sectioned markdown and any URL in notes maps to request evidence.
+
+**Acceptance Scenarios**:
+
+1. **Given** a valid summary request, **When** Brief generates output, **Then** `brief.notes` MUST contain sectioned markdown (for example: method/scope, dominant shifts, topic landscape, risks/governance, outlook).
+2. **Given** generated notes include URLs, **When** grounding validation runs, **Then** every note URL MUST exist in the normalized evidence URL set for the request.
+3. **Given** notes contain out-of-evidence URLs, **When** validation runs, **Then** Brief MUST fail the request as non-retryable grounding error.
+
 ### Edge Cases
 
 - `lookback_days` is zero, negative, or above max configured limit.
@@ -70,10 +84,12 @@ As an operator, I want a concise executive summary I can read quickly, with cita
 - Large lookback + broad topic filter produces too much context (must cap by request budget).
 - Duplicate or near-duplicate events appear in `raw_events`.
 - No `TREND_WINDOW_60M` snapshots exist in the requested lookback window.
+- Notes-framing requests include explicit start/end bounds that conflict with lookback defaults.
 
 ## Constitution Requirements
 
 - **Grounding**: every highlight MUST include citations from selected evidence.
+- **Grounding (notes)**: if notes include URLs, those URLs MUST come from selected evidence.
 - **Budgeting**: enforce daily cost/token budgets.
 - **Safety**: do not emit secrets; redact sensitive content if configured.
 - **Honesty**: if uncertain, say so; never fabricate sources.
@@ -132,6 +148,8 @@ async function processRequest(request: SummaryRequest): Promise<void> {
 - **FR-014 (Evidence fetch)**: After ranking, service MUST load bounded evidence from Postgres `raw_events` for selected topics.
 - **FR-015 (Executive summary)**: Service MUST produce a human-readable executive summary in `brief.notes`, followed by grounded highlights.
 - **FR-016 (Mode compatibility)**: Service MUST support both query mode (self-fetch) and explicit mode (pre-supplied topics/evidence).
+- **FR-017 (Notes framing hints)**: Service SHOULD support optional notes framing hints in `SummaryRequest.report` (time bounds/timezone) for scope wording.
+- **FR-018 (Notes citation grounding)**: Service MUST validate URL citations found in `brief.notes` against request evidence URL set and fail non-retryably on mismatch.
 
 ### Non-Functional Requirements
 
@@ -152,6 +170,11 @@ When clients rely on Brief query mode, `SummaryRequest` payloads SHOULD include:
     "lookback_days": 7,
     "topic_globs": ["aws.*", "ai.*"],
     "max_events_per_topic": 25
+  },
+  "report": {
+    "timezone": "America/New_York",
+    "start_at": "2026-01-01T00:00:00-05:00",
+    "end_at": "2026-02-10T23:59:59-05:00"
   }
 }
 ```
@@ -161,6 +184,8 @@ Semantics:
 - `lookback_days`: optional, defaults to `BRIEF_DEFAULT_LOOKBACK_DAYS=7`, max `BRIEF_MAX_LOOKBACK_DAYS=30`.
 - `topic_globs`: optional, defaults to `["*"]` (all topics).
 - `max_events_per_topic`: optional, bounded by service configuration.
+- `report.timezone`: optional IANA timezone string used for date wording in notes.
+- `report.start_at` / `report.end_at`: optional notes framing bounds for prompt context.
 
 ## LLM Prompt Design
 
@@ -178,6 +203,7 @@ RULES:
 6. Start with a short executive summary paragraph in notes.
 7. Keep each highlight concise: 2-3 sentences for what_happened, 1-2 for why_it_matters, 1 for suggested_action.
 8. Use technical language appropriate for a senior engineer audience.
+9. Render notes as markdown with explicit section headers and include only grounded URLs.
 
 OUTPUT FORMAT:
 You MUST respond with valid JSON matching this schema:

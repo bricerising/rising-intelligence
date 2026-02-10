@@ -26,6 +26,11 @@ describe("brief deserializeSummaryRequest", () => {
         topic_globs: ["aws.*", "ai.*"],
         max_events_per_topic: 20,
       },
+      report: {
+        timezone: "America/New_York",
+        start_at: "2026-01-01T00:00:00-05:00",
+        end_at: "2026-02-10T23:59:59-05:00",
+      },
       topics: [
         {
           topic: "aws.bedrock",
@@ -68,6 +73,12 @@ describe("brief deserializeSummaryRequest", () => {
       lookbackDays: 7,
       topicGlobs: ["aws.*", "ai.*"],
       maxEventsPerTopic: 20,
+      evidenceStrategy: "diversity",
+    });
+    expect(parsed.report).toEqual({
+      timezone: "America/New_York",
+      startAt: new Date("2026-01-01T05:00:00.000Z"),
+      endAt: new Date("2026-02-11T04:59:59.000Z"),
     });
     expect(parsed.topics[0].topic).toBe("aws.bedrock");
     expect(parsed.topics[0].metrics).toHaveLength(1);
@@ -136,6 +147,26 @@ describe("brief deserializeSummaryRequest", () => {
       lookbackDays: 7,
       topicGlobs: ["aws.*", "ai.?"],
       maxEventsPerTopic: 15,
+      evidenceStrategy: "diversity",
+    });
+    expect(parsed.report).toBeNull();
+  });
+
+  it("supports report framing options", () => {
+    const payload = {
+      request_id: "req-report",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        timezone: "UTC",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.report).toEqual({
+      timezone: "UTC",
+      startAt: undefined,
+      endAt: undefined,
     });
   });
 
@@ -235,6 +266,56 @@ describe("brief deserializeSummaryRequest", () => {
 
     expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
       "Unsupported topic glob pattern"
+    );
+  });
+
+  it("ignores legacy report.template fields", () => {
+    const payload = {
+      request_id: "req-report-template",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        template: "state_of_technology",
+        timezone: "UTC",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.report).toEqual({
+      timezone: "UTC",
+      startAt: undefined,
+      endAt: undefined,
+    });
+  });
+
+  it("rejects invalid report timezone", () => {
+    const payload = {
+      request_id: "req-report-timezone",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        timezone: "Mars/Olympus",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid report.timezone"
+    );
+  });
+
+  it("rejects reversed report time bounds", () => {
+    const payload = {
+      request_id: "req-report-bounds",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        start_at: "2026-02-10T00:00:00.000Z",
+        end_at: "2026-02-01T00:00:00.000Z",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid report bounds"
     );
   });
 

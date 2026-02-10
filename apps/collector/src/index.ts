@@ -34,6 +34,7 @@ import { CheckpointStore } from "./checkpoint.js";
 import { loadAllowlist, extractTopics, CompiledAllowlist } from "./topics/extractor.js";
 import { serializeRawEvent, serializeDeadLetterEvent, serializeHeartbeat, generateDlqId } from "./serializer.js";
 import type { SourceAdapter, DeadLetterEvent, CollectorHeartbeat } from "./types.js";
+import { createContentFetcherConfig, type ContentFetcherConfig } from "./content-fetcher.js";
 
 // Import adapters
 import { createRSSAdapter } from "./adapters/rss.js";
@@ -58,42 +59,45 @@ type CollectorConfig = ReturnType<typeof getConfig>;
 interface AdapterFactory {
   name: string;
   isEnabled(config: CollectorConfig): boolean;
-  create(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger): SourceAdapter;
+  create(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger, contentFetcherConfig: ContentFetcherConfig): SourceAdapter;
 }
 
 const ADAPTER_FACTORIES: ReadonlyArray<AdapterFactory> = [
   {
     name: "rss",
     isEnabled: (config) => config.RSS_ENABLED,
-    create: (config, checkpointStore, logger) =>
+    create: (config, checkpointStore, logger, contentFetcherConfig) =>
       createRSSAdapter(
         config.FEEDS_CONFIG_PATH,
         config.RSS_POLL_INTERVAL_SECONDS * 1000,
         checkpointStore,
-        logger.child({ adapter: "rss" })
+        logger.child({ adapter: "rss" }),
+        contentFetcherConfig
       ),
   },
   {
     name: "hackernews",
     isEnabled: (config) => config.HN_ENABLED,
-    create: (config, checkpointStore, logger) =>
+    create: (config, checkpointStore, logger, contentFetcherConfig) =>
       createHackerNewsAdapter(
         config.HN_MODE,
         config.HN_POLL_INTERVAL_SECONDS * 1000,
         config.HN_MAX_ITEMS_PER_POLL,
         checkpointStore,
-        logger.child({ adapter: "hackernews" })
+        logger.child({ adapter: "hackernews" }),
+        contentFetcherConfig
       ),
   },
   {
     name: "lobsters",
     isEnabled: (config) => config.LOBSTERS_ENABLED,
-    create: (config, checkpointStore, logger) =>
+    create: (config, checkpointStore, logger, contentFetcherConfig) =>
       createLobstersAdapter(
         config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
         config.LOBSTERS_MAX_ITEMS_PER_POLL,
         checkpointStore,
-        logger.child({ adapter: "lobsters" })
+        logger.child({ adapter: "lobsters" }),
+        contentFetcherConfig
       ),
   },
 ];
@@ -117,14 +121,14 @@ function mapUnknownErrorType(error: unknown): string {
   return "parse_error";
 }
 
-function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger): SourceAdapter[] {
+function buildAdapters(config: CollectorConfig, checkpointStore: CheckpointStore, logger: pino.Logger, contentFetcherConfig: ContentFetcherConfig): SourceAdapter[] {
   const adapters: SourceAdapter[] = [];
 
   for (const factory of ADAPTER_FACTORIES) {
     if (!factory.isEnabled(config)) {
       continue;
     }
-    adapters.push(factory.create(config, checkpointStore, logger));
+    adapters.push(factory.create(config, checkpointStore, logger, contentFetcherConfig));
   }
 
   return adapters;
@@ -163,7 +167,13 @@ async function initializeCollector(): Promise<CollectorContext> {
   const kafkaContext = await createKafkaProducer(logger);
   healthContext.kafkaHealthy = true;
 
-  const adapters = buildAdapters(config, checkpointStore, logger);
+  const contentFetcherConfig = createContentFetcherConfig(process.env);
+  logger.info(
+    { enabled: contentFetcherConfig.enabled, timeoutMs: contentFetcherConfig.timeoutMs },
+    "Content fetcher configuration loaded"
+  );
+
+  const adapters = buildAdapters(config, checkpointStore, logger, contentFetcherConfig);
   const unsupportedEnabledAdapters = [
     config.REDDIT_ENABLED ? "reddit" : null,
     config.BLUESKY_ENABLED ? "bluesky" : null,

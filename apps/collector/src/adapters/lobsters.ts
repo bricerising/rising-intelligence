@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "../topics/extractor.js";
+import { fetchArticleContent, type ContentFetcherConfig } from "../content-fetcher.js";
 
 const LOBSTERS_RSS_URL = "https://lobste.rs/rss";
 
@@ -42,17 +43,20 @@ export class LobstersAdapter implements SourceAdapter {
   private checkpoints: CheckpointStore;
   private logger: Logger;
   private parser: Parser;
+  private contentFetcherConfig: ContentFetcherConfig;
 
   constructor(
     pollIntervalMs: number,
     maxItems: number,
     checkpoints: CheckpointStore,
-    logger: Logger
+    logger: Logger,
+    contentFetcherConfig: ContentFetcherConfig
   ) {
     this.pollIntervalMs = pollIntervalMs;
     this.maxItems = maxItems;
     this.checkpoints = checkpoints;
     this.logger = logger;
+    this.contentFetcherConfig = contentFetcherConfig;
     this.parser = new Parser({
       timeout: 30000,
       headers: {
@@ -122,7 +126,7 @@ export class LobstersAdapter implements SourceAdapter {
       const guid = item.guid ?? item.link;
       if (!guid) continue;
 
-      const event = this.itemToRawEvent(item, guid);
+      const event = await this.itemToRawEvent(item, guid);
       if (event) {
         yield {
           event,
@@ -133,12 +137,32 @@ export class LobstersAdapter implements SourceAdapter {
     }
   }
 
-  private itemToRawEvent(
+  private async itemToRawEvent(
     item: Parser.Item,
     guid: string
-  ): RawEvent | null {
+  ): Promise<RawEvent | null> {
     const title = item.title ?? "";
-    const text = item.contentSnippet ?? item.content ?? "";
+    let text = item.contentSnippet ?? item.content ?? "";
+
+    // If text is too short and we have a link, try to fetch article content
+    const MIN_RSS_CONTENT_LENGTH = 300;
+    if (text.length < MIN_RSS_CONTENT_LENGTH && item.link) {
+      const articleContent = await fetchArticleContent(
+        item.link,
+        this.contentFetcherConfig,
+        this.logger
+      );
+
+      if (articleContent && articleContent.success) {
+        text = articleContent.text;
+        this.logger.debug(
+          { url: item.link, textLength: text.length },
+          "Fetched article content for Lobsters item"
+        );
+      }
+      // If fetch failed, keep the short RSS text
+    }
+
     const combinedText = `${title} ${text}`;
 
     // Extract lobsters-specific metadata
@@ -187,7 +211,8 @@ export function createLobstersAdapter(
   pollIntervalMs: number,
   maxItems: number,
   checkpoints: CheckpointStore,
-  logger: Logger
+  logger: Logger,
+  contentFetcherConfig: ContentFetcherConfig
 ): SourceAdapter {
-  return new LobstersAdapter(pollIntervalMs, maxItems, checkpoints, logger);
+  return new LobstersAdapter(pollIntervalMs, maxItems, checkpoints, logger, contentFetcherConfig);
 }

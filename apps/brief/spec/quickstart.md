@@ -58,6 +58,11 @@ Target payload shape for query mode (implementation tracked in `apps/brief/spec/
     "lookback_days": 7,
     "topic_globs": ["*"]
   },
+  "report": {
+    "timezone": "America/New_York",
+    "start_at": "2026-01-01T00:00:00-05:00",
+    "end_at": "2026-02-10T23:59:59-05:00"
+  },
   "budget": {
     "daily_budget_usd": 5,
     "max_topics": 10,

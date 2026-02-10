@@ -8,6 +8,7 @@
 - 2026-02-08: Added Docker Compose E2E harness with mock LLM server and end-to-end verification script (`test:e2e:brief:compose`).
 - 2026-02-10: Added `LLM_PROVIDER=codex-cli` path to generate human-readable briefs via local Codex CLI, with response schema validation.
 - 2026-02-10: Updated Docker image + Compose to support `LLM_PROVIDER=codex-cli` in containerized runs (Codex CLI install + host `${HOME}/.codex` mount).
+- 2026-02-10: Implemented runtime prompt-injection hygiene for LLM inputs (evidence sanitization + suspicious-content logging metric), plus regression tests for sanitized payload generation.
 - 2026-02-10: Updated specs for query-mode summary generation (`last N days` default), topic glob filtering, and executive-summary output (implementation pending).
 
 ## Phase 1: Skeleton + contracts
@@ -119,3 +120,21 @@
 ### T024: Query-mode test coverage
 
 - **Acceptance**: Unit/integration tests cover lookback bounds, pre-ranking glob filtering, trend-snapshot ranking behavior, no-data failures, and budget interactions.
+
+## Phase 8: Structured Notes Thin-Slice
+
+### T025: SummaryRequest notes-framing hint parsing
+
+- **Acceptance**: Parser accepts optional `report.timezone`, `report.start_at`, and `report.end_at` fields without breaking existing requests.
+
+### T026: Standard notes prompt shaping
+
+- **Acceptance**: LLM prompt requests sectioned markdown notes by default and preserves grounded highlight schema.
+
+### T027: Notes URL grounding validation
+
+- **Acceptance**: URLs found in generated `brief.notes` are normalized and validated against evidence URLs; mismatches produce non-retryable grounding failure.
+
+### T028: Trigger-path wiring + tests
+
+- **Acceptance**: `riops brief trigger` can emit notes-framing hints and brief tests cover report parsing, prompt shaping, and notes grounding failures.

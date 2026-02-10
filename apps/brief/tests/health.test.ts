@@ -18,6 +18,7 @@ import {
   observeGenerationDuration,
   incrementDuplicatesSkipped,
   incrementBudgetExceeded,
+  incrementSuspiciousContent,
   incrementLlmTokens,
   incrementLlmCostUsd,
   observeHighlightsCount,
@@ -119,12 +120,14 @@ describe("brief health", () => {
     it("tracks budget and token/cost counters", () => {
       setBudgetRemainingUsd(ctx, 4.25);
       incrementBudgetExceeded(ctx, 2);
+      incrementSuspiciousContent(ctx, 3);
       incrementLlmTokens(ctx, "input", 120);
       incrementLlmTokens(ctx, "output", 80);
       incrementLlmCostUsd(ctx, 0.13);
 
       expect(ctx.metrics.budgetRemainingUsd).toBe(4.25);
       expect(ctx.metrics.budgetExceeded).toBe(2);
+      expect(ctx.metrics.suspiciousContent).toBe(3);
       expect(ctx.metrics.llmTokens.get("input")).toBe(120);
       expect(ctx.metrics.llmTokens.get("output")).toBe(80);
       expect(ctx.metrics.llmCostUsdTotal).toBeCloseTo(0.13);
@@ -162,6 +165,7 @@ describe("brief health", () => {
       observeGenerationDuration(ctx, 8);
       incrementDuplicatesSkipped(ctx, 1);
       incrementBudgetExceeded(ctx, 1);
+      incrementSuspiciousContent(ctx, 1);
       incrementLlmTokens(ctx, "input", 100);
       incrementLlmCostUsd(ctx, 0.05);
       observeHighlightsCount(ctx, 3);
@@ -176,6 +180,7 @@ describe("brief health", () => {
       expect(output).toContain("ri_brief_duplicates_skipped_total 1");
       expect(output).toContain("ri_brief_budget_remaining_usd 5");
       expect(output).toContain("ri_brief_budget_exceeded_total 1");
+      expect(output).toContain("ri_brief_suspicious_content_total 1");
       expect(output).toContain('ri_brief_llm_tokens_total{direction="input"} 100');
       expect(output).toContain("ri_brief_llm_cost_usd_total 0.05");
       expect(output).toContain("ri_brief_highlights_count_bucket");

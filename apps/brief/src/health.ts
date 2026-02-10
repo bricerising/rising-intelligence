@@ -25,6 +25,7 @@ export interface Metrics {
   duplicatesSkipped: number;
   budgetRemainingUsd: number;
   budgetExceeded: number;
+  suspiciousContent: number;
   llmTokens: Map<TokenDirection, number>;
   llmCostUsdTotal: number;
   highlightsCount: HistogramState;
@@ -62,6 +63,7 @@ export function createHealthContext(initialBudgetUsd = 0): HealthContext {
       duplicatesSkipped: 0,
       budgetRemainingUsd: initialBudgetUsd,
       budgetExceeded: 0,
+      suspiciousContent: 0,
       llmTokens: new Map(),
       llmCostUsdTotal: 0,
       highlightsCount: createHistogram(COUNT_BUCKETS),
@@ -94,6 +96,10 @@ export function setBudgetRemainingUsd(ctx: HealthContext, amount: number): void 
 
 export function incrementBudgetExceeded(ctx: HealthContext, count = 1): void {
   ctx.metrics.budgetExceeded += count;
+}
+
+export function incrementSuspiciousContent(ctx: HealthContext, count = 1): void {
+  ctx.metrics.suspiciousContent += count;
 }
 
 export function incrementLlmTokens(
@@ -164,6 +170,10 @@ export function formatMetrics(ctx: HealthContext): string {
   lines.push("# HELP ri_brief_budget_exceeded_total Summary requests skipped due to budget");
   lines.push("# TYPE ri_brief_budget_exceeded_total counter");
   lines.push(`ri_brief_budget_exceeded_total ${ctx.metrics.budgetExceeded}`);
+
+  lines.push("# HELP ri_brief_suspicious_content_total Evidence excerpts flagged as prompt-like");
+  lines.push("# TYPE ri_brief_suspicious_content_total counter");
+  lines.push(`ri_brief_suspicious_content_total ${ctx.metrics.suspiciousContent}`);
 
   lines.push("# HELP ri_brief_llm_tokens_total LLM tokens by direction");
   lines.push("# TYPE ri_brief_llm_tokens_total counter");

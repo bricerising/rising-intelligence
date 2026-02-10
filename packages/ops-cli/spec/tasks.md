@@ -25,3 +25,7 @@
 ### T006: Explicit mode compatibility
 
 - **Acceptance**: Existing explicit mode flags (`--topic-key`, `--evidence-url`, etc.) continue to work when provided.
+
+### T007: Structured notes framing hints
+
+- **Acceptance**: `riops brief trigger` supports `--report-timezone`, `--report-start-at`, and `--report-end-at` and includes them in emitted `SummaryRequest`.

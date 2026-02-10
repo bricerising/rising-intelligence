@@ -1,6 +1,7 @@
 import { BriefStatus, Prisma, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
+import { isIP } from "node:net";
 import { serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import { z } from "zod";
@@ -12,6 +13,7 @@ import {
   incrementGeneration,
   incrementLlmCostUsd,
   incrementLlmTokens,
+  incrementSuspiciousContent,
   observeCitationsCount,
   observeHighlightsCount,
   setBudgetRemainingUsd,
@@ -38,6 +40,18 @@ const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
 const TREND_WINDOW_60M_PROTO = 2;
 const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
 const DEFAULT_QUERY_MAX_TOPICS = 10;
+const NOTES_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
+const EXCERPT_MAX_LENGTH = 2000;
+const TITLE_MAX_LENGTH = 200;
+const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+const INSTRUCTION_MARKER_PATTERN = /\[INST\]|\[\/INST\]|\[SYSTEM\]|<<SYS>>|<\/SYS>>/gi;
+const SUSPICIOUS_CONTENT_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i,
+  /you\s+are\s+(now\s+)?a\s+(different|new)/i,
+  /\[INST\]/i,
+  /<<SYS>>/i,
+  /system\s*:\s*$/im,
+];
 const BUDGET_RESERVATION_SCRIPT = `
 local key = KEYS[1]
 local max_budget = tonumber(ARGV[1])
@@ -617,6 +631,7 @@ async function buildQueryModeRequest(
       lookbackDays,
       topicGlobs,
       maxEventsPerTopic,
+      evidenceStrategy,
     },
     topics: topicsWithEvidence.length > 0 ? topicsWithEvidence : hydratedTopics,
     coverageWarnings,
@@ -654,6 +669,62 @@ function normalizeUsdDelta(value: number): number {
   return rounded === 0 ? 0 : rounded;
 }
 
+function isPrivateOrLoopbackIpv4(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+
+  return (
+    octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
+function isPrivateOrLoopbackIpv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (normalized === "::1") {
+    return true;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    return isPrivateOrLoopbackIpv4(normalized.slice("::ffff:".length));
+  }
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
+    return true;
+  }
+
+  const firstHextet = normalized.split(":")[0];
+  return /^fe[89ab][0-9a-f]{0,2}$/i.test(firstHextet);
+}
+
+function isDisallowedHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "0.0.0.0"
+  ) {
+    return true;
+  }
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    return isPrivateOrLoopbackIpv4(normalized);
+  }
+  if (ipVersion === 6) {
+    return isPrivateOrLoopbackIpv6(normalized);
+  }
+  return false;
+}
+
 function canonicalizeUrl(value: string): string | null {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -662,8 +733,17 @@ function canonicalizeUrl(value: string): string | null {
 
   try {
     const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    if (isDisallowedHostname(url.hostname)) {
+      return null;
+    }
     url.hash = "";
     url.hostname = url.hostname.toLowerCase();
+    if ((url.protocol === "http:" && url.port === "80") || (url.protocol === "https:" && url.port === "443")) {
+      url.port = "";
+    }
     if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
       url.pathname = url.pathname.slice(0, -1);
     }
@@ -671,6 +751,51 @@ function canonicalizeUrl(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function sanitizeEvidenceTitle(value: string | null): string {
+  if (!value || value.trim().length === 0) {
+    return "";
+  }
+
+  const sanitized = value
+    .replace(/[\x00-\x1F\x7F]/g, "")
+    .slice(0, TITLE_MAX_LENGTH)
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(INSTRUCTION_MARKER_PATTERN, "")
+    .trim();
+  return sanitized.length > 0 ? sanitized : "[No title]";
+}
+
+function sanitizeEvidenceExcerpt(value: string | null): string {
+  if (!value || value.trim().length === 0) {
+    return "";
+  }
+
+  const sanitized = value
+    .replace(CONTROL_CHAR_PATTERN, "")
+    .replace(/\s{3,}/g, "  ")
+    .slice(0, EXCERPT_MAX_LENGTH)
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(INSTRUCTION_MARKER_PATTERN, "")
+    .trim();
+  return sanitized.length > 0 ? sanitized : "[Content removed]";
+}
+
+function findSuspiciousContentPattern(title: string | null, excerpt: string | null): string | null {
+  const text = [title ?? "", excerpt ?? ""].join("\n").trim();
+  if (text.length === 0) {
+    return null;
+  }
+
+  for (const pattern of SUSPICIOUS_CONTENT_PATTERNS) {
+    if (pattern.test(text)) {
+      return pattern.source;
+    }
+  }
+  return null;
 }
 
 function dedupeCanonicalUrls(values: Array<string | null>): string[] {
@@ -686,6 +811,16 @@ function dedupeCanonicalUrls(values: Array<string | null>): string[] {
     unique.add(canonical);
   }
   return [...unique];
+}
+
+function extractCanonicalUrlsFromText(text: string): string[] {
+  const matches = text.match(NOTES_URL_PATTERN);
+  if (!matches || matches.length === 0) {
+    return [];
+  }
+
+  const cleaned = matches.map((value) => value.replace(/[),.;!?]+$/g, ""));
+  return dedupeCanonicalUrls(cleaned);
 }
 
 function createEvidenceUrlSet(request: ParsedSummaryRequest): Set<string> {
@@ -728,23 +863,103 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
   };
 }
 
-function deriveDefaultNotes(request: ParsedSummaryRequest, highlights: NormalizedHighlight[]): string {
-  if (highlights.length === 0) {
-    return "Executive summary: Limited coverage. No grounded highlights were produced for this request.";
+function formatReportDate(value: Date | undefined, timezone: string | undefined): string | null {
+  if (!value) {
+    return null;
   }
 
-  const lookbackDays = request.query?.lookbackDays;
-  const lookbackSuffix =
-    lookbackDays && lookbackDays > 0 ? ` over the last ${lookbackDays} day(s)` : "";
-  const primaryTopic = highlights[0]?.topic ?? "the selected topics";
-  const additionalTopics = highlights.length - 1;
-  const topicTail =
-    additionalTopics > 0 ? ` with ${additionalTopics} additional topic(s)` : "";
-
-  return `Executive summary: ${primaryTopic} led the strongest grounded signals${lookbackSuffix}${topicTail}.`;
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone ?? "UTC",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    }).format(value);
+  } catch {
+    return value.toISOString();
+  }
 }
 
-function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<string, unknown> {
+function deriveStructuredNotes(
+  request: ParsedSummaryRequest,
+  highlights: NormalizedHighlight[]
+): string {
+  const timezone = request.report?.timezone;
+  const startAt = request.report?.startAt;
+  const endAt = request.report?.endAt ?? request.requestedAt;
+  const startText = formatReportDate(startAt, timezone);
+  const endText = formatReportDate(endAt, timezone) ?? request.requestedAt.toISOString();
+  const lookbackDays = request.query?.lookbackDays;
+  const timeframe =
+    startText !== null
+      ? `${startText} through ${endText}`
+      : lookbackDays && lookbackDays > 0
+        ? `the last ${lookbackDays} day(s), ending ${endText}`
+        : `up to ${endText}`;
+
+  const topTopics = highlights.slice(0, 3).map((highlight) => highlight.topic);
+  const topTopicSentence =
+    topTopics.length > 0 ? topTopics.join(", ") : "No dominant topics were confidently grounded";
+  const topicLandscapeLines =
+    highlights.length > 0
+      ? highlights
+          .slice(0, 3)
+          .map((highlight) => `- **${highlight.topic}**: ${highlight.why_it_matters}`)
+      : ["- Limited coverage: no grounded highlights were produced for this request."];
+
+  return [
+    "# State of Signals and Where They're Going",
+    "",
+    "## Method and scope",
+    `This report summarizes topic-level evidence gathered over ${timeframe}${timezone ? ` (${timezone})` : ""}.`,
+    "",
+    "## Dominant shifts",
+    `Current signals are clustering around ${topTopicSentence}, indicating momentum is moving from isolated updates to coordinated pattern-level changes.`,
+    "",
+    "## Topic landscape",
+    ...topicLandscapeLines,
+    "",
+    "## Risk and governance",
+    "As operational depth increases, runtime policy controls, review gates, and continuous evaluation remain the gating requirements for safe deployment.",
+    "",
+    "## Execution and economics",
+    "Execution quality is increasingly shaped by workflow automation and routing decisions that balance latency, quality, and spend.",
+    "",
+    "## Outlook",
+    "Near-term advantage is likely to come from teams that combine grounded trend monitoring with fast operational experimentation.",
+  ].join("\n");
+}
+
+function deriveDefaultNotes(request: ParsedSummaryRequest, highlights: NormalizedHighlight[]): string {
+  return deriveStructuredNotes(request, highlights);
+}
+
+function enforceGroundedNotes(request: ParsedSummaryRequest, notes: string): string {
+  const noteUrls = extractCanonicalUrlsFromText(notes);
+  if (noteUrls.length === 0) {
+    return notes;
+  }
+
+  const evidenceUrls = createEvidenceUrlSet(request);
+  if (evidenceUrls.size === 0) {
+    throw new NonRetryableProcessingError("No evidence URLs were provided in the summary request");
+  }
+
+  const ungrounded = noteUrls.filter((url) => !evidenceUrls.has(url));
+  if (ungrounded.length > 0) {
+    throw new NonRetryableProcessingError(
+      `Brief notes contained ungrounded URL citations: ${ungrounded.slice(0, 3).join(", ")}`
+    );
+  }
+
+  return notes;
+}
+
+function buildSummaryRequestPayload(
+  request: ParsedSummaryRequest,
+  logger?: pino.Logger,
+  healthContext?: HealthContext
+): Record<string, unknown> {
   return {
     request_id: request.requestId,
     requested_at: request.requestedAt.toISOString(),
@@ -759,15 +974,33 @@ function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<strin
         volume: metric.volume,
         acceleration: metric.acceleration,
       })),
-      evidence: topic.evidence.map((evidence) => ({
-        event_id: evidence.eventId,
-        source: evidence.source,
-        url: evidence.url ?? "",
-        title: evidence.title ?? "",
-        published_at: evidence.publishedAt ? evidence.publishedAt.toISOString() : "",
-        fetched_at: evidence.fetchedAt ? evidence.fetchedAt.toISOString() : "",
-        text_excerpt: evidence.textExcerpt ?? "",
-      })),
+      evidence: topic.evidence.map((evidence) => {
+        const suspiciousPattern = findSuspiciousContentPattern(evidence.title, evidence.textExcerpt);
+        if (suspiciousPattern) {
+          logger?.warn(
+            {
+              requestId: request.requestId,
+              topic: topic.topic,
+              eventId: evidence.eventId,
+              pattern: suspiciousPattern,
+            },
+            "Suspicious prompt-like content detected in evidence"
+          );
+          if (healthContext) {
+            incrementSuspiciousContent(healthContext);
+          }
+        }
+
+        return {
+          event_id: evidence.eventId,
+          source: evidence.source,
+          url: evidence.url ? canonicalizeUrl(evidence.url) ?? "" : "",
+          title: sanitizeEvidenceTitle(evidence.title),
+          published_at: evidence.publishedAt ? evidence.publishedAt.toISOString() : "",
+          fetched_at: evidence.fetchedAt ? evidence.fetchedAt.toISOString() : "",
+          text_excerpt: sanitizeEvidenceExcerpt(evidence.textExcerpt),
+        };
+      }),
     })),
     budget: request.budget
       ? {
@@ -782,20 +1015,32 @@ function buildSummaryRequestPayload(request: ParsedSummaryRequest): Record<strin
           lookback_days: request.query.lookbackDays,
           topic_globs: request.query.topicGlobs,
           max_events_per_topic: request.query.maxEventsPerTopic,
+          evidence_strategy: request.query.evidenceStrategy,
+        }
+      : null,
+    report: request.report
+      ? {
+          timezone: request.report.timezone,
+          start_at: request.report.startAt ? request.report.startAt.toISOString() : undefined,
+          end_at: request.report.endAt ? request.report.endAt.toISOString() : undefined,
         }
       : null,
   };
 }
 
-function buildCodexCliPrompt(request: ParsedSummaryRequest): string {
-  const payload = buildSummaryRequestPayload(request);
+function buildCodexCliPrompt(
+  request: ParsedSummaryRequest,
+  logger?: pino.Logger,
+  healthContext?: HealthContext
+): string {
+  const payload = buildSummaryRequestPayload(request, logger, healthContext);
   const maxTopics = request.budget?.maxTopics ?? request.topics.length;
   const maxEvidencePerTopic =
     request.budget?.maxEvidencePerTopic ??
     Math.max(...request.topics.map((topic) => topic.evidence.length), 0);
   const maxOutputTokens = request.budget?.maxOutputTokens ?? 1200;
 
-  return [
+  const promptSections = [
     "You are generating a human-readable engineering intelligence brief from a structured summary request.",
     "Use only the evidence included in SUMMARY_REQUEST_JSON. Do not invent facts or URLs.",
     "Each highlight must include concrete what_happened, why_it_matters, suggested_action, and citations.",
@@ -804,21 +1049,36 @@ function buildCodexCliPrompt(request: ParsedSummaryRequest): string {
     "Return valid JSON only with this shape:",
     '{ "title": string, "highlights": [{ "topic": string, "what_happened": string, "why_it_matters": string, "suggested_action": string, "citations": string[] }], "notes": string, "usage": { "prompt_tokens": number, "completion_tokens": number }, "meta": { "provider": string, "model": string, "estimated_cost_usd": number } }',
     "If usage or cost are unknown, set them to 0.",
-    `SUMMARY_REQUEST_JSON:\n${JSON.stringify(payload, null, 2)}`,
-  ].join("\n\n");
+  ];
+
+  promptSections.push(
+    "STANDARD NOTES FORMAT (always required): Render notes as markdown using this structure in order:",
+    "# State of Signals and Where They're Going",
+    "## Method and scope",
+    "## Dominant shifts",
+    "## Topic landscape",
+    "## Risk and governance",
+    "## Execution and economics",
+    "## Outlook",
+    "If notes include URLs, every URL MUST come from the evidence in SUMMARY_REQUEST_JSON."
+  );
+
+  promptSections.push(`SUMMARY_REQUEST_JSON:\n${JSON.stringify(payload, null, 2)}`);
+  return promptSections.join("\n\n");
 }
 
 async function callHttpLlm(
   config: Config,
   request: ParsedSummaryRequest,
-  logger: pino.Logger
+  logger: pino.Logger,
+  healthContext?: HealthContext
 ): Promise<z.infer<typeof LlmResponseSchema>> {
   let response: Response;
   try {
     response = await fetch(config.LLM_ENDPOINT_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildSummaryRequestPayload(request)),
+      body: JSON.stringify(buildSummaryRequestPayload(request, logger, healthContext)),
       signal: AbortSignal.timeout(config.LLM_TIMEOUT_MS),
     });
   } catch (error) {
@@ -859,9 +1119,10 @@ async function callHttpLlm(
 async function callCodexCliLlm(
   config: Config,
   request: ParsedSummaryRequest,
-  logger: pino.Logger
+  logger: pino.Logger,
+  healthContext?: HealthContext
 ): Promise<z.infer<typeof LlmResponseSchema>> {
-  const prompt = buildCodexCliPrompt(request);
+  const prompt = buildCodexCliPrompt(request, logger, healthContext);
   let decoded: unknown;
   try {
     decoded = await executeCodexCli(config, prompt, logger);
@@ -971,6 +1232,7 @@ function buildInternalSuccessResult(
     const warningsText = request.coverageWarnings.join(" ");
     notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
   }
+  notes = enforceGroundedNotes(request, notes);
 
   return buildSuccessPayload(
     request,
@@ -992,7 +1254,7 @@ async function buildHttpSuccessResult(
   producedAt: Date,
   estimatedCostUsd: number
 ): Promise<SuccessResult> {
-  const llmResponse = await callHttpLlm(ctx.config, request, ctx.logger);
+  const llmResponse = await callHttpLlm(ctx.config, request, ctx.logger, ctx.healthContext);
   const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
   const highlights = enforceGroundedHighlights(
     request,
@@ -1008,6 +1270,7 @@ async function buildHttpSuccessResult(
     const warningsText = request.coverageWarnings.join(" ");
     notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
   }
+  notes = enforceGroundedNotes(request, notes);
 
   const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
 
@@ -1031,7 +1294,7 @@ async function buildCodexCliSuccessResult(
   producedAt: Date,
   estimatedCostUsd: number
 ): Promise<SuccessResult> {
-  const llmResponse = await callCodexCliLlm(ctx.config, request, ctx.logger);
+  const llmResponse = await callCodexCliLlm(ctx.config, request, ctx.logger, ctx.healthContext);
   const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
   const highlights = enforceGroundedHighlights(
     request,
@@ -1047,6 +1310,7 @@ async function buildCodexCliSuccessResult(
     const warningsText = request.coverageWarnings.join(" ");
     notes = notes ? `${notes}\n\nCoverage Note: ${warningsText}` : `Coverage Note: ${warningsText}`;
   }
+  notes = enforceGroundedNotes(request, notes);
 
   const costUsd = normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd);
   const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";

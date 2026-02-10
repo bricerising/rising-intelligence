@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "../topics/extractor.js";
+import { fetchArticleContent, type ContentFetcherConfig } from "../content-fetcher.js";
 
 const HN_API_BASE = "https://hacker-news.firebaseio.com/v0";
 
@@ -57,19 +58,22 @@ export class HackerNewsAdapter implements SourceAdapter {
   private maxItems: number;
   private checkpoints: CheckpointStore;
   private logger: Logger;
+  private contentFetcherConfig: ContentFetcherConfig;
 
   constructor(
     mode: HNMode,
     pollIntervalMs: number,
     maxItems: number,
     checkpoints: CheckpointStore,
-    logger: Logger
+    logger: Logger,
+    contentFetcherConfig: ContentFetcherConfig
   ) {
     this.mode = mode;
     this.pollIntervalMs = pollIntervalMs;
     this.maxItems = maxItems;
     this.checkpoints = checkpoints;
     this.logger = logger;
+    this.contentFetcherConfig = contentFetcherConfig;
   }
 
   async initialize(): Promise<void> {
@@ -125,7 +129,7 @@ export class HackerNewsAdapter implements SourceAdapter {
           continue;
         }
 
-        const event = this.itemToRawEvent(item);
+        const event = await this.itemToRawEvent(item);
         if (event) {
           maxProcessedId = Math.max(maxProcessedId, storyId);
           yield {
@@ -147,11 +151,32 @@ export class HackerNewsAdapter implements SourceAdapter {
     }
   }
 
-  private itemToRawEvent(item: HNItem): RawEvent | null {
+  private async itemToRawEvent(item: HNItem): Promise<RawEvent | null> {
     if (!item.id) return null;
 
     const title = item.title ?? "";
-    const text = item.text ?? item.url ?? "";
+    let text = item.text ?? "";
+
+    // If no text content and we have a URL, try to fetch article content
+    if (!text && item.url) {
+      const articleContent = await fetchArticleContent(
+        item.url,
+        this.contentFetcherConfig,
+        this.logger
+      );
+
+      if (articleContent && articleContent.success) {
+        text = articleContent.text;
+        this.logger.debug(
+          { hnId: item.id, url: item.url, textLength: text.length },
+          "Fetched article content for HN story"
+        );
+      } else {
+        // Fall back to URL if fetch failed
+        text = item.url;
+      }
+    }
+
     const combinedText = `${title} ${text}`;
 
     const event: RawEvent = {
@@ -201,7 +226,8 @@ export function createHackerNewsAdapter(
   pollIntervalMs: number,
   maxItems: number,
   checkpoints: CheckpointStore,
-  logger: Logger
+  logger: Logger,
+  contentFetcherConfig: ContentFetcherConfig
 ): SourceAdapter {
   const validMode = (["top", "new", "best"].includes(mode)
     ? mode
@@ -212,6 +238,7 @@ export function createHackerNewsAdapter(
     pollIntervalMs,
     maxItems,
     checkpoints,
-    logger
+    logger,
+    contentFetcherConfig
   );
 }

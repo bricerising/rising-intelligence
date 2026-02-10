@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 
 import { loadDotEnv } from "@rising-intelligence/shared";
-import { briefTrigger } from "./commands/brief/trigger.js";
-import { kafkaTopics } from "./commands/kafka/topics.js";
-import { topicsList } from "./commands/topics/list.js";
-import { schemaRegistryPublishProtos } from "./commands/schema-registry/publish-protos.js";
 import { printHelp } from "./help.js";
 import { parseArgs } from "./lib/args.js";
 
@@ -28,6 +24,7 @@ async function main() {
   const [group, subcommand] = command;
 
   if (group === "schema-registry" && (subcommand === "publish-protos" || subcommand === "publish")) {
+    const { schemaRegistryPublishProtos } = await import("./commands/schema-registry/publish-protos.js");
     await schemaRegistryPublishProtos(flags);
     return;
   }
@@ -57,16 +54,25 @@ async function main() {
       subcommand === "publish-summary-request" ||
       subcommand === "generate-summary-request")
   ) {
+    const { briefTrigger } = await import("./commands/brief/trigger.js");
     await briefTrigger(flags);
     return;
   }
 
   if (group === "kafka" && (subcommand === "topics" || subcommand === "list")) {
+    const { kafkaTopics } = await import("./commands/kafka/topics.js");
     await kafkaTopics(flags);
     return;
   }
 
+  if (group === "kafka" && subcommand === "create-topics") {
+    const { kafkaCreateTopics } = await import("./commands/kafka/create-topics.js");
+    await kafkaCreateTopics(flags);
+    return;
+  }
+
   if (group === "topics" && subcommand === "list") {
+    const { topicsList } = await import("./commands/topics/list.js");
     await topicsList(flags);
     return;
   }

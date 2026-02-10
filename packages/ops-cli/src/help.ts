@@ -14,9 +14,10 @@ Usage:
 
 Commands:
   schema-registry publish-protos   Publish protobuf schemas + subjects
+  kafka create-topics              Create required Kafka topics
+  kafka topics                     List all Kafka topics
   lgtm urls                        Print local dev endpoints
   brief trigger                    Publish a manual SummaryRequest to Kafka
-  kafka topics                     List all Kafka topics
   topics list                      List distinct topics from raw_events table
 
 Flags (schema-registry publish-protos):
@@ -27,6 +28,9 @@ Flags (schema-registry publish-protos):
   --retry-max-ms <ms>              Default: $SCHEMA_REGISTRY_RETRY_MAX_MS or 5000
   --timeout-ms <ms>                Default: $SCHEMA_REGISTRY_TIMEOUT_MS or 8000
   --dry-run                        Print actions without calling Schema Registry
+
+Flags (kafka create-topics):
+  --kafka-brokers <brokers>        Default: $KAFKA_BROKERS or localhost:9092
 
 Flags (kafka topics):
   --kafka-brokers <brokers>        Default: $KAFKA_BROKERS or localhost:9092
@@ -53,6 +57,9 @@ Flags (brief trigger):
   --max-lookback-days <n>          Default: $BRIEF_MAX_LOOKBACK_DAYS or 30
   --topic-globs <csv>              Default: * (example: aws.*,ai.*)
   --max-events-per-topic <n>       Default: $BRIEF_MAX_QUERY_EVENTS_PER_TOPIC or --max-evidence-per-topic
+  --report-timezone <iana>         Optional notes framing timezone (example: America/New_York)
+  --report-start-at <iso8601>      Optional notes framing start time
+  --report-end-at <iso8601>        Optional notes framing end time
   --topic-key <key>                Optional (enables explicit mode; example: aws.bedrock)
   --evidence-url <url>             Optional with --topic-key (enables explicit mode)
   --evidence-source <source>       Default: rss
@@ -71,6 +78,7 @@ Examples:
   riops schema-registry publish-protos
   riops schema-registry publish-protos --schema-registry-url http://localhost:8081
   SCHEMA_REGISTRY_URL=http://localhost:8081 riops schema-registry publish-protos
+  riops kafka create-topics
   riops kafka topics
   riops kafka topics --kafka-brokers localhost:9092
   riops topics list
@@ -78,6 +86,7 @@ Examples:
   riops topics list --counts --min-count 10
   riops brief trigger --dry-run
   riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
+  riops brief trigger --report-timezone America/New_York --report-start-at 2026-01-01T00:00:00-05:00 --report-end-at 2026-02-10T23:59:59-05:00 --dry-run
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
 `);
 }

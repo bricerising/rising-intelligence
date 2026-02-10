@@ -33,6 +33,12 @@ export interface ParsedSummaryQuery {
   evidenceStrategy?: EvidenceStrategy;
 }
 
+export interface ParsedSummaryReport {
+  timezone?: string;
+  startAt?: Date;
+  endAt?: Date;
+}
+
 export interface ParsedSummaryRequest {
   requestId: string;
   requestedAt: Date;
@@ -47,6 +53,7 @@ export interface ParsedSummaryRequest {
       }
     | null;
   query: ParsedSummaryQuery | null;
+  report: ParsedSummaryReport | null;
   topics: ParsedSummaryTopic[];
   llmProvider?: string; // Override LLM provider for this request
   coverageWarnings?: string[]; // Query-mode warnings about incomplete data

@@ -60,6 +60,13 @@ const SummaryRequestWireSchema = z.object({
       evidence_strategy: z.string().optional(),
     })
     .optional(),
+  report: z
+    .object({
+      timezone: z.string().min(1).optional(),
+      start_at: z.string().optional(),
+      end_at: z.string().optional(),
+    })
+    .optional(),
   llm_provider: z.string().optional(),
 });
 
@@ -177,6 +184,22 @@ function parseEvidenceStrategy(value: string | undefined): EvidenceStrategy {
   throw new Error(`Unsupported evidence strategy: ${value}`);
 }
 
+function parseOptionalTimezone(value: string | undefined): string | undefined {
+  if (!value || value.trim().length === 0) {
+    return undefined;
+  }
+  const timezone = value.trim();
+
+  // Validate IANA timezone format via Intl runtime.
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+  } catch {
+    throw new Error(`Invalid report.timezone: ${value}`);
+  }
+
+  return timezone;
+}
+
 export function parseSummaryRequestType(value: number | string): SummaryRequestType {
   if (typeof value === "number") {
     if (value === 1) {
@@ -210,6 +233,26 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
   }
 
   const wire = SummaryRequestWireSchema.parse(decoded);
+  const reportTimezone = parseOptionalTimezone(wire.report?.timezone);
+  const reportStartAt = parseOptionalDate(wire.report?.start_at, "report.start_at") ?? undefined;
+  const reportEndAt = parseOptionalDate(wire.report?.end_at, "report.end_at") ?? undefined;
+
+  if (reportStartAt && reportEndAt && reportStartAt.getTime() > reportEndAt.getTime()) {
+    throw new Error("Invalid report bounds: report.start_at must be <= report.end_at");
+  }
+
+  const reportHints = wire.report
+    ? {
+        timezone: reportTimezone,
+        startAt: reportStartAt,
+        endAt: reportEndAt,
+      }
+    : null;
+  const hasReportHints =
+    reportHints !== null &&
+    (reportHints.timezone !== undefined ||
+      reportHints.startAt !== undefined ||
+      reportHints.endAt !== undefined);
 
   return {
     requestId: wire.request_id,
@@ -235,6 +278,7 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
           evidenceStrategy: parseEvidenceStrategy(wire.query.evidence_strategy),
         }
       : null,
+    report: hasReportHints ? reportHints : null,
     llmProvider: wire.llm_provider?.trim() || undefined,
     topics: (wire.topics ?? []).map((topic) => {
       const parsedTopic = topic.topic.trim();

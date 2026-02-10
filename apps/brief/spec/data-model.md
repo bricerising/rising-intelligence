@@ -36,6 +36,23 @@ Semantics:
 - `topic_globs` (optional): glob filters over canonical topic keys (for example `aws.*`, `ai.*`, `*.bedrock`).
 - `max_events_per_topic` (optional): per-topic fetch cap to bound context and DB work.
 
+`SummaryRequest` MAY also include optional report rendering hints:
+
+```json
+{
+  "report": {
+    "timezone": "America/New_York",
+    "start_at": "2026-01-01T00:00:00-05:00",
+    "end_at": "2026-02-10T23:59:59-05:00"
+  }
+}
+```
+
+Semantics:
+
+- `timezone` (optional): IANA timezone used for notes framing.
+- `start_at` / `end_at` (optional): notes framing bounds used in prompt context.
+
 ## Evidence model
 
 Evidence SHOULD be represented as:
