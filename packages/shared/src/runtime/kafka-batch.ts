@@ -6,6 +6,38 @@ export interface KafkaBatchLifecycle {
   flushHeartbeat(): Promise<void>;
 }
 
+export interface KafkaBatchMessageContext {
+  kafkaTopic: string;
+  partition: number;
+  offset: string;
+}
+
+export interface KafkaBatchMessageStrategy<TContext, TMessage> {
+  deserialize(value: Buffer): TMessage;
+  onEmptyValue?(
+    ctx: TContext,
+    messageContext: KafkaBatchMessageContext
+  ): Promise<void> | void;
+  onDeserializeFailure?(
+    ctx: TContext,
+    messageContext: KafkaBatchMessageContext,
+    error: unknown
+  ): Promise<void> | void;
+  onMessage(
+    ctx: TContext,
+    messageContext: KafkaBatchMessageContext,
+    decoded: TMessage
+  ): Promise<void> | void;
+}
+
+export interface ProcessKafkaBatchMessagesOptions {
+  resolveOffsets?: boolean;
+}
+
+export interface ProcessKafkaBatchMessagesResult {
+  completed: boolean;
+}
+
 /**
  * Proxy around KafkaJS batch lifecycle signals so consumers share consistent
  * heartbeat cadence and stale/running checks.
@@ -40,4 +72,61 @@ export function createKafkaBatchLifecycle(
       messagesSinceHeartbeat = 0;
     },
   };
+}
+
+export async function processKafkaBatchMessages<TContext, TMessage>(
+  ctx: TContext,
+  payload: Pick<EachBatchPayload, "batch" | "resolveOffset">,
+  batchLifecycle: KafkaBatchLifecycle,
+  strategy: KafkaBatchMessageStrategy<TContext, TMessage>,
+  options: ProcessKafkaBatchMessagesOptions = {}
+): Promise<ProcessKafkaBatchMessagesResult> {
+  const resolveOffsets = options.resolveOffsets ?? false;
+  let completed = true;
+
+  for (const message of payload.batch.messages) {
+    if (!batchLifecycle.shouldContinue()) {
+      completed = false;
+      break;
+    }
+
+    const messageContext: KafkaBatchMessageContext = {
+      kafkaTopic: payload.batch.topic,
+      partition: payload.batch.partition,
+      offset: message.offset,
+    };
+
+    if (!message.value) {
+      await strategy.onEmptyValue?.(ctx, messageContext);
+      if (resolveOffsets) {
+        payload.resolveOffset(message.offset);
+      }
+      await batchLifecycle.onMessageHandled();
+      continue;
+    }
+
+    let decoded: TMessage;
+    try {
+      decoded = strategy.deserialize(message.value);
+    } catch (error) {
+      await strategy.onDeserializeFailure?.(ctx, messageContext, error);
+      if (resolveOffsets) {
+        payload.resolveOffset(message.offset);
+      }
+      await batchLifecycle.onMessageHandled();
+      continue;
+    }
+
+    await strategy.onMessage(ctx, messageContext, decoded);
+    if (resolveOffsets) {
+      payload.resolveOffset(message.offset);
+    }
+    await batchLifecycle.onMessageHandled();
+  }
+
+  if (!batchLifecycle.shouldContinue()) {
+    completed = false;
+  }
+
+  return { completed };
 }

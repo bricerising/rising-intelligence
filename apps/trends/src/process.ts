@@ -4,7 +4,10 @@ import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
 import {
   createKafkaBatchLifecycle,
   parseCanonicalSource,
+  processKafkaBatchMessages,
   serializeError,
+  type KafkaBatchMessageContext,
+  type KafkaBatchMessageStrategy,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
@@ -101,6 +104,14 @@ function parseNonNegativeInteger(value: unknown, fallback = 0): number {
   return fallback;
 }
 
+function parseCollectorSource(value: unknown): string {
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw new Error("collector heartbeat source must be a string or number");
+  }
+
+  return parseCanonicalSource(value);
+}
+
 function deserializeCollectorHeartbeat(
   messageValue: Buffer
 ): {
@@ -123,7 +134,7 @@ function deserializeCollectorHeartbeat(
   }
 
   const heartbeat = decoded as Record<string, unknown>;
-  const source = parseCanonicalSource(heartbeat.source as number | string);
+  const source = parseCollectorSource(heartbeat.source);
   const status = parseCollectorStatus(heartbeat.status);
   const timestamp = parseIsoDate(heartbeat.timestamp, "timestamp");
   const lastFetchAt = parseIsoDate(heartbeat.last_fetch_at, "last_fetch_at");
@@ -153,29 +164,12 @@ export interface TrendsContext {
   lagWriteTimestamps: Map<string, number>;
 }
 
-interface MessageContext {
-  kafkaTopic: string;
-  partition: number;
-  offset: string;
-}
-
-interface BatchMessageStrategy<TMessage> {
-  readonly emptyValueLogMessage: string;
-  readonly deserializeFailureLogMessage: string;
-  deserialize(value: Buffer): TMessage;
-  handleMessage(
-    ctx: TrendsContext,
-    decoded: TMessage,
-    messageContext: MessageContext
-  ): Promise<void>;
-}
-
 async function processBatchWithStrategy<TMessage>(
   ctx: TrendsContext,
   payload: EachBatchPayload,
-  strategy: BatchMessageStrategy<TMessage>
+  strategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>
 ): Promise<boolean> {
-  const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+  const { isRunning, isStale, commitOffsetsIfNecessary, heartbeat } = payload;
   const batchLifecycle = createKafkaBatchLifecycle(
     { isRunning, isStale, heartbeat },
     LOOP_HEARTBEAT_INTERVAL_MESSAGES
@@ -185,52 +179,16 @@ async function processBatchWithStrategy<TMessage>(
     return false;
   }
 
-  let completedBatch = true;
-
-  for (const message of batch.messages) {
-    if (!batchLifecycle.shouldContinue()) {
-      completedBatch = false;
-      break;
-    }
-
-    const messageContext: MessageContext = {
-      kafkaTopic: batch.topic,
-      partition: batch.partition,
-      offset: message.offset,
-    };
-
-    if (!message.value) {
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(messageContext, strategy.emptyValueLogMessage);
-      resolveOffset(message.offset);
-      await batchLifecycle.onMessageHandled();
-      continue;
-    }
-
-    let decoded: TMessage;
-    try {
-      decoded = strategy.deserialize(message.value);
-    } catch (error) {
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          ...messageContext,
-          error: serializeError(error),
-        },
-        strategy.deserializeFailureLogMessage
-      );
-      resolveOffset(message.offset);
-      await batchLifecycle.onMessageHandled();
-      continue;
-    }
-
-    await strategy.handleMessage(ctx, decoded, messageContext);
-    resolveOffset(message.offset);
-    await batchLifecycle.onMessageHandled();
-  }
+  const { completed } = await processKafkaBatchMessages(
+    ctx,
+    payload,
+    batchLifecycle,
+    strategy,
+    { resolveOffsets: true }
+  );
 
   await commitOffsetsIfNecessary();
-  if (!completedBatch || !batchLifecycle.shouldContinue()) {
+  if (!completed) {
     return false;
   }
 
@@ -238,11 +196,45 @@ async function processBatchWithStrategy<TMessage>(
   return true;
 }
 
-const RAW_EVENT_BATCH_STRATEGY: BatchMessageStrategy<ParsedRawEvent> = {
-  emptyValueLogMessage: "Skipping message with empty value",
-  deserializeFailureLogMessage: "Failed to deserialize event",
+function onEmptyBatchValue(
+  ctx: TrendsContext,
+  messageContext: KafkaBatchMessageContext,
+  logMessage: string
+): void {
+  incrementError(ctx.healthContext, "parse_error");
+  ctx.logger.warn(messageContext, logMessage);
+}
+
+function onBatchDeserializeFailure(
+  ctx: TrendsContext,
+  messageContext: KafkaBatchMessageContext,
+  error: unknown,
+  logMessage: string
+): void {
+  incrementError(ctx.healthContext, "parse_error");
+  ctx.logger.warn(
+    {
+      ...messageContext,
+      error: serializeError(error),
+    },
+    logMessage
+  );
+}
+
+const RAW_EVENT_BATCH_STRATEGY: KafkaBatchMessageStrategy<TrendsContext, ParsedRawEvent> = {
   deserialize: deserializeRawEvent,
-  async handleMessage(ctx, event, messageContext): Promise<void> {
+  onEmptyValue(ctx, messageContext): void {
+    onEmptyBatchValue(ctx, messageContext, "Skipping message with empty value");
+  },
+  onDeserializeFailure(ctx, messageContext, error): void {
+    onBatchDeserializeFailure(
+      ctx,
+      messageContext,
+      error,
+      "Failed to deserialize event"
+    );
+  },
+  async onMessage(ctx, messageContext, event): Promise<void> {
     const trackedTopics = filterTrackedTags(event.tags, ctx.allowlist);
     if (trackedTopics.length === 0) {
       return;
@@ -282,11 +274,27 @@ const RAW_EVENT_BATCH_STRATEGY: BatchMessageStrategy<ParsedRawEvent> = {
 
 type CollectorHeartbeatState = ReturnType<typeof deserializeCollectorHeartbeat>;
 
-const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: BatchMessageStrategy<CollectorHeartbeatState> = {
-  emptyValueLogMessage: "Skipping collector heartbeat with empty value",
-  deserializeFailureLogMessage: "Failed to deserialize collector heartbeat",
+const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: KafkaBatchMessageStrategy<
+  TrendsContext,
+  CollectorHeartbeatState
+> = {
   deserialize: deserializeCollectorHeartbeat,
-  async handleMessage(ctx, collectorHeartbeat): Promise<void> {
+  onEmptyValue(ctx, messageContext): void {
+    onEmptyBatchValue(
+      ctx,
+      messageContext,
+      "Skipping collector heartbeat with empty value"
+    );
+  },
+  onDeserializeFailure(ctx, messageContext, error): void {
+    onBatchDeserializeFailure(
+      ctx,
+      messageContext,
+      error,
+      "Failed to deserialize collector heartbeat"
+    );
+  },
+  async onMessage(ctx, _messageContext, collectorHeartbeat): Promise<void> {
     ctx.healthContext.collectorHeartbeats.set(collectorHeartbeat.source, collectorHeartbeat);
   },
 };

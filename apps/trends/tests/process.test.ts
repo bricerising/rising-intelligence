@@ -404,4 +404,31 @@ describe("trends processBatch", () => {
     expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
+
+  it("skips collector heartbeat payloads with invalid source types", async () => {
+    const heartbeatMessage = makeMessage("1", {
+      source: { value: 1 },
+      timestamp: "2026-02-06T10:00:00.000Z",
+      last_fetch_at: "2026-02-06T09:59:30.000Z",
+      items_fetched: 12,
+      status: 1,
+      error_message: "",
+    });
+    const payload = makePayload([heartbeatMessage], {
+      batch: {
+        topic: "collector.heartbeat",
+        partition: 0,
+        highWatermark: "2",
+        messages: [heartbeatMessage],
+      },
+    });
+    const ctx = makeContext();
+
+    await processCollectorHeartbeatBatch(ctx, payload);
+
+    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.collectorHeartbeats.size).toBe(0);
+    expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
+  });
 });

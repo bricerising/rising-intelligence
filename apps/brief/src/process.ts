@@ -48,6 +48,7 @@ const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
 const TREND_WINDOW_60M_PROTO = 2;
 const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
 const DEFAULT_QUERY_MAX_TOPICS = 10;
+const NO_COVERAGE_ERROR_CODE = "no_coverage";
 const BUDGET_RESERVATION_SCRIPT = `
 local key = KEYS[1]
 local max_budget = tonumber(ARGV[1])
@@ -156,6 +157,10 @@ function toGroundingError(message: string): NonRetryableProcessingError {
   return new NonRetryableProcessingError(message);
 }
 
+function toNoCoverageError(message: string): NonRetryableProcessingError {
+  return new NonRetryableProcessingError(message, NO_COVERAGE_ERROR_CODE);
+}
+
 function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -246,10 +251,10 @@ interface RawEventForSelection {
   engagementScore: number | null;
 }
 
-type EvidenceSelectionStrategy = <T extends RawEventForSelection>(
-  events: T[],
-  maxCount: number
-) => T[];
+interface EvidenceSelectionStrategy {
+  readonly name: EvidenceStrategy;
+  select<T extends RawEventForSelection>(events: T[], maxCount: number): T[];
+}
 
 function sortByEngagementThenRecency<T extends RawEventForSelection>(events: T[]): T[] {
   return [...events].sort((left, right) => {
@@ -308,10 +313,25 @@ function selectEvidenceByDiversity<T extends RawEventForSelection>(events: T[], 
   return selected;
 }
 
+const RECENCY_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
+  name: "recency",
+  select: selectEvidenceByRecency,
+};
+
+const ENGAGEMENT_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
+  name: "engagement",
+  select: selectEvidenceByEngagement,
+};
+
+const DIVERSITY_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
+  name: "diversity",
+  select: selectEvidenceByDiversity,
+};
+
 const EVIDENCE_SELECTION_STRATEGIES: Record<EvidenceStrategy, EvidenceSelectionStrategy> = {
-  recency: selectEvidenceByRecency,
-  engagement: selectEvidenceByEngagement,
-  diversity: selectEvidenceByDiversity,
+  recency: RECENCY_EVIDENCE_SELECTION_STRATEGY,
+  engagement: ENGAGEMENT_EVIDENCE_SELECTION_STRATEGY,
+  diversity: DIVERSITY_EVIDENCE_SELECTION_STRATEGY,
 };
 
 function selectEvidence<T extends RawEventForSelection>(
@@ -323,7 +343,8 @@ function selectEvidence<T extends RawEventForSelection>(
     return [];
   }
 
-  return EVIDENCE_SELECTION_STRATEGIES[strategy](events, maxCount);
+  const selectionStrategy = EVIDENCE_SELECTION_STRATEGIES[strategy];
+  return selectionStrategy.select(events, maxCount);
 }
 
 function computeRecentWeight(snapshotGeneratedAt: Date, requestedAt: Date): number {
@@ -474,8 +495,10 @@ async function buildQueryModeRequest(
       { topicGlobCount: topicGlobs.length, lookbackDays },
       "No topics matched query filters"
     );
-    coverageWarnings.push(
-      "No topics matched the specified filters. Consider broadening topic_globs or lookback window."
+    throw toNoCoverageError(
+      snapshots.length === 0
+        ? "No trend snapshots were found in the requested lookback window."
+        : "No topics matched query filters in the requested lookback window."
     );
   }
 
@@ -583,8 +606,13 @@ async function buildQueryModeRequest(
       { rankedTopicCount: rankedTopics.length, lookbackDays },
       "No evidence found for any ranked topics"
     );
+    throw toNoCoverageError("No recent activity was found for matched topics in the lookback window.");
+  }
+
+  if (topicsWithEvidence.length < hydratedTopics.length) {
+    const missingTopicCount = hydratedTopics.length - topicsWithEvidence.length;
     coverageWarnings.push(
-      "No recent activity found for trending topics in the lookback window."
+      `${missingTopicCount} ranked topic(s) were excluded due to missing grounded evidence.`
     );
   }
 
@@ -609,7 +637,7 @@ async function buildQueryModeRequest(
       maxEventsPerTopic,
       evidenceStrategy,
     },
-    topics: topicsWithEvidence.length > 0 ? topicsWithEvidence : hydratedTopics,
+    topics: topicsWithEvidence,
     coverageWarnings,
   };
 }
@@ -1203,12 +1231,51 @@ interface BudgetReservationResult {
   spentUsd: number;
 }
 
-interface BudgetReservationStrategy {
-  reserve(input: BudgetReservationInput): Promise<BudgetReservationResult | null>;
+type BudgetReservationPassReason =
+  | "cache_unavailable"
+  | "requires_source_of_truth";
+
+type BudgetReservationDecision =
+  | { kind: "handled"; result: BudgetReservationResult }
+  | { kind: "pass"; reason: BudgetReservationPassReason };
+
+interface BudgetReservationHandler {
+  setNext(next: BudgetReservationHandler): BudgetReservationHandler;
+  reserve(input: BudgetReservationInput): Promise<BudgetReservationResult>;
 }
 
-class RedisBudgetReservationStrategy implements BudgetReservationStrategy {
-  async reserve(input: BudgetReservationInput): Promise<BudgetReservationResult | null> {
+abstract class AbstractBudgetReservationHandler implements BudgetReservationHandler {
+  private nextHandler: BudgetReservationHandler | null = null;
+
+  setNext(next: BudgetReservationHandler): BudgetReservationHandler {
+    this.nextHandler = next;
+    return next;
+  }
+
+  async reserve(input: BudgetReservationInput): Promise<BudgetReservationResult> {
+    const decision = await this.tryReserve(input);
+    if (decision.kind === "handled") {
+      return decision.result;
+    }
+
+    if (!this.nextHandler) {
+      throw new Error(
+        `Budget reservation chain terminated without a handler for reason: ${decision.reason}`
+      );
+    }
+
+    return this.nextHandler.reserve(input);
+  }
+
+  protected abstract tryReserve(
+    input: BudgetReservationInput
+  ): Promise<BudgetReservationDecision>;
+}
+
+class RedisBudgetReservationHandler extends AbstractBudgetReservationHandler {
+  protected async tryReserve(
+    input: BudgetReservationInput
+  ): Promise<BudgetReservationDecision> {
     const {
       prisma,
       redis,
@@ -1229,7 +1296,7 @@ class RedisBudgetReservationStrategy implements BudgetReservationStrategy {
       );
       const cached = parseBudgetReservationResult(result);
       if (!cached.reserved) {
-        return null;
+        return { kind: "pass", reason: "requires_source_of_truth" };
       }
 
       const budgetDate = toBudgetDate(dateKey);
@@ -1237,7 +1304,7 @@ class RedisBudgetReservationStrategy implements BudgetReservationStrategy {
         where: { date: budgetDate },
         create: {
           date: budgetDate,
-          spentUsd: amountUsd,
+          spentUsd: cached.spentUsd,
           budgetUsd: dailyBudgetUsd,
           requestCount: 1,
         },
@@ -1252,15 +1319,28 @@ class RedisBudgetReservationStrategy implements BudgetReservationStrategy {
         );
       });
 
-      return cached;
-    } catch {
-      return null;
+      return {
+        kind: "handled",
+        result: cached,
+      };
+    } catch (error) {
+      logger.warn(
+        {
+          dateKey,
+          amountUsd,
+          error: serializeError(error),
+        },
+        "Redis budget reservation unavailable; falling back to Postgres"
+      );
+      return { kind: "pass", reason: "cache_unavailable" };
     }
   }
 }
 
-class PostgresBudgetReservationStrategy implements BudgetReservationStrategy {
-  async reserve(input: BudgetReservationInput): Promise<BudgetReservationResult> {
+class PostgresBudgetReservationHandler extends AbstractBudgetReservationHandler {
+  protected async tryReserve(
+    input: BudgetReservationInput
+  ): Promise<BudgetReservationDecision> {
     const {
       prisma,
       redis,
@@ -1304,7 +1384,10 @@ class PostgresBudgetReservationStrategy implements BudgetReservationStrategy {
       });
       const spentUsd = Number(latest?.spentUsd ?? record.spentUsd);
       await syncBudgetCacheBestEffort(redis, dateKey, spentUsd, logger);
-      return { reserved: false, spentUsd };
+      return {
+        kind: "handled",
+        result: { reserved: false, spentUsd },
+      };
     }
 
     const latest = await prisma.briefBudgetTracking.findUnique({
@@ -1313,14 +1396,20 @@ class PostgresBudgetReservationStrategy implements BudgetReservationStrategy {
     });
     const newSpent = Number(latest?.spentUsd ?? Number(record.spentUsd) + amountUsd);
     await syncBudgetCacheBestEffort(redis, dateKey, newSpent, logger);
-    return { reserved: true, spentUsd: newSpent };
+    return {
+      kind: "handled",
+      result: { reserved: true, spentUsd: newSpent },
+    };
   }
 }
 
-const BUDGET_RESERVATION_STRATEGIES: readonly BudgetReservationStrategy[] = [
-  new RedisBudgetReservationStrategy(),
-  new PostgresBudgetReservationStrategy(),
-];
+function createBudgetReservationHandlerChain(): BudgetReservationHandler {
+  const redisHandler = new RedisBudgetReservationHandler();
+  redisHandler.setNext(new PostgresBudgetReservationHandler());
+  return redisHandler;
+}
+
+const BUDGET_RESERVATION_HANDLER_CHAIN = createBudgetReservationHandlerChain();
 
 async function reserveBudgetSpendUsd(
   prisma: PrismaClient,
@@ -1339,14 +1428,7 @@ async function reserveBudgetSpendUsd(
     amountUsd,
   };
 
-  for (const strategy of BUDGET_RESERVATION_STRATEGIES) {
-    const result = await strategy.reserve(input);
-    if (result !== null) {
-      return result;
-    }
-  }
-
-  throw new Error("No budget reservation strategy produced a result");
+  return BUDGET_RESERVATION_HANDLER_CHAIN.reserve(input);
 }
 
 async function releaseBudgetReservationUsd(

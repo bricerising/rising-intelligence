@@ -3,7 +3,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import type { PrismaClient } from "@rising-intelligence/db";
-import { createKafkaBatchLifecycle, serializeError } from "@rising-intelligence/shared";
+import {
+  createKafkaBatchLifecycle,
+  processKafkaBatchMessages,
+  serializeError,
+  type KafkaBatchLifecycle,
+  type KafkaBatchMessageContext,
+  type KafkaBatchMessageStrategy,
+} from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { KafkaConsumerContext } from "./kafka/consumer.js";
@@ -37,6 +44,31 @@ class RedisWriteFailure extends Error {
   }
 }
 
+type BatchMessageCollectorStrategy<TMessage> = Pick<
+  KafkaBatchMessageStrategy<PersisterContext, TMessage>,
+  "deserialize" | "onEmptyValue" | "onDeserializeFailure"
+>;
+
+const RAW_EVENT_BATCH_STRATEGY: BatchMessageCollectorStrategy<ParsedRawEvent> = {
+  deserialize: deserializeRawEvent,
+  onEmptyValue(ctx, messageContext): void {
+    incrementEventsSkipped(ctx.healthContext, "malformed");
+    incrementError(ctx.healthContext, "parse_error");
+    ctx.logger.warn(messageContext, "Skipping message with empty value");
+  },
+  onDeserializeFailure(ctx, messageContext, error): void {
+    incrementEventsSkipped(ctx.healthContext, "malformed");
+    incrementError(ctx.healthContext, "parse_error");
+    ctx.logger.warn(
+      {
+        ...messageContext,
+        error: serializeError(error),
+      },
+      "Failed to deserialize event"
+    );
+  },
+};
+
 async function waitWithHeartbeats(
   waitMs: number,
   heartbeat: () => Promise<void>
@@ -48,6 +80,110 @@ async function waitWithHeartbeats(
     await sleep(sleepMs);
     remainingMs -= sleepMs;
     await heartbeat();
+  }
+}
+
+async function collectMessagesWithStrategy<TMessage>(
+  ctx: PersisterContext,
+  payload: EachBatchPayload,
+  batchLifecycle: KafkaBatchLifecycle,
+  strategy: BatchMessageCollectorStrategy<TMessage>
+): Promise<TMessage[] | null> {
+  const events: TMessage[] = [];
+
+  const { completed } = await processKafkaBatchMessages(
+    ctx,
+    payload,
+    batchLifecycle,
+    {
+      ...strategy,
+      onMessage(
+        _ctx: PersisterContext,
+        _messageContext: KafkaBatchMessageContext,
+        decoded: TMessage
+      ): void {
+        events.push(decoded);
+      },
+    }
+  );
+  if (!completed) {
+    return null;
+  }
+
+  return events;
+}
+
+async function pausePartitionWhenCircuitOpen(
+  ctx: PersisterContext,
+  payload: EachBatchPayload
+): Promise<boolean> {
+  if (!ctx.circuitBreaker.isOpen()) {
+    return false;
+  }
+
+  const waitMs = ctx.circuitBreaker.timeUntilClose();
+  ctx.healthContext.circuitOpen = true;
+
+  const resume = payload.pause();
+  ctx.logger.warn(
+    {
+      waitMs,
+      kafkaTopic: payload.batch.topic,
+      partition: payload.batch.partition,
+    },
+    "Postgres circuit open; pausing partition"
+  );
+
+  try {
+    await waitWithHeartbeats(waitMs, payload.heartbeat);
+  } finally {
+    resume();
+  }
+
+  return true;
+}
+
+async function persistEventsWithCircuitHandling(
+  ctx: PersisterContext,
+  payload: EachBatchPayload,
+  events: ParsedRawEvent[]
+): Promise<void> {
+  try {
+    if (events.length > 0) {
+      await persistAndMarkSeen(ctx, events);
+      ctx.healthContext.lastEventAt = new Date();
+      ctx.circuitBreaker.recordSuccess();
+      ctx.healthContext.postgresHealthy = true;
+    }
+
+    ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
+  } catch (error) {
+    if (error instanceof RedisWriteFailure) {
+      // Postgres succeeded before Redis failed, so keep the circuit closed.
+      ctx.circuitBreaker.recordSuccess();
+      ctx.healthContext.postgresHealthy = true;
+      ctx.healthContext.redisHealthy = false;
+      ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
+      throw error;
+    }
+
+    const opened = ctx.circuitBreaker.recordFailure();
+    ctx.healthContext.postgresHealthy = false;
+    ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
+    incrementError(ctx.healthContext, "postgres_error");
+
+    ctx.logger.error(
+      {
+        kafkaTopic: payload.batch.topic,
+        partition: payload.batch.partition,
+        batchSize: payload.batch.messages.length,
+        openedCircuit: opened,
+        error: serializeError(error),
+      },
+      "Failed to persist Kafka batch"
+    );
+
+    throw error;
   }
 }
 
@@ -127,7 +263,7 @@ export async function updateLag(
 }
 
 export async function processBatch(ctx: PersisterContext, payload: EachBatchPayload): Promise<void> {
-  const { batch, isRunning, isStale, pause, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+  const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
   const batchLifecycle = createKafkaBatchLifecycle(
     { isRunning, isStale, heartbeat },
     LOOP_HEARTBEAT_INTERVAL_MESSAGES
@@ -137,112 +273,23 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
     return;
   }
 
-  if (ctx.circuitBreaker.isOpen()) {
-    const waitMs = ctx.circuitBreaker.timeUntilClose();
-    ctx.healthContext.circuitOpen = true;
-
-    const resume = pause();
-    ctx.logger.warn(
-      {
-        waitMs,
-        kafkaTopic: batch.topic,
-        partition: batch.partition,
-      },
-      "Postgres circuit open; pausing partition"
-    );
-
-    try {
-      await waitWithHeartbeats(waitMs, heartbeat);
-    } finally {
-      resume();
-    }
-
+  if (await pausePartitionWhenCircuitOpen(ctx, payload)) {
     return;
   }
 
   observeBatchSize(ctx.healthContext, batch.messages.length);
 
-  const events: ParsedRawEvent[] = [];
-  for (const message of batch.messages) {
-    if (!batchLifecycle.shouldContinue()) {
-      return;
-    }
-
-    if (!message.value) {
-      incrementEventsSkipped(ctx.healthContext, "malformed");
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-        },
-        "Skipping message with empty value"
-      );
-      await batchLifecycle.onMessageHandled();
-      continue;
-    }
-
-    try {
-      const event = deserializeRawEvent(message.value);
-      events.push(event);
-    } catch (error) {
-      incrementEventsSkipped(ctx.healthContext, "malformed");
-      incrementError(ctx.healthContext, "parse_error");
-      ctx.logger.warn(
-        {
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-          error: serializeError(error),
-        },
-        "Failed to deserialize event"
-      );
-    }
-    await batchLifecycle.onMessageHandled();
-  }
-
-  if (!batchLifecycle.shouldContinue()) {
+  const events = await collectMessagesWithStrategy(
+    ctx,
+    payload,
+    batchLifecycle,
+    RAW_EVENT_BATCH_STRATEGY
+  );
+  if (!events) {
     return;
   }
 
-  try {
-    if (events.length > 0) {
-      await persistAndMarkSeen(ctx, events);
-      ctx.healthContext.lastEventAt = new Date();
-      ctx.circuitBreaker.recordSuccess();
-      ctx.healthContext.postgresHealthy = true;
-    }
-
-    ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
-  } catch (error) {
-    if (error instanceof RedisWriteFailure) {
-      // Postgres succeeded before Redis failed, so keep the circuit closed.
-      ctx.circuitBreaker.recordSuccess();
-      ctx.healthContext.postgresHealthy = true;
-      ctx.healthContext.redisHealthy = false;
-      ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
-      throw error;
-    }
-
-    const opened = ctx.circuitBreaker.recordFailure();
-    ctx.healthContext.postgresHealthy = false;
-    ctx.healthContext.circuitOpen = ctx.circuitBreaker.isOpen();
-    incrementError(ctx.healthContext, "postgres_error");
-
-    ctx.logger.error(
-      {
-        kafkaTopic: batch.topic,
-        partition: batch.partition,
-        batchSize: batch.messages.length,
-        openedCircuit: opened,
-        error: serializeError(error),
-      },
-      "Failed to persist Kafka batch"
-    );
-
-    throw error;
-  }
+  await persistEventsWithCircuitHandling(ctx, payload, events);
 
   for (const message of batch.messages) {
     resolveOffset(message.offset);

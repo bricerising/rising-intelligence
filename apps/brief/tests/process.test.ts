@@ -501,6 +501,48 @@ describe("processSummaryRequest", () => {
     );
   });
 
+  it("uses Redis cumulative spend when mirroring a missing Postgres budget row", async () => {
+    const budgetUpsert = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: budgetUpsert,
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.4 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.4 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+        trendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      },
+      redis: {
+        eval: vi.fn().mockResolvedValue([1, "0.4"]),
+        set: vi.fn().mockResolvedValue("OK"),
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+    await Promise.resolve();
+
+    expect(budgetUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          spentUsd: 0.4,
+        }),
+      })
+    );
+  });
+
   it("republishes persisted result for duplicate requests", async () => {
     const existingPayload = {
       request_id: "req-1",
@@ -710,6 +752,65 @@ describe("processSummaryRequest", () => {
     const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
     expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
+  it("emits no_coverage failure when query mode has no trend snapshots", async () => {
+    const request = makeQueryRequest();
+    const ctx = makeContext();
+
+    await processSummaryRequest(ctx, request);
+
+    expect(ctx.prisma.briefTrendSnapshot.findMany).toHaveBeenCalledOnce();
+    expect(ctx.prisma.rawEvent.findMany).not.toHaveBeenCalled();
+    expect(ctx.redis.eval).not.toHaveBeenCalled();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("no_coverage");
+    expect(persistedPayload.failure.retryable).toBe(false);
+  });
+
+  it("emits no_coverage failure when ranked topics have no query-mode evidence", async () => {
+    const request = makeQueryRequest();
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-06T09:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "aws.bedrock",
+                    score: 80,
+                    volume: 20,
+                    acceleration: 0.8,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(ctx.prisma.briefTrendSnapshot.findMany).toHaveBeenCalledOnce();
+    expect(ctx.prisma.rawEvent.findMany).toHaveBeenCalledOnce();
+    expect(ctx.redis.eval).not.toHaveBeenCalled();
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("no_coverage");
+    expect(persistedPayload.failure.retryable).toBe(false);
   });
 
   it("emits invalid_request failure when lookback exceeds configured max", async () => {
