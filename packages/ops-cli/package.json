@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "@rising-intelligence/shared": "0.1.0",
-    "kafkajs": "^2.2.4"
+    "kafkajs": "^2.2.4",
+    "yaml": "^2.7.0"
   },
   "peerDependencies": {
     "@rising-intelligence/db": "0.1.0"

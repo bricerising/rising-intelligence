@@ -26,5 +26,26 @@ describe("parseArgs", () => {
       },
     });
   });
-});
 
+  it("collects repeated string flags as arrays", () => {
+    expect(
+      parseArgs([
+        "brief",
+        "trigger",
+        "--feed-config",
+        "infra/config/feeds.pos.yaml",
+        "--feed-config",
+        "infra/config/feeds.alt.yaml",
+      ])
+    ).toEqual({
+      kind: "command",
+      command: ["brief", "trigger"],
+      flags: {
+        "feed-config": [
+          "infra/config/feeds.pos.yaml",
+          "infra/config/feeds.alt.yaml",
+        ],
+      },
+    });
+  });
+});

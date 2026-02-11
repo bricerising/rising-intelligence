@@ -123,6 +123,27 @@ describe("collector ingestion pipeline", () => {
     );
   });
 
+  it("preserves existing market tags while adding canonical topics", async () => {
+    const {
+      processor,
+      publishRawEvent,
+      publishDeadLetterEvent,
+    } = createHarness(false);
+
+    const event = createEvent({
+      tags: ["market.pos"],
+    });
+    const result = await processor.process(event);
+
+    expect(result).toEqual<CollectorEventProcessResult>({
+      status: "ingested",
+      topics: ["aws"],
+    });
+    expect(event.tags).toEqual(["market.pos", "aws"]);
+    expect(publishRawEvent).toHaveBeenCalledWith(event);
+    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+  });
+
   it("short-circuits duplicates before validation and publishing", async () => {
     const {
       processor,

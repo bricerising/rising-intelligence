@@ -1,0 +1,84 @@
+defaults:
+  poll_interval_seconds: 1800
+  priority: 70
+  enabled: true
+  market_gate: true
+  signal_tier: low_volume
+
+edgar_watchlist:
+  # Extend this list to cover the full operator watchlist (P1/P2/P3).
+  - name: EDGAR - Block, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001512673&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001512673"
+    topics: ["market.pos", "payments.block"]
+    entity_terms: ["block", "square", "cash app"]
+
+  - name: EDGAR - Fiserv, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000798354&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000798354"
+    topics: ["market.pos", "payments.fiserv"]
+    entity_terms: ["fiserv", "clover"]
+
+  - name: EDGAR - Global Payments Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001060391&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001060391"
+    topics: ["market.pos", "payments.globalpayments"]
+    entity_terms: ["global payments"]
+
+  - name: EDGAR - Adyen N.V.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001707432&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001707432"
+    topics: ["market.pos", "payments.adyen"]
+    entity_terms: ["adyen"]
+
+policy_feeds:
+  - name: SEC Press Releases
+    url: https://www.sec.gov/news/pressreleases.rss
+    source_type: policy
+    topics: ["regulation.sec", "market.pos"]
+
+  - name: Federal Reserve Press Releases
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    source_type: policy
+    topics: ["macro.fed", "market.pos"]
+
+  - name: BIS News and Speeches
+    url: https://www.bis.org/rss/index.xml
+    source_type: policy
+    topics: ["macro.bis", "market.pos"]
+
+security_feeds:
+  - name: CISA Alerts
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    source_type: security
+    topics: ["security.advisories", "market.pos"]
+
+merchant_feeds:
+  - name: Target Corporate Press Releases
+    url: https://corporate.target.com/press/feed
+    source_type: merchant
+    topics: ["merchant.target", "market.pos"]
+    entity_terms: ["target"]
+
+wire_feeds:
+  - name: PR Newswire All Releases
+    url: https://www.prnewswire.com/rss/news-releases-list.rss
+    source_type: wire
+    signal_tier: high_volume
+    poll_interval_seconds: 900
+    topics: ["market.pos", "payments.general"]
+    entity_terms:
+      - "adyen"
+      - "block"
+      - "fiserv"
+      - "global payments"
+      - "toast"
+      - "ncr"
+      - "verifone"
+      - "ingenico"
+      - "stripe"
+      - "shopify"

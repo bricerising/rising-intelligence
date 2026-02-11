@@ -1,0 +1,23 @@
+profile: pos
+keywords:
+  - point of sale
+  - pos terminal
+  - payment terminal
+  - card present
+  - merchant acquiring
+  - acquiring bank
+  - interchange
+  - chargeback
+  - tap to pay
+  - contactless payment
+  - softpos
+  - merchant payment
+  - payment processor
+  - payment gateway
+  - omnichannel checkout
+  - retail checkout
+matchers:
+  - type: regex
+    pattern: "\\b(payment(s)?|merchant)\\s+(acceptance|accepting|processing)\\b"
+  - type: regex
+    pattern: "\\b(card[- ]present|card present)\\b"

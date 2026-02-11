@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import type { SourceAdapter } from "../types.js";
+import type { MarketFilterProfile } from "../market-filters.js";
 import { createHackerNewsAdapter } from "./hackernews.js";
 import { createLobstersAdapter } from "./lobsters.js";
 import {
@@ -14,6 +15,11 @@ const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
   "RSS_ENABLED",
   "RSS_POLL_INTERVAL_SECONDS",
   "FEEDS_CONFIG_PATH",
+  "EDGAR_FORMS_ALLOWLIST",
+  "EDGAR_FETCH_DETAIL_METADATA",
+  "EDGAR_DOWNLOAD_PRIMARY_DOCS",
+  "EDGAR_POLL_INTERVAL_SECONDS",
+  "EDGAR_POLL_JITTER_RATIO",
   "HN_ENABLED",
   "HN_MODE",
   "HN_POLL_INTERVAL_SECONDS",
@@ -37,6 +43,7 @@ export interface BuildCollectorAdaptersInput {
   checkpointStore: CheckpointStore;
   logger: Logger;
   contentFetcherConfig: ContentFetcherConfig;
+  marketFilterProfiles: readonly MarketFilterProfile[];
   onRssFeedError?: (report: RSSFeedErrorReport) => void;
 }
 
@@ -91,6 +98,13 @@ type AdapterDefinitionItem =
   | ImplementedAdapterDefinition
   | UnsupportedAdapterDefinition;
 
+function parseCsvValues(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 function createImplementedAdapterDefinition(
   name: ImplementedAdapterName,
   isEnabled: AdapterEnabledPredicate,
@@ -124,13 +138,29 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
     createImplementedAdapterDefinition(
       "rss",
       (config) => config.RSS_ENABLED,
-      ({ config, checkpointStore, logger, contentFetcherConfig, onRssFeedError }, constructors) => {
+      (
+        {
+          config,
+          checkpointStore,
+          logger,
+          contentFetcherConfig,
+          marketFilterProfiles,
+          onRssFeedError,
+        },
+        constructors
+      ) => {
         const adapterInput = {
           feedsConfigPath: config.FEEDS_CONFIG_PATH,
           pollIntervalMs: config.RSS_POLL_INTERVAL_SECONDS * 1000,
           checkpoints: checkpointStore,
           logger: createAdapterLogger(logger, "rss"),
           contentFetcherConfig,
+          marketFilterProfiles,
+          edgarFormsAllowlist: parseCsvValues(config.EDGAR_FORMS_ALLOWLIST),
+          edgarFetchDetailMetadata: config.EDGAR_FETCH_DETAIL_METADATA,
+          edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,
+          edgarPollIntervalSeconds: config.EDGAR_POLL_INTERVAL_SECONDS,
+          edgarPollJitterRatio: config.EDGAR_POLL_JITTER_RATIO,
         };
 
         return constructors.createRSSAdapter(

@@ -4,6 +4,7 @@ import {
   type CollectorAdapterFactoryConfig,
 } from "../../src/adapters/factory.js";
 import type { ContentFetcherConfig } from "../../src/content-fetcher.js";
+import type { MarketFilterProfile } from "../../src/market-filters.js";
 import type { SourceAdapter } from "../../src/types.js";
 
 function createSourceAdapter(name: string, source: SourceAdapter["source"]): SourceAdapter {
@@ -55,6 +56,11 @@ function createAdapterConfig(
     RSS_ENABLED: true,
     RSS_POLL_INTERVAL_SECONDS: 120,
     FEEDS_CONFIG_PATH: "./config/feeds.yaml",
+    EDGAR_FORMS_ALLOWLIST: "8-K,6-K,10-Q,10-K,20-F,40-F",
+    EDGAR_FETCH_DETAIL_METADATA: true,
+    EDGAR_DOWNLOAD_PRIMARY_DOCS: false,
+    EDGAR_POLL_INTERVAL_SECONDS: 1800,
+    EDGAR_POLL_JITTER_RATIO: 0.4,
     HN_ENABLED: true,
     HN_MODE: "best",
     HN_POLL_INTERVAL_SECONDS: 90,
@@ -80,6 +86,14 @@ const contentFetcherConfig: ContentFetcherConfig = {
   blockedDomains: new Set<string>(),
 };
 
+const marketFilterProfiles: MarketFilterProfile[] = [
+  {
+    key: "pos",
+    name: "POS",
+    matchers: [],
+  },
+];
+
 describe("collector adapter factory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -96,6 +110,7 @@ describe("collector adapter factory", () => {
       checkpointStore,
       logger,
       contentFetcherConfig,
+      marketFilterProfiles,
     });
 
     expect(result.adapters).toEqual([
@@ -111,6 +126,12 @@ describe("collector adapter factory", () => {
         checkpoints: checkpointStore,
         logger,
         contentFetcherConfig,
+        marketFilterProfiles,
+        edgarFormsAllowlist: ["8-K", "6-K", "10-Q", "10-K", "20-F", "40-F"],
+        edgarFetchDetailMetadata: true,
+        edgarDownloadPrimaryDocs: false,
+        edgarPollIntervalSeconds: 1800,
+        edgarPollJitterRatio: 0.4,
       }
     );
     expect(constructorMocks.createHackerNewsAdapter).toHaveBeenCalledWith(
@@ -145,6 +166,7 @@ describe("collector adapter factory", () => {
       checkpointStore,
       logger,
       contentFetcherConfig,
+      marketFilterProfiles,
     });
 
     expect(result.adapters).toEqual([]);
@@ -167,6 +189,7 @@ describe("collector adapter factory", () => {
       checkpointStore,
       logger,
       contentFetcherConfig,
+      marketFilterProfiles,
       onRssFeedError,
     });
 

@@ -251,7 +251,8 @@ services:
       KAFKA_BROKERS: "redpanda:9092"
       CHECKPOINT_PATH: "/data/checkpoints.db"
       TOPICS_ALLOWLIST_PATH: "/config/topics.allowlist.yaml"
-      FEEDS_CONFIG_PATH: "/config/feeds.yaml"
+      FEEDS_CONFIG_PATH: "/config/feeds.tech.yaml,/config/feeds.pos.yaml"
+      MARKET_FILTERS_DIR: "/config/market-filters"
       LOG_LEVEL: "info"
       # Article content fetching (improves tag extraction)
       FETCH_ARTICLE_CONTENT: "true"
@@ -270,7 +271,9 @@ services:
     volumes:
       - collector-checkpoints:/data
       - ./infra/config/topics.allowlist.yaml:/config/topics.allowlist.yaml:ro
-      - ./infra/config/feeds.yaml:/config/feeds.yaml:ro
+      - ./infra/config/feeds.tech.yaml:/config/feeds.tech.yaml:ro
+      - ./infra/config/feeds.pos.yaml:/config/feeds.pos.yaml:ro
+      - ./infra/config/market-filters:/config/market-filters:ro
     ports:
       - "127.0.0.1:3002:3000"
     healthcheck:

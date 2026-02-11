@@ -94,6 +94,41 @@ ai_research:
       });
     });
 
+    it("propagates market_gate and signal_tier from defaults to feeds", () => {
+      writeFileSync(
+        feedsPath,
+        `
+defaults:
+  market_gate: true
+  signal_tier: low_volume
+
+policy_feeds:
+  - name: SEC Press Releases
+    url: https://www.sec.gov/news/pressreleases.rss
+  - name: PR Newswire
+    url: https://www.prnewswire.com/rss/news-releases-list.rss
+    signal_tier: high_volume
+`
+      );
+
+      const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+      const feeds = (adapter as any).feeds as any[];
+
+      expect(feeds).toHaveLength(2);
+      // SEC feed inherits defaults
+      expect(feeds[0]).toMatchObject({
+        name: "SEC Press Releases",
+        market_gate: true,
+        signal_tier: "low_volume",
+      });
+      // PR Newswire overrides signal_tier but inherits market_gate
+      expect(feeds[1]).toMatchObject({
+        name: "PR Newswire",
+        market_gate: true,
+        signal_tier: "high_volume",
+      });
+    });
+
     it("handles empty sections gracefully", () => {
       writeFileSync(
         feedsPath,
@@ -421,6 +456,256 @@ official_blogs:
       });
     });
 
+    it("loads feeds from multiple comma-separated feed config files", async () => {
+      const feedsPath2 = join(tmpDir, "feeds-2.yaml");
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: Feed One
+    url: https://example.com/feed-one
+`
+      );
+      writeFileSync(
+        feedsPath2,
+        `
+official_blogs:
+  - name: Feed Two
+    url: https://example.com/feed-two
+`
+      );
+
+      const adapter = new RSSAdapter(
+        `${feedsPath},${feedsPath2}`,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger()
+      );
+
+      expect((adapter as any).feeds).toHaveLength(2);
+      expect((adapter as any).feeds.map((feed: any) => feed.name)).toEqual([
+        "Feed One",
+        "Feed Two",
+      ]);
+    });
+
+    it("applies market gate to low-volume feeds and adds market metadata", async () => {
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: Policy Feed
+    url: https://example.com/policy
+    market_gate: true
+    signal_tier: low_volume
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn().mockResolvedValue({
+          items: [
+            {
+              guid: "guid-1",
+              title: "Acquirer launches new payment terminal",
+              contentSnippet: "New point of sale rollout for merchants",
+            },
+            {
+              guid: "guid-2",
+              title: "Unrelated post",
+              contentSnippet: "No payment relevance in this entry",
+            },
+          ],
+        }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(
+        feedsPath,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger(),
+        undefined,
+        undefined,
+        {
+          marketFilterProfiles: [
+            {
+              key: "pos",
+              name: "POS",
+              matchers: [{ type: "keyword", raw: "point of sale", keyword: "point of sale" }],
+            },
+          ],
+        }
+      );
+      await adapter.initialize();
+
+      const results: any[] = [];
+      for await (const result of adapter.fetch()) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(1);
+      expect(results[0].event.tags).toEqual(["market.pos"]);
+      expect(results[0].event.source_meta).toEqual(
+        expect.objectContaining({
+          market_profiles: ["pos"],
+          match_reasons: expect.arrayContaining(["pos:keyword:point of sale"]),
+          signal_tier: "low_volume",
+        })
+      );
+    });
+
+    it("enforces strict entity and keyword gate for high-volume feeds", async () => {
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: PR Newswire
+    url: https://example.com/pr-newswire
+    market_gate: true
+    signal_tier: high_volume
+    entity_terms: ["adyen", "block"]
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn().mockResolvedValue({
+          items: [
+            {
+              guid: "guid-pass",
+              title: "Adyen launches next-gen point of sale suite",
+              contentSnippet: "Merchant payment expansion announcement",
+            },
+            {
+              guid: "guid-fail",
+              title: "Point of sale upgrades announced",
+              contentSnippet: "No watchlist entity mentioned",
+            },
+          ],
+        }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(
+        feedsPath,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger(),
+        undefined,
+        undefined,
+        {
+          marketFilterProfiles: [
+            {
+              key: "pos",
+              name: "POS",
+              matchers: [{ type: "keyword", raw: "point of sale", keyword: "point of sale" }],
+            },
+          ],
+        }
+      );
+      await adapter.initialize();
+
+      const results: any[] = [];
+      for await (const result of adapter.fetch()) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(1);
+      expect(results[0].checkpointValue).toBe("guid-pass");
+      expect(results[0].event.source_meta).toEqual(
+        expect.objectContaining({
+          signal_tier: "high_volume",
+          match_reasons: expect.arrayContaining([
+            "pos:keyword:point of sale",
+            "entity:adyen",
+          ]),
+        })
+      );
+    });
+
+    it("enforces EDGAR form allowlist and enriches detail metadata", async () => {
+      writeFileSync(
+        feedsPath,
+        `
+official_blogs:
+  - name: EDGAR - Adyen
+    url: https://example.com/edgar-adyen
+    source_type: edgar
+    market_gate: true
+    signal_tier: low_volume
+    cik: "0001707432"
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn().mockResolvedValue({
+          items: [
+            {
+              guid: "guid-allowed",
+              title: "Adyen N.V. - 8-K - Current report",
+              link: "https://www.sec.gov/ixviewer/ix.html?doc=/Archives/example.htm",
+              contentSnippet: "Point of sale expansion filing",
+              pubDate: "2026-02-01T12:00:00Z",
+            },
+            {
+              guid: "guid-disallowed",
+              title: "Adyen N.V. - 3 - Insider filing",
+              link: "https://www.sec.gov/ixviewer/ix.html?doc=/Archives/example2.htm",
+              contentSnippet: "Point of sale filing",
+              pubDate: "2026-02-01T13:00:00Z",
+            },
+          ],
+        }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(
+        feedsPath,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger(),
+        undefined,
+        undefined,
+        {
+          marketFilterProfiles: [
+            {
+              key: "pos",
+              name: "POS",
+              matchers: [{ type: "keyword", raw: "point of sale", keyword: "point of sale" }],
+            },
+          ],
+          edgarFormsAllowlist: ["8-K"],
+          fetchEdgarDetailMetadata: vi.fn(async () => ({
+            filedDate: "2026-02-01",
+            acceptedAt: "2026-02-01T12:05:00Z",
+            primaryDocumentName: "form8k.htm",
+          })),
+        }
+      );
+      await adapter.initialize();
+
+      const results: any[] = [];
+      for await (const result of adapter.fetch()) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(1);
+      expect(results[0].checkpointValue).toBe("guid-allowed");
+      expect(results[0].event.source_meta).toEqual(
+        expect.objectContaining({
+          source_type: "edgar",
+          signal_tier: "low_volume",
+          form_type: "8-K",
+          cik: "0001707432",
+          filed_date: "2026-02-01",
+          accepted_at: "2026-02-01T12:05:00Z",
+          primary_document_name: "form8k.htm",
+        })
+      );
+    });
+
     it("uses link as GUID fallback when guid is missing", async () => {
       writeFileSync(
         feedsPath,
@@ -456,6 +741,51 @@ official_blogs:
 
       expect(results).toHaveLength(1);
       expect(results[0].checkpointValue).toBe("https://example.com/article-1");
+    });
+  });
+
+  describe("real config smoke test", () => {
+    const realPosConfig = join(
+      __dirname,
+      "..",
+      "..",
+      "..",
+      "..",
+      "infra",
+      "config",
+      "feeds.pos.yaml"
+    );
+
+    it("feeds.pos.yaml loads with market_gate and signal_tier defaults applied to all feeds", () => {
+      const adapter = new RSSAdapter(
+        realPosConfig,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger()
+      );
+      const feeds = (adapter as any).feeds as any[];
+
+      // 10 feeds: 4 EDGAR + 3 policy + 1 security + 1 merchant + 1 wire
+      expect(feeds.length).toBeGreaterThanOrEqual(10);
+
+      // Every feed must have market_gate: true (inherited from defaults)
+      for (const feed of feeds) {
+        expect(feed.market_gate).toBe(true);
+      }
+
+      // All feeds except PR Newswire should be low_volume
+      const lowVolume = feeds.filter((f: any) => f.signal_tier === "low_volume");
+      const highVolume = feeds.filter((f: any) => f.signal_tier === "high_volume");
+      expect(lowVolume.length).toBe(feeds.length - 1);
+      expect(highVolume).toHaveLength(1);
+      expect(highVolume[0].name).toMatch(/PR Newswire/i);
+
+      // EDGAR feeds must have source_type and cik
+      const edgarFeeds = feeds.filter((f: any) => f.source_type === "edgar");
+      expect(edgarFeeds.length).toBeGreaterThanOrEqual(4);
+      for (const feed of edgarFeeds) {
+        expect(feed.cik).toBeTruthy();
+      }
     });
   });
 

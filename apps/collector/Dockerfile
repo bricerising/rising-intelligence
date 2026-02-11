@@ -66,7 +66,9 @@ COPY --from=deps --chown=collector:nodejs /app/node_modules ./node_modules
 
 # Copy config files (mounted at runtime typically, but include defaults)
 COPY --chown=collector:nodejs infra/config/topics.allowlist.yaml /config/topics.allowlist.yaml
-COPY --chown=collector:nodejs infra/config/feeds.yaml /config/feeds.yaml
+COPY --chown=collector:nodejs infra/config/feeds.tech.yaml /config/feeds.tech.yaml
+COPY --chown=collector:nodejs infra/config/feeds.pos.yaml /config/feeds.pos.yaml
+COPY --chown=collector:nodejs infra/config/market-filters /config/market-filters
 
 # Create checkpoint directory
 RUN mkdir -p /data && chown collector:nodejs /data
@@ -77,7 +79,8 @@ USER collector
 ENV NODE_ENV=production
 ENV CHECKPOINT_PATH=/data/checkpoints.db
 ENV TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
-ENV FEEDS_CONFIG_PATH=/config/feeds.yaml
+ENV FEEDS_CONFIG_PATH=/config/feeds.tech.yaml,/config/feeds.pos.yaml
+ENV MARKET_FILTERS_DIR=/config/market-filters
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -2,7 +2,14 @@ import type { CliFlags } from "./args.js";
 
 export function getStringFlag(flags: CliFlags, name: string): string | undefined {
   const value = flags[name];
-  return typeof value === "string" ? value : undefined;
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const last = value[value.length - 1];
+    return typeof last === "string" ? last : undefined;
+  }
+  return undefined;
 }
 
 export function getBooleanFlag(flags: CliFlags, name: string): boolean {
@@ -21,4 +28,3 @@ export function parseKafkaBrokers(rawValue: string): string[] {
 
   return brokers;
 }
-

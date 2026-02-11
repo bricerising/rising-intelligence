@@ -45,7 +45,8 @@ describe("config", () => {
       expect(config.KAFKA_CLIENT_ID).toBe("collector");
       expect(config.CHECKPOINT_PATH).toBe("./data/checkpoints.db");
       expect(config.TOPICS_ALLOWLIST_PATH).toBe("./config/topics.allowlist.yaml");
-      expect(config.FEEDS_CONFIG_PATH).toBe("./config/feeds.yaml");
+      expect(config.FEEDS_CONFIG_PATH).toBe("./config/feeds.tech.yaml,./config/feeds.pos.yaml");
+      expect(config.MARKET_FILTERS_DIR).toBe("./config/market-filters");
     });
 
     it("loads Hacker News defaults", async () => {
@@ -86,6 +87,11 @@ describe("config", () => {
 
       expect(config.RSS_ENABLED).toBe(true);
       expect(config.RSS_POLL_INTERVAL_SECONDS).toBe(300);
+      expect(config.EDGAR_FORMS_ALLOWLIST).toBe("8-K,6-K,10-Q,10-K,20-F,40-F");
+      expect(config.EDGAR_FETCH_DETAIL_METADATA).toBe(true);
+      expect(config.EDGAR_DOWNLOAD_PRIMARY_DOCS).toBe(false);
+      expect(config.EDGAR_POLL_INTERVAL_SECONDS).toBe(1800);
+      expect(config.EDGAR_POLL_JITTER_RATIO).toBe(0.4);
     });
 
     it("loads disabled source defaults", async () => {
@@ -142,6 +148,14 @@ describe("config", () => {
       const { loadConfig } = await import("../src/config.js");
 
       expect(() => loadConfig()).toThrow(/HN_POLL_INTERVAL_SECONDS/);
+    });
+
+    it("rejects EDGAR_POLL_JITTER_RATIO outside [0, 1]", async () => {
+      process.env.EDGAR_POLL_JITTER_RATIO = "1.5";
+
+      const { loadConfig } = await import("../src/config.js");
+
+      expect(() => loadConfig()).toThrow(/EDGAR_POLL_JITTER_RATIO/);
     });
 
     it("rejects non-integer numeric values", async () => {
@@ -271,6 +285,7 @@ describe("config", () => {
       process.env.CHECKPOINT_PATH = "/data/custom/checkpoints.db";
       process.env.TOPICS_ALLOWLIST_PATH = "/config/custom/topics.yaml";
       process.env.FEEDS_CONFIG_PATH = "/config/custom/feeds.yaml";
+      process.env.MARKET_FILTERS_DIR = "/config/custom/market-filters";
 
       const { loadConfig } = await import("../src/config.js");
 
@@ -279,6 +294,7 @@ describe("config", () => {
       expect(config.CHECKPOINT_PATH).toBe("/data/custom/checkpoints.db");
       expect(config.TOPICS_ALLOWLIST_PATH).toBe("/config/custom/topics.yaml");
       expect(config.FEEDS_CONFIG_PATH).toBe("/config/custom/feeds.yaml");
+      expect(config.MARKET_FILTERS_DIR).toBe("/config/custom/market-filters");
     });
   });
 

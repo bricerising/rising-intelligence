@@ -79,6 +79,7 @@ Flags (brief trigger):
   --lookback-days <n>              Default: $BRIEF_DEFAULT_LOOKBACK_DAYS or 7
   --max-lookback-days <n>          Default: $BRIEF_MAX_LOOKBACK_DAYS or 30
   --topic-globs <csv>              Default: * (example: aws.*,ai.*)
+  --feed-config <path>             Repeatable; derive topic globs from feed YAML files
   --max-events-per-topic <n>       Default: $BRIEF_MAX_QUERY_EVENTS_PER_TOPIC or --max-evidence-per-topic
   --report-timezone <iana>         Optional notes framing timezone (example: America/New_York)
   --report-start-at <iso8601>      Optional notes framing start time

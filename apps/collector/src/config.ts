@@ -18,7 +18,8 @@ const ConfigSchema = z.object({
   TOPICS_ALLOWLIST_PATH: z.string().default("./config/topics.allowlist.yaml"),
 
   // Feeds config
-  FEEDS_CONFIG_PATH: z.string().default("./config/feeds.yaml"),
+  FEEDS_CONFIG_PATH: z.string().default("./config/feeds.tech.yaml,./config/feeds.pos.yaml"),
+  MARKET_FILTERS_DIR: z.string().default("./config/market-filters"),
 
   // Hacker News
   HN_ENABLED: zBooleanEnv("true"),
@@ -42,6 +43,11 @@ const ConfigSchema = z.object({
   // RSS
   RSS_ENABLED: zBooleanEnv("true"),
   RSS_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  EDGAR_FORMS_ALLOWLIST: z.string().default("8-K,6-K,10-Q,10-K,20-F,40-F"),
+  EDGAR_FETCH_DETAIL_METADATA: zBooleanEnv("true"),
+  EDGAR_DOWNLOAD_PRIMARY_DOCS: zBooleanEnv("false"),
+  EDGAR_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(1800),
+  EDGAR_POLL_JITTER_RATIO: z.coerce.number().min(0).max(1).default(0.4),
 
   // Bluesky
   BLUESKY_ENABLED: zBooleanEnv("false"),

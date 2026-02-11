@@ -31,6 +31,10 @@ import {
 } from "./health.js";
 import { CheckpointStore } from "./checkpoint.js";
 import { loadAllowlist, CompiledAllowlist } from "./topics/extractor.js";
+import {
+  loadMarketFilterProfiles,
+  type MarketFilterProfile,
+} from "./market-filters.js";
 import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
 import { createContentFetcherConfig } from "./content-fetcher.js";
 import { buildCollectorAdapters } from "./adapters/factory.js";
@@ -45,6 +49,7 @@ interface CollectorContext {
   healthServer: Server;
   checkpointStore: CheckpointStore;
   allowlist: CompiledAllowlist;
+  marketFilterProfiles: MarketFilterProfile[];
   adapters: SourceAdapter[];
   shutdownRequested: boolean;
   lastSeenCleanupAt: number;
@@ -104,6 +109,21 @@ async function initializeCollector(): Promise<CollectorContext> {
   const kafkaContext = await createKafkaProducer(logger);
   healthContext.kafkaHealthy = true;
 
+  let marketFilterProfiles: MarketFilterProfile[];
+  try {
+    marketFilterProfiles = loadMarketFilterProfiles(config.MARKET_FILTERS_DIR);
+    logger.info(
+      { profileCount: marketFilterProfiles.length, dir: config.MARKET_FILTERS_DIR },
+      "Market filter profiles loaded"
+    );
+  } catch (error) {
+    logger.error(
+      { error, dir: config.MARKET_FILTERS_DIR },
+      "Failed to load market filter profiles"
+    );
+    throw error;
+  }
+
   const contentFetcherConfig = createContentFetcherConfig(process.env);
   logger.info(
     { enabled: contentFetcherConfig.enabled, timeoutMs: contentFetcherConfig.timeoutMs },
@@ -115,6 +135,7 @@ async function initializeCollector(): Promise<CollectorContext> {
     checkpointStore,
     logger,
     contentFetcherConfig,
+    marketFilterProfiles,
     onRssFeedError: ({ feed, feedUrl, errorType }) => {
       incrementRssFeedError(healthContext, {
         feed,
@@ -147,6 +168,7 @@ async function initializeCollector(): Promise<CollectorContext> {
     healthServer,
     checkpointStore,
     allowlist,
+    marketFilterProfiles,
     adapters,
     shutdownRequested: false,
     lastSeenCleanupAt: 0,

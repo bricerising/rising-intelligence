@@ -53,6 +53,20 @@ interface ProcessingState {
   topics: string[];
 }
 
+function mergeTags(existingTags: string[] | undefined, extractedTopics: string[]): string[] {
+  const merged = [...(existingTags ?? []), ...extractedTopics];
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of merged) {
+    if (!tag || seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    deduped.push(tag);
+  }
+  return deduped;
+}
+
 interface RuntimeContext {
   adapterName: string;
   adapterSource: Source;
@@ -185,7 +199,7 @@ function createTopicExtractionStep(): ProcessingStep {
         runtime.allowlist
       );
       state.topics = topics;
-      state.event.tags = topics;
+      state.event.tags = mergeTags(state.event.tags, topics);
 
       for (const topic of topics) {
         incrementTopicsExtracted(runtime.healthContext, topic);

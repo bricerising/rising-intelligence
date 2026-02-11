@@ -1,11 +1,14 @@
 import { Kafka } from "kafkajs";
 import { PrismaClient } from "@rising-intelligence/db";
 import { getEnvString, parseCanonicalSource } from "@rising-intelligence/shared";
+import {
+  deriveTopicGlobsFromFeedConfigs,
+  getRepeatedStringFlag,
+  normalizeTopicGlobs,
+} from "./feed-config.js";
 
-type Flags = Record<string, string | boolean>;
+type Flags = Record<string, string | boolean | string[]>;
 type TriggerMode = "query" | "explicit";
-
-const TOPIC_GLOB_PATTERN = /^[A-Za-z0-9.*?_-]+$/;
 
 interface TriggerBriefConfig {
   kafkaBrokers: string[];
@@ -19,6 +22,7 @@ interface TriggerBriefConfig {
   mode: TriggerMode;
   queryLookbackDays: number;
   queryTopicGlobs: string[];
+  warnings: string[];
   queryMaxEventsPerTopic: number;
   queryEvidenceStrategy: "diversity" | "recency" | "engagement";
   topicKey?: string;
@@ -44,7 +48,14 @@ interface TriggerBriefConfig {
 
 function getStringFlag(flags: Flags, name: string): string | undefined {
   const value = flags[name];
-  return typeof value === "string" ? value : undefined;
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const last = value[value.length - 1];
+    return typeof last === "string" ? last : undefined;
+  }
+  return undefined;
 }
 
 function getBooleanFlag(flags: Flags, name: string): boolean {
@@ -147,19 +158,41 @@ function parseTopicGlobs(rawValue: string): string[] {
   if (globs.length === 0) {
     throw new Error("topic-globs resolved to an empty value");
   }
+  return normalizeTopicGlobs(globs);
+}
 
-  const deduped: string[] = [];
-  const seen = new Set<string>();
-  for (const glob of globs) {
-    if (!TOPIC_GLOB_PATTERN.test(glob)) {
-      throw new Error(`Invalid topic glob pattern: ${glob}`);
-    }
-    if (!seen.has(glob)) {
-      seen.add(glob);
-      deduped.push(glob);
+function resolveQueryTopicGlobs(
+  flags: Flags
+): { queryTopicGlobs: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const explicitTopicGlobsRaw = getStringFlag(flags, "topic-globs");
+  const explicitTopicGlobs = explicitTopicGlobsRaw
+    ? parseTopicGlobs(explicitTopicGlobsRaw)
+    : [];
+
+  const feedConfigPaths = getRepeatedStringFlag(flags, "feed-config")
+    .map((path) => path.trim())
+    .filter((path) => path.length > 0);
+
+  let derivedTopicGlobs: string[] = [];
+  if (feedConfigPaths.length > 0) {
+    const derived = deriveTopicGlobsFromFeedConfigs(feedConfigPaths);
+    derivedTopicGlobs = derived.topicGlobs;
+    warnings.push(...derived.warnings);
+
+    if (derivedTopicGlobs.length === 0 && explicitTopicGlobs.length > 0) {
+      warnings.push(
+        "No topic globs derived from --feed-config files; proceeding with explicit --topic-globs."
+      );
     }
   }
-  return deduped;
+
+  const merged = normalizeTopicGlobs([...derivedTopicGlobs, ...explicitTopicGlobs]);
+  if (merged.length > 0) {
+    return { queryTopicGlobs: merged, warnings };
+  }
+
+  return { queryTopicGlobs: ["*"], warnings };
 }
 
 function parseEvidenceStrategy(rawValue: string): "diversity" | "recency" | "engagement" {
@@ -275,7 +308,8 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     );
   }
 
-  const queryTopicGlobs = parseTopicGlobs(getStringFlag(flags, "topic-globs") || "*");
+  const queryTopicResolution = resolveQueryTopicGlobs(flags);
+  const queryTopicGlobs = queryTopicResolution.queryTopicGlobs;
   const requestedQueryMaxEvents =
     getNumberFlag(flags, "max-events-per-topic") ??
     parseNumberEnv(
@@ -330,6 +364,7 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     mode: modeConfig.mode,
     queryLookbackDays: parsedLookbackDays,
     queryTopicGlobs,
+    warnings: queryTopicResolution.warnings,
     queryMaxEventsPerTopic,
     queryEvidenceStrategy,
     topicKey,
@@ -688,6 +723,15 @@ function formatBriefResult(result: BriefResult): string {
 
 export async function briefTrigger(flags: Flags): Promise<void> {
   const config = resolveConfig(flags);
+
+  if (config.warnings.length > 0) {
+    for (const warning of config.warnings) {
+      // eslint-disable-next-line no-console
+      console.warn(`⚠️  ${warning}`);
+    }
+    // eslint-disable-next-line no-console
+    console.warn("");
+  }
 
   // Check data freshness
   const freshnessIssues = await checkDataFreshness();
