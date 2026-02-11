@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
+  createDefaultCommandRegistry,
   createLazyCommandDefinition,
 } from "../src/command-registry.js";
 
@@ -87,5 +88,14 @@ describe("CommandRegistry", () => {
     await expect(command.run({})).rejects.toThrow(
       /invalid command module for topics:list/i
     );
+  });
+
+  it("registers topics retag in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("topics", "retag");
+    const alias = registry.resolve("topics", "reclassify");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
   });
 });

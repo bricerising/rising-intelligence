@@ -153,6 +153,61 @@ describe("Topic Extraction", () => {
         expect(topics).toContain("aws.eks");
       }
     });
+
+    it("should match ai.general for AI-based product coverage", () => {
+      const topics = extractTopics(
+        {
+          title: "Carrier launches AI-based translation feature",
+          text: "The AI-based system supports dozens of languages.",
+        },
+        allowlist
+      );
+      expect(topics).toContain("ai.general");
+    });
+
+    it("should match security.general for breach and leak language", () => {
+      const topics = extractTopics(
+        {
+          title: "Regulator cites major data leak after data breach",
+          text: "Officials linked the incident to a cyber-espionage campaign.",
+        },
+        allowlist
+      );
+      expect(topics).toContain("security.general");
+    });
+
+    it("should match lang.python for Pandas updates", () => {
+      const topics = extractTopics(
+        {
+          title: "Pandas 3.0 introduces copy-on-write defaults",
+          text: "The update improves dataframe behavior for Python users.",
+        },
+        allowlist
+      );
+      expect(topics).toContain("lang.python");
+    });
+
+    it("should match cloud.kubernetes for CNCF project announcements", () => {
+      const topics = extractTopics(
+        {
+          title: "Cedar joins CNCF as a sandbox project",
+          text: "The Cloud Native Computing Foundation accepted the proposal.",
+        },
+        allowlist
+      );
+      expect(topics).toContain("cloud.kubernetes");
+    });
+
+    it("should match aws.general for CloudFront coverage", () => {
+      const topics = extractTopics(
+        {
+          title: "CloudFront adds origin mTLS authentication",
+          text: "The new edge security feature is now available.",
+        },
+        allowlist
+      );
+      expect(topics).toContain("aws.general");
+    });
   });
 });
 

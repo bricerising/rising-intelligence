@@ -2,6 +2,10 @@ FROM node:20-slim AS build
 
 WORKDIR /app
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package.json tsconfig.base.json tsconfig.json ./
 
 COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/README.md ./packages/shared/
@@ -15,6 +19,7 @@ COPY packages/db/prisma ./packages/db/prisma
 
 COPY packages/ops-cli/package.json packages/ops-cli/tsconfig.json packages/ops-cli/README.md ./packages/ops-cli/
 COPY packages/ops-cli/src ./packages/ops-cli/src
+COPY infra/config/topics.allowlist.yaml ./infra/config/topics.allowlist.yaml
 
 RUN npm install
 RUN npm run build --workspace=@rising-intelligence/shared
@@ -26,8 +31,13 @@ FROM node:20-slim
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
+COPY --from=build /app/infra ./infra
 COPY --from=build /app/package.json ./package.json
 
 ENTRYPOINT ["node", "packages/ops-cli/dist/bin.js"]

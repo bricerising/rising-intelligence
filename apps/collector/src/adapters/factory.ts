@@ -5,7 +5,10 @@ import type { ContentFetcherConfig } from "../content-fetcher.js";
 import type { SourceAdapter } from "../types.js";
 import { createHackerNewsAdapter } from "./hackernews.js";
 import { createLobstersAdapter } from "./lobsters.js";
-import { createRSSAdapter } from "./rss.js";
+import {
+  createRSSAdapter,
+  type RSSFeedErrorReport,
+} from "./rss.js";
 
 const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
   "RSS_ENABLED",
@@ -34,6 +37,7 @@ export interface BuildCollectorAdaptersInput {
   checkpointStore: CheckpointStore;
   logger: Logger;
   contentFetcherConfig: ContentFetcherConfig;
+  onRssFeedError?: (report: RSSFeedErrorReport) => void;
 }
 
 type ImplementedAdapterName = "rss" | "hackernews" | "lobsters";
@@ -120,14 +124,21 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
     createImplementedAdapterDefinition(
       "rss",
       (config) => config.RSS_ENABLED,
-      ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createRSSAdapter({
+      ({ config, checkpointStore, logger, contentFetcherConfig, onRssFeedError }, constructors) => {
+        const adapterInput = {
           feedsConfigPath: config.FEEDS_CONFIG_PATH,
           pollIntervalMs: config.RSS_POLL_INTERVAL_SECONDS * 1000,
           checkpoints: checkpointStore,
           logger: createAdapterLogger(logger, "rss"),
           contentFetcherConfig,
-        })
+        };
+
+        return constructors.createRSSAdapter(
+          onRssFeedError
+            ? { ...adapterInput, onFeedError: onRssFeedError }
+            : adapterInput
+        );
+      }
     ),
     createImplementedAdapterDefinition(
       "hackernews",

@@ -54,6 +54,20 @@ Flags (topics list):
   --counts                         Show event count per topic (sorted by count desc)
   --min-count <n>                  Minimum event count to include (requires --counts)
 
+Flags (topics retag):
+  --database-url <url>             Default: $DATABASE_URL or constructed from postgres-* flags
+  --postgres-host <host>           Default: $POSTGRES_HOST or localhost
+  --postgres-port <port>           Default: $POSTGRES_PORT or 5432
+  --postgres-db <db>               Default: $POSTGRES_DB or rising_intelligence
+  --postgres-user <user>           Default: $POSTGRES_USER or rising
+  --postgres-password <password>   Default: $POSTGRES_PASSWORD or secret file
+  --allowlist-path <path>          Default: <repo>/infra/config/topics.allowlist.yaml
+  --all                            Retag all rows (default: only rows with empty tags/topics)
+  --source <source>                Optional source filter (rss|news|hackernews|reddit|github|bluesky|mastodon)
+  --limit <n>                      Maximum rows to scan
+  --batch-size <n>                 Batch size for reads/updates (default: 200)
+  --dry-run                        Show what would change without updating rows
+
 Flags (brief trigger):
   --kafka-brokers <brokers>        Default: $KAFKA_BROKERS or localhost:9092
   --kafka-client-id <id>           Default: riops-brief-trigger
@@ -93,10 +107,12 @@ Examples:
   riops topics list
   riops topics list --counts
   riops topics list --counts --min-count 10
+  riops topics retag --dry-run
+  riops topics retag --source rss --limit 100 --dry-run
+  riops topics retag --all --batch-size 500
   riops brief trigger --dry-run
   riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
   riops brief trigger --report-timezone America/New_York --report-start-at 2026-01-01T00:00:00-05:00 --report-end-at 2026-02-10T23:59:59-05:00 --dry-run
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
 `);
 }
-

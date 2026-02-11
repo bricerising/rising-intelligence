@@ -29,3 +29,7 @@
 ### T007: Structured notes framing hints
 
 - **Acceptance**: `riops brief trigger` supports `--report-timezone`, `--report-start-at`, and `--report-end-at` and includes them in emitted `SummaryRequest`.
+
+### T008: Topic re-tag backfill command
+
+- **Acceptance**: `riops topics retag` recomputes `raw_events.tags` + `raw_events.topics` from allowlist rules, defaults to rows with empty topic/tag arrays, supports `--all`, and includes a safe `--dry-run` mode.

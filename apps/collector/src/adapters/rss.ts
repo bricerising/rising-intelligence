@@ -43,6 +43,12 @@ interface FeedsYaml {
   opensource?: FeedConfig[];
 }
 
+export interface RSSFeedErrorReport {
+  feed: string;
+  feedUrl: string;
+  errorType: "parse_error";
+}
+
 /**
  * Create hash of URL for stable event IDs
  */
@@ -116,17 +122,20 @@ export class RSSAdapter implements SourceAdapter {
   private checkpoints: CheckpointStore;
   private logger: Logger;
   private textEnrichmentStrategy: TextEnrichmentStrategy;
+  private onFeedError?: (report: RSSFeedErrorReport) => void;
 
   constructor(
     feedsConfigPath: string,
     pollIntervalMs: number,
     checkpoints: CheckpointStore,
     logger: Logger,
-    contentFetcherConfig?: ContentFetcherConfig
+    contentFetcherConfig?: ContentFetcherConfig,
+    onFeedError?: (report: RSSFeedErrorReport) => void
   ) {
     this.pollIntervalMs = pollIntervalMs;
     this.checkpoints = checkpoints;
     this.logger = logger;
+    this.onFeedError = onFeedError;
     this.textEnrichmentStrategy = createTextEnrichmentStrategy(
       contentFetcherConfig,
       logger,
@@ -187,6 +196,19 @@ export class RSSAdapter implements SourceAdapter {
     try {
       parsedFeed = await this.parser.parseURL(feed.url);
     } catch (error) {
+      try {
+        this.onFeedError?.({
+          feed: feed.name,
+          feedUrl: feed.url,
+          errorType: "parse_error",
+        });
+      } catch (metricError) {
+        this.logger.debug(
+          { feed: feed.name, url: feed.url, error: metricError },
+          "Failed to record RSS feed parse error metric"
+        );
+      }
+
       this.logger.warn(
         { feed: feed.name, url: feed.url, error },
         "Failed to parse RSS feed"
@@ -289,6 +311,7 @@ export interface CreateRSSAdapterInput {
   checkpoints: CheckpointStore;
   logger: Logger;
   contentFetcherConfig?: ContentFetcherConfig;
+  onFeedError?: (report: RSSFeedErrorReport) => void;
 }
 
 export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
@@ -297,6 +320,7 @@ export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
     input.pollIntervalMs,
     input.checkpoints,
     input.logger,
-    input.contentFetcherConfig
+    input.contentFetcherConfig,
+    input.onFeedError
   );
 }

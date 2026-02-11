@@ -23,6 +23,7 @@ import {
   startHealthServer,
   HealthContext,
   incrementEventsFailed,
+  incrementRssFeedError,
   observePollDuration,
   observePollItemsCount,
   incrementCheckpointUpdated,
@@ -114,6 +115,13 @@ async function initializeCollector(): Promise<CollectorContext> {
     checkpointStore,
     logger,
     contentFetcherConfig,
+    onRssFeedError: ({ feed, feedUrl, errorType }) => {
+      incrementRssFeedError(healthContext, {
+        feed,
+        feedUrl,
+        errorType,
+      });
+    },
   });
 
   if (unsupportedEnabledAdapters.length > 0) {

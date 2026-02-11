@@ -2,7 +2,7 @@
 
 **Service**: `@rising-intelligence/collector`
 **Created**: 2026-02-05
-**Updated**: 2026-02-05
+**Updated**: 2026-02-11
 **Status**: Planned
 
 ## Overview
@@ -408,6 +408,10 @@ ri_collector_poll_duration_seconds_bucket{source="reddit",le="1"} 95
 # HELP ri_collector_errors_total Errors by source and type
 # TYPE ri_collector_errors_total counter
 ri_collector_errors_total{source="reddit",type="rate_limit"} 2
+
+# HELP ri_collector_rss_feed_errors_total RSS feed-level errors
+# TYPE ri_collector_rss_feed_errors_total counter
+ri_collector_rss_feed_errors_total{source="rss",feed="OpenAI News",feed_url="https://openai.com/news/rss.xml",error_type="parse_error"} 1
 
 # HELP ri_collector_last_poll_timestamp_seconds Unix timestamp of last successful poll
 # TYPE ri_collector_last_poll_timestamp_seconds gauge

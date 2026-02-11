@@ -540,6 +540,67 @@
       ],
       "title": "Collector Failures (24h)",
       "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "MIMIR"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 9,
+      "options": {
+        "displayMode": "basic",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": false
+      },
+      "targets": [
+        {
+          "expr": "sum by(feed) (increase(ri_collector_rss_feed_errors_total{error_type=\"parse_error\"}[24h]))",
+          "instant": true,
+          "legendFormat": "{{feed}}",
+          "refId": "A"
+        }
+      ],
+      "title": "RSS Parse Errors by Feed (24h)",
+      "type": "bargauge"
     }
   ],
   "refresh": "30s",
@@ -589,6 +650,6 @@
   "timezone": "",
   "title": "System Overview",
   "uid": "ri-system-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

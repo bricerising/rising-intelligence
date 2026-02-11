@@ -326,7 +326,15 @@ official_blogs:
       (Parser as any).mockImplementation(() => mockParser);
 
       const logger = createTestLogger();
-      const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), logger);
+      const onFeedError = vi.fn();
+      const adapter = new RSSAdapter(
+        feedsPath,
+        300000,
+        createMockCheckpoints(),
+        logger,
+        undefined,
+        onFeedError
+      );
       await adapter.initialize();
 
       const results: any[] = [];
@@ -339,6 +347,11 @@ official_blogs:
       expect(results[0].event.title).toBe("Working Article");
       // Parse failures are logged at warn level, not error
       expect(logger.warn).toHaveBeenCalled();
+      expect(onFeedError).toHaveBeenCalledWith({
+        feed: "Failing Feed",
+        feedUrl: "https://example.com/failing",
+        errorType: "parse_error",
+      });
     });
 
     it("throws when all configured feeds fail", async () => {

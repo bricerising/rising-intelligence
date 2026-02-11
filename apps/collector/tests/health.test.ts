@@ -6,6 +6,7 @@ import {
   getHealthStatus,
   incrementCheckpointUpdated,
   incrementEventsFailed,
+  incrementRssFeedError,
   incrementEventsIngested,
   observePollDuration,
   observePollItemsCount,
@@ -122,6 +123,14 @@ describe("health handler", () => {
 
     incrementEventsIngested(ctx, "rss", 3);
     incrementEventsFailed(ctx, "rss", "network_error", 1);
+    incrementRssFeedError(
+      ctx,
+      {
+        feed: "OpenAI News",
+        feedUrl: "https://openai.com/news/rss.xml",
+        errorType: "parse_error",
+      }
+    );
     incrementCheckpointUpdated(ctx, "rss");
     incrementRateLimitBackoff(ctx, "rss", 1);
     incrementTopicsExtracted(ctx, "aws.bedrock", 2);
@@ -135,6 +144,9 @@ describe("health handler", () => {
     expect(metricsRes.statusCode).toBe(200);
     expect(metricsRes.body).toContain(
       'ri_collector_events_failed_total{source="rss",error_type="network_error"} 1'
+    );
+    expect(metricsRes.body).toContain(
+      'ri_collector_rss_feed_errors_total{source="rss",feed="OpenAI News",feed_url="https://openai.com/news/rss.xml",error_type="parse_error"} 1'
     );
     expect(metricsRes.body).toContain(
       'ri_collector_checkpoint_updated_total{source="rss"} 1'

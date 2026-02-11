@@ -24,3 +24,13 @@
 
 - `kafka ensure-topics`
 - `postgres migrate` (for read model evolution)
+
+## Phase 5: Topic maintenance (MVP+)
+
+- `topics list`
+  - inspect canonical topics currently materialized in `raw_events`
+  - support optional counts + minimum threshold filter
+- `topics retag`
+  - recompute `raw_events.tags` and `raw_events.topics` from allowlist rules
+  - default to missing tags/topics for safe backfill
+  - support `--all`, `--source`, `--limit`, `--batch-size`, and `--dry-run`

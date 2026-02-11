@@ -1,46 +1,13 @@
 import { PrismaClient } from "@rising-intelligence/db";
-import {
-  getEnvString,
-  getSecretValue,
-  resolveDatabaseUrl,
-} from "@rising-intelligence/shared";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import {
   parseNonNegativeIntegerStrict,
-  parsePositiveIntegerStrict,
 } from "../../lib/number.js";
-
-function getDatabaseUrl(flags: CliFlags): string {
-  const databaseUrlFlag = getStringFlag(flags, "database-url");
-  const databaseUrlEnv = getEnvString("DATABASE_URL");
-
-  const host = getStringFlag(flags, "postgres-host") || getEnvString("POSTGRES_HOST") || "localhost";
-  const port = getStringFlag(flags, "postgres-port") || getEnvString("POSTGRES_PORT") || "5432";
-  const db = getStringFlag(flags, "postgres-db") || getEnvString("POSTGRES_DB") || "rising_intelligence";
-  const user = getStringFlag(flags, "postgres-user") || getEnvString("POSTGRES_USER") || "rising";
-
-  let password = getStringFlag(flags, "postgres-password") || getEnvString("POSTGRES_PASSWORD");
-  if (!password) {
-    const secret = getSecretValue("POSTGRES_PASSWORD");
-    if (secret) {
-      password = secret;
-    } else {
-      password = "rising"; // Default password from docker-compose.yml
-    }
-  }
-
-  return resolveDatabaseUrl(databaseUrlFlag || databaseUrlEnv, {
-    host,
-    port: parsePositiveIntegerStrict(port, "--postgres-port"),
-    db,
-    user,
-    password,
-  });
-}
+import { resolveTopicsDatabaseUrl } from "./database-url.js";
 
 export async function topicsList(flags: CliFlags): Promise<void> {
-  const databaseUrl = getDatabaseUrl(flags);
+  const databaseUrl = resolveTopicsDatabaseUrl(flags);
   const showCounts = getBooleanFlag(flags, "counts");
   const minCountRaw = getStringFlag(flags, "min-count");
   if (minCountRaw && !showCounts) {

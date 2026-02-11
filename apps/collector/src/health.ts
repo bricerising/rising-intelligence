@@ -42,9 +42,17 @@ export type CollectorErrorType =
   | "rate_limit"
   | "network_error";
 
+interface RssFeedErrorMetric {
+  feed: string;
+  feedUrl: string;
+  errorType: CollectorErrorType;
+  count: number;
+}
+
 export interface Metrics {
   eventsIngested: Map<string, number>;
   eventsFailed: Map<string, Map<string, number>>;
+  rssFeedErrors: Map<string, RssFeedErrorMetric>;
   pollDurationSeconds: Map<string, HistogramState>;
   pollItemsCount: Map<string, HistogramState>;
   checkpointUpdated: Map<string, number>;
@@ -56,6 +64,7 @@ export function createMetrics(): Metrics {
   return {
     eventsIngested: new Map(),
     eventsFailed: new Map(),
+    rssFeedErrors: new Map(),
     pollDurationSeconds: new Map(),
     pollItemsCount: new Map(),
     checkpointUpdated: new Map(),
@@ -98,6 +107,14 @@ function getOrCreateHistogram(
   const created = createHistogram(buckets);
   map.set(source, created);
   return created;
+}
+
+function createRssFeedErrorKey(
+  feed: string,
+  feedUrl: string,
+  errorType: CollectorErrorType
+): string {
+  return `${feed}\u0000${feedUrl}\u0000${errorType}`;
 }
 
 export function getHealthStatus(ctx: HealthContext): HealthStatus {
@@ -150,6 +167,14 @@ export function formatMetrics(ctx: HealthContext): string {
         `ri_collector_events_failed_total{source="${quoteMetricLabelValue(source)}",error_type="${quoteMetricLabelValue(errorType)}"} ${count}`
       );
     }
+  }
+
+  lines.push("# HELP ri_collector_rss_feed_errors_total RSS feed-level errors");
+  lines.push("# TYPE ri_collector_rss_feed_errors_total counter");
+  for (const metric of ctx.metrics.rssFeedErrors.values()) {
+    lines.push(
+      `ri_collector_rss_feed_errors_total{source="rss",feed="${quoteMetricLabelValue(metric.feed)}",feed_url="${quoteMetricLabelValue(metric.feedUrl)}",error_type="${quoteMetricLabelValue(metric.errorType)}"} ${metric.count}`
+    );
   }
 
   let wrotePollDurationMetadata = false;
@@ -249,6 +274,37 @@ export function incrementEventsFailed(
   }
   const current = errorMap.get(errorType) ?? 0;
   errorMap.set(errorType, current + count);
+}
+
+export interface IncrementRssFeedErrorInput {
+  feed: string;
+  feedUrl: string;
+  errorType: CollectorErrorType;
+}
+
+export function incrementRssFeedError(
+  ctx: HealthContext,
+  input: IncrementRssFeedErrorInput,
+  count = 1
+): void {
+  const metricKey = createRssFeedErrorKey(
+    input.feed,
+    input.feedUrl,
+    input.errorType
+  );
+  const existing = ctx.metrics.rssFeedErrors.get(metricKey);
+
+  if (!existing) {
+    ctx.metrics.rssFeedErrors.set(metricKey, {
+      feed: input.feed,
+      feedUrl: input.feedUrl,
+      errorType: input.errorType,
+      count,
+    });
+    return;
+  }
+
+  existing.count += count;
 }
 
 export function observePollDuration(

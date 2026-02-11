@@ -3,6 +3,7 @@ import type { CheckpointStore } from "./checkpoint.js";
 import {
   incrementEventsFailed,
   incrementEventsIngested,
+  incrementRssFeedError,
   incrementTopicsExtracted,
   type HealthContext,
 } from "./health.js";
@@ -92,6 +93,31 @@ function hasRequiredFields(event: RawEvent): boolean {
   return isNonBlank(event.event_id) && isNonBlank(event.text);
 }
 
+interface RssFeedMetadata {
+  feed: string;
+  feedUrl: string;
+}
+
+function parseRssFeedMetadata(sourceMeta: RawEvent["source_meta"]): RssFeedMetadata | null {
+  if (!sourceMeta || typeof sourceMeta !== "object") {
+    return null;
+  }
+
+  const feed = sourceMeta.feed_name;
+  const feedUrl = sourceMeta.feed_url;
+  if (typeof feed !== "string" || feed.trim() === "") {
+    return null;
+  }
+  if (typeof feedUrl !== "string" || feedUrl.trim() === "") {
+    return null;
+  }
+
+  return {
+    feed,
+    feedUrl,
+  };
+}
+
 function createDeduplicateStep(): ProcessingStep {
   return {
     name: "deduplicate",
@@ -128,6 +154,19 @@ function createValidationStep(): ProcessingStep {
 
       await runtime.publishDeadLetterEvent(dlqEvent);
       incrementEventsFailed(runtime.healthContext, runtime.adapterSource, "parse_error");
+      if (runtime.adapterSource === "rss") {
+        const feedMetadata = parseRssFeedMetadata(state.event.source_meta);
+        if (feedMetadata) {
+          incrementRssFeedError(
+            runtime.healthContext,
+            {
+              feed: feedMetadata.feed,
+              feedUrl: feedMetadata.feedUrl,
+              errorType: "parse_error",
+            }
+          );
+        }
+      }
 
       return {
         status: "invalid",

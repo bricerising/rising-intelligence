@@ -55,6 +55,8 @@ topics:
       # Only match full "Amazon Web Services" to avoid polluting specific service topics
       - type: keyword
         value: "Amazon Web Services"
+      - type: keyword
+        value: "CloudFront"
       # Or AWS in platform/strategy context (not service-specific)
       - type: regex
         pattern: "\\bAWS\\b.*(platform strategy|cloud strategy|aws summit|re:invent|aws overview)"
@@ -158,6 +160,8 @@ topics:
         pattern: "^.*\\b(AI|artificial intelligence)\\b.*(breakthrough|research|model|advancement).*$"
       - type: regex
         pattern: "^.*\\bmachine learning\\b.*(algorithm|model|training|dataset).*$"
+      - type: regex
+        pattern: "\\bAI[- ]?(based|powered|tool|tools|system|systems|chip|chips|startup|agent|agents)\\b"
 
   - key: ai.llm
     display_name: Large Language Models
@@ -275,6 +279,8 @@ topics:
         value: "Kubernetes"
       - type: keyword
         value: "K8s"
+      - type: keyword
+        value: "CNCF"
 
   - key: cloud.docker
     display_name: Docker
@@ -333,6 +339,8 @@ topics:
     matchers:
       - type: keyword
         value: "Python"
+      - type: keyword
+        value: "Pandas"
 
   - key: framework.react
     display_name: React
@@ -513,6 +521,14 @@ topics:
         value: "vulnerability"
       - type: keyword
         value: "CVE-"
+      - type: keyword
+        value: "data breach"
+      - type: keyword
+        value: "data leak"
+      - type: keyword
+        value: "ransomware"
+      - type: regex
+        pattern: "\\bcyber[- ]?espionage\\b"
 
 suppression:
   # Topics to exclude from trending/alerts (still tracked, just muted)

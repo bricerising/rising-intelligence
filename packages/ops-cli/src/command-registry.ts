@@ -157,6 +157,14 @@ const DEFAULT_COMMANDS: readonly CliCommandDefinition[] = [
     loadModule: () => import("./commands/topics/list.js"),
     exportName: "topicsList",
   }),
+  createLazyCommandDefinition({
+    group: "topics",
+    command: "retag",
+    aliases: ["topics:reclassify"],
+    summary: "Recompute raw_events tags/topics from allowlist rules",
+    loadModule: () => import("./commands/topics/retag.js"),
+    exportName: "topicsRetag",
+  }),
 ];
 
 export function createDefaultCommandRegistry(): CommandRegistry {

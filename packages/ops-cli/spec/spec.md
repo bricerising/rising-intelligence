@@ -37,6 +37,12 @@ As an operator, I can publish a valid `SummaryRequest` from the terminal to forc
 
 **Independent Test**: `riops brief trigger --dry-run` emits query-mode `SummaryRequest` (`topics=[]`, `query.lookback_days=7`, `query.topic_globs=["*"]`) and publishes keyed payload to `summary.requests`.
 
+### Scenario 3 — Re-tag Existing Raw Events (Priority: P2)
+
+As an operator, I can recompute `raw_events.tags` and `raw_events.topics` from the current allowlist rules to backfill previously untagged events.
+
+**Independent Test**: `riops topics retag --dry-run` reports candidate updates without mutating rows; re-running without `--dry-run` updates matching rows idempotently.
+
 ## Requirements
 
 ### Functional Requirements
@@ -50,6 +56,9 @@ As an operator, I can publish a valid `SummaryRequest` from the terminal to forc
 - **FR-007**: `brief trigger` SHOULD preserve explicit mode as an opt-in backward-compatible path when topic/evidence flags are provided.
 - **FR-008**: `brief trigger` is the canonical operator path for creating briefs; Trends no longer auto-publishes brief requests.
 - **FR-009**: `brief trigger` SHOULD support optional notes-framing hints (`report.timezone`, `report.start_at`, `report.end_at`) for structured brief rendering.
+- **FR-010**: CLI MUST support `topics retag` to recompute `raw_events.tags` and `raw_events.topics` from the allowlist.
+- **FR-011**: `topics retag` MUST default to rows with empty `tags` or `topics` and support `--all` to process all rows.
+- **FR-012**: `topics retag` MUST support `--dry-run`, `--source`, `--limit`, and `--batch-size` for safe operational execution.
 
 ### Non-Functional Requirements
 

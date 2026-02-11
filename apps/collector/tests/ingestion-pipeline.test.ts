@@ -41,6 +41,10 @@ function createEvent(overrides: Partial<RawEvent> = {}): RawEvent {
     fetched_at: "2026-02-10T00:00:00.000Z",
     title: "AWS update",
     text: "aws launched a new feature",
+    source_meta: {
+      feed_name: "AWS Blog",
+      feed_url: "https://aws.amazon.com/blogs/aws/feed/",
+    },
     ...overrides,
   };
 }
@@ -173,6 +177,14 @@ describe("collector ingestion pipeline", () => {
       })
     );
     expect(healthContext.metrics.eventsFailed.get("rss")?.get("parse_error")).toBe(1);
+    expect([...healthContext.metrics.rssFeedErrors.values()]).toEqual([
+      expect.objectContaining({
+        feed: "AWS Blog",
+        feedUrl: "https://aws.amazon.com/blogs/aws/feed/",
+        errorType: "parse_error",
+        count: 1,
+      }),
+    ]);
     expect(healthContext.metrics.topicsExtracted.size).toBe(0);
     expect(invalidEvent.tags).toBeUndefined();
     expect(healthContext.lastEventAt).toBeUndefined();
@@ -219,6 +231,14 @@ describe("collector ingestion pipeline", () => {
       })
     );
     expect(healthContext.metrics.eventsFailed.get("rss")?.get("parse_error")).toBe(1);
+    expect([...healthContext.metrics.rssFeedErrors.values()]).toEqual([
+      expect.objectContaining({
+        feed: "AWS Blog",
+        feedUrl: "https://aws.amazon.com/blogs/aws/feed/",
+        errorType: "parse_error",
+        count: 1,
+      }),
+    ]);
     expect(healthContext.lastEventAt).toBeUndefined();
   });
 });

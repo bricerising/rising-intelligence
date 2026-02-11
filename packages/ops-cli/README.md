@@ -23,6 +23,10 @@ Run:
 ./node_modules/.bin/riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
 ./node_modules/.bin/riops brief trigger --report-timezone America/New_York --report-start-at 2026-01-01T00:00:00-05:00 --report-end-at 2026-02-10T23:59:59-05:00 --dry-run
 ./node_modules/.bin/riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
+./node_modules/.bin/riops topics list --counts --min-count 5
+./node_modules/.bin/riops topics retag --dry-run
+./node_modules/.bin/riops topics retag --source rss --limit 100 --dry-run
+./node_modules/.bin/riops topics retag --all --batch-size 500
 ```
 
 ## Usage (via Docker Compose)
@@ -40,6 +44,8 @@ docker compose run --rm ops-cli schema-registry publish-protos
 - `lgtm urls`: print local endpoints for Grafana/Loki/Tempo/Mimir/OTLP/Kafka/Schema Registry
 - `schema-registry publish-protos`: publish Protobuf schemas + subjects to Schema Registry
 - `brief trigger`: generate + publish a manual `SummaryRequest` to `summary.requests` (query mode by default, explicit mode supported with topic/evidence flags)
+- `topics list`: list distinct topic keys currently present in `raw_events` (optional counts)
+- `topics retag`: recompute `raw_events.tags` + `raw_events.topics` from the allowlist rules (defaults to rows with empty tags/topics)
 
 ## Env
 

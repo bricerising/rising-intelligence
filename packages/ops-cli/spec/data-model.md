@@ -24,3 +24,15 @@ Key outputs:
    - `report.start_at` / `report.end_at` (optional ISO8601 framing bounds)
 2. **Explicit mode (optional)**:
    - `topics[]` with metric/evidence fields from CLI flags
+
+`topics retag` uses:
+
+- **Inputs**:
+  - Postgres `raw_events` rows (`id`, `title`, `text`, `tags`, `topics`)
+  - Topics allowlist YAML (default: `infra/config/topics.allowlist.yaml`)
+- **Outputs**:
+  - `raw_events.tags` and `raw_events.topics` updated in-place to match extracted canonical topics
+- **Execution controls**:
+  - `--dry-run` for non-mutating preview
+  - `--all` or default missing-only mode
+  - optional `--source`, `--limit`, `--batch-size`

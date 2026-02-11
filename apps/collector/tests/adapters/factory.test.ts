@@ -154,4 +154,26 @@ describe("collector adapter factory", () => {
       "github",
     ]);
   });
+
+  it("passes RSS feed error callback to the RSS adapter constructor when provided", () => {
+    const logger = createLogger();
+    const checkpointStore = {} as any;
+    const config = createAdapterConfig({ HN_ENABLED: false });
+    const onRssFeedError = vi.fn();
+    const factory = createCollectorAdapterFactory(constructorMocks);
+
+    factory.build({
+      config,
+      checkpointStore,
+      logger,
+      contentFetcherConfig,
+      onRssFeedError,
+    });
+
+    expect(constructorMocks.createRSSAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onFeedError: onRssFeedError,
+      })
+    );
+  });
 });
