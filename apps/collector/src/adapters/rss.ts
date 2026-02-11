@@ -183,6 +183,26 @@ function inferSignalTier(feed: { name: string; signal_tier?: "high_volume" | "lo
   return /pr\s*newswire/i.test(feed.name) ? "high_volume" : "low_volume";
 }
 
+function dedupeEntityTerms(entityTerms: readonly string[]): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawTerm of entityTerms) {
+    const term = rawTerm.trim();
+    if (!term) {
+      continue;
+    }
+    const normalized = term.toLowerCase();
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    deduped.push(term);
+  }
+
+  return deduped;
+}
+
 function normalizeFeedConfig(
   rawFeed: Record<string, unknown>,
   defaults: FeedDefaults
@@ -403,6 +423,7 @@ export class RSSAdapter implements SourceAdapter {
   private random: () => number;
   private fetchEdgarDetailMetadata: EdgarDetailMetadataFetcher;
   private nextPollAtByFeed = new Map<string, number>();
+  private watchlistEntityTerms: string[];
 
   constructor(
     feedsConfigPath: string,
@@ -446,6 +467,29 @@ export class RSSAdapter implements SourceAdapter {
       },
     });
     this.feeds = loadFeedsConfig(feedsConfigPath);
+    this.watchlistEntityTerms = dedupeEntityTerms(
+      this.feeds
+        .filter((feed) => feed.source_type === "edgar")
+        .flatMap((feed) => feed.entity_terms ?? [])
+    );
+    const highVolumeFeedsMissingEntityTerms = this.feeds.filter((feed) => {
+      if (!feed.market_gate || inferSignalTier(feed) !== "high_volume") {
+        return false;
+      }
+      const effectiveEntityTerms = dedupeEntityTerms([
+        ...(feed.entity_terms ?? []),
+        ...this.watchlistEntityTerms,
+      ]);
+      return effectiveEntityTerms.length === 0;
+    });
+    if (highVolumeFeedsMissingEntityTerms.length > 0) {
+      this.logger.warn(
+        {
+          feeds: highVolumeFeedsMissingEntityTerms.map((feed) => feed.name),
+        },
+        "High-volume market-gated feeds are configured without effective entity_terms; strict entity gating may drop all items"
+      );
+    }
     if (this.edgarDownloadPrimaryDocs) {
       this.logger.warn(
         "EDGAR primary document downloads are disabled in phase 1 despite EDGAR_DOWNLOAD_PRIMARY_DOCS=true"
@@ -612,7 +656,10 @@ export class RSSAdapter implements SourceAdapter {
     const signalTier = inferSignalTier(feed);
     const reasons = [...marketEvaluation.matchReasons];
     if (signalTier === "high_volume") {
-      const entityMatch = matchEntityTerms(content, feed.entity_terms ?? []);
+      const entityMatch = matchEntityTerms(
+        content,
+        dedupeEntityTerms([...(feed.entity_terms ?? []), ...this.watchlistEntityTerms])
+      );
       if (!entityMatch.matched) {
         return {
           keep: false,

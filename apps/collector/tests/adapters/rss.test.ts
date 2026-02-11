@@ -129,6 +129,50 @@ policy_feeds:
       });
     });
 
+    it("warns when high-volume strict gating has no EDGAR watchlist entity terms", () => {
+      writeFileSync(
+        feedsPath,
+        `
+wire_feeds:
+  - name: PR Newswire
+    url: https://example.com/pr-newswire
+    market_gate: true
+    signal_tier: high_volume
+`
+      );
+
+      const logger = createTestLogger();
+      new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), logger);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          feeds: ["PR Newswire"],
+        }),
+        expect.stringContaining(
+          "High-volume market-gated feeds are configured without effective entity_terms"
+        )
+      );
+    });
+
+    it("does not warn when high-volume feeds provide their own entity terms", () => {
+      writeFileSync(
+        feedsPath,
+        `
+wire_feeds:
+  - name: PR Newswire
+    url: https://example.com/pr-newswire
+    market_gate: true
+    signal_tier: high_volume
+    entity_terms: ["adyen"]
+`
+      );
+
+      const logger = createTestLogger();
+      new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), logger);
+
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it("handles empty sections gracefully", () => {
       writeFileSync(
         feedsPath,
@@ -602,6 +646,90 @@ official_blogs:
               matchers: [{ type: "keyword", raw: "point of sale", keyword: "point of sale" }],
             },
           ],
+        }
+      );
+      await adapter.initialize();
+
+      const results: any[] = [];
+      for await (const result of adapter.fetch()) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(1);
+      expect(results[0].checkpointValue).toBe("guid-pass");
+      expect(results[0].event.source_meta).toEqual(
+        expect.objectContaining({
+          signal_tier: "high_volume",
+          match_reasons: expect.arrayContaining([
+            "pos:keyword:point of sale",
+            "entity:adyen",
+          ]),
+        })
+      );
+    });
+
+    it("derives high-volume entity terms from EDGAR watchlist feeds", async () => {
+      writeFileSync(
+        feedsPath,
+        `
+edgar_watchlist:
+  - name: EDGAR - Adyen
+    url: https://example.com/edgar-adyen
+    source_type: edgar
+    market_gate: true
+    signal_tier: low_volume
+    entity_terms: ["adyen"]
+wire_feeds:
+  - name: PR Newswire
+    url: https://example.com/pr-newswire
+    market_gate: true
+    signal_tier: high_volume
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn(async (url: string) => {
+          if (url.includes("edgar-adyen")) {
+            return { items: [] };
+          }
+          if (url.includes("pr-newswire")) {
+            return {
+              items: [
+                {
+                  guid: "guid-pass",
+                  title: "Adyen expands point of sale footprint",
+                  contentSnippet: "Merchant payment growth continues",
+                },
+                {
+                  guid: "guid-fail",
+                  title: "Point of sale upgrades announced",
+                  contentSnippet: "No watchlist entity mentioned",
+                },
+              ],
+            };
+          }
+          return { items: [] };
+        }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(
+        feedsPath,
+        300000,
+        createMockCheckpoints(),
+        createTestLogger(),
+        undefined,
+        undefined,
+        {
+          marketFilterProfiles: [
+            {
+              key: "pos",
+              name: "POS",
+              matchers: [{ type: "keyword", raw: "point of sale", keyword: "point of sale" }],
+            },
+          ],
+          edgarFetchDetailMetadata: false,
         }
       );
       await adapter.initialize();

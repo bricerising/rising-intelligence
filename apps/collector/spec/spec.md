@@ -175,6 +175,7 @@ Phase 1 focuses on publicly accessible sources and POS/payments relevance.
 **Strict gate for high-volume feeds**:
 - must match at least one watchlist entity term, and
 - must match at least one market keyword term.
+- watchlist entity terms are sourced from EDGAR watchlist feed `entity_terms` (plus any high-volume feed overrides).
 
 **Gate for low-volume feeds**:
 - must match at least one market keyword term.

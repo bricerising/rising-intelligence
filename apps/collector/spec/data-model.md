@@ -26,7 +26,7 @@ Expected fields (when available):
 - `source_type` (for example `edgar`, `policy`, `security`, `wire`, `merchant`)
 - `signal_tier` (`high_volume` or `low_volume`)
 - `market_profiles` (`string[]`)
-- `match_reasons` (`string[]`)
+- `match_reasons` (`string[]`; includes profile matcher hints and `entity:<term>` for high-volume strict-gate matches)
 - `feed_name`
 - `feed_url`
 
