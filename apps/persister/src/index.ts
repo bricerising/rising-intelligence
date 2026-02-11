@@ -3,7 +3,7 @@ import {
   closeServer,
   runService,
   runShutdownSteps,
-  createServiceLogger,
+  createServiceBootstrap,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
 import { getConfig } from "./config.js";
@@ -19,9 +19,11 @@ import { createRedisClient, disconnectRedis } from "./redis.js";
 import { PostgresCircuitBreaker } from "./circuit-breaker.js";
 import { processBatch, type PersisterContext } from "./process.js";
 
+const bootstrap = createServiceBootstrap(getConfig);
+
 async function initializePersister(): Promise<PersisterContext> {
-  const config = getConfig();
-  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
+  const config = bootstrap.getConfig();
+  const logger = bootstrap.getLogger();
 
   logger.info({ service: config.SERVICE_NAME }, "Starting persister service");
 
@@ -110,20 +112,15 @@ async function gracefulShutdown(ctx: PersisterContext): Promise<void> {
   ]);
 }
 
-let _logger: pino.Logger | null = null;
-
 runService<PersisterContext>({
-  name: "persister",
-  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
+  name: bootstrap.getServiceName(),
+  shutdownTimeoutMs: bootstrap.getShutdownTimeoutMs(),
   getLogger() {
-    if (!_logger) {
-      _logger = createServiceLogger("persister", "info");
-    }
-    return _logger;
+    return bootstrap.getLogger();
   },
   async initialize() {
     const ctx = await initializePersister();
-    _logger = ctx.logger;
+    bootstrap.setRuntimeLogger(ctx.logger);
     return ctx;
   },
   async run(ctx) {

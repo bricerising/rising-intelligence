@@ -105,19 +105,23 @@ describe("collector adapter factory", () => {
     expect(result.unsupportedEnabledAdapters).toEqual([]);
 
     expect(constructorMocks.createRSSAdapter).toHaveBeenCalledWith(
-      "./config/feeds.yaml",
-      120_000,
-      checkpointStore,
-      logger,
-      contentFetcherConfig
+      {
+        feedsConfigPath: "./config/feeds.yaml",
+        pollIntervalMs: 120_000,
+        checkpoints: checkpointStore,
+        logger,
+        contentFetcherConfig,
+      }
     );
     expect(constructorMocks.createHackerNewsAdapter).toHaveBeenCalledWith(
-      "best",
-      90_000,
-      25,
-      checkpointStore,
-      logger,
-      contentFetcherConfig
+      {
+        mode: "best",
+        pollIntervalMs: 90_000,
+        maxItems: 25,
+        checkpoints: checkpointStore,
+        logger,
+        contentFetcherConfig,
+      }
     );
     expect(constructorMocks.createLobstersAdapter).not.toHaveBeenCalled();
     expect(logger.child).toHaveBeenCalledWith({ adapter: "rss" });

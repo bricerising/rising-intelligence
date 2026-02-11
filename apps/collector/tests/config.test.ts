@@ -136,6 +136,22 @@ describe("config", () => {
       expect(config.SHUTDOWN_TIMEOUT_MS).toBe(60000);
     });
 
+    it("rejects non-positive numeric values", async () => {
+      process.env.HN_POLL_INTERVAL_SECONDS = "0";
+
+      const { loadConfig } = await import("../src/config.js");
+
+      expect(() => loadConfig()).toThrow(/HN_POLL_INTERVAL_SECONDS/);
+    });
+
+    it("rejects non-integer numeric values", async () => {
+      process.env.PORT = "3000.5";
+
+      const { loadConfig } = await import("../src/config.js");
+
+      expect(() => loadConfig()).toThrow(/PORT/);
+    });
+
     it("transforms boolean strings correctly", async () => {
       process.env.HN_ENABLED = "true";
       process.env.LOBSTERS_ENABLED = "false";

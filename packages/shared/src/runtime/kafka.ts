@@ -123,6 +123,29 @@ export interface PublishKafkaBatchInput {
   logContext?: Record<string, unknown>;
 }
 
+export type PublishKafkaTopicMessage<TLogger extends KafkaLogger = KafkaLogger> = (
+  producer: Producer,
+  topic: string,
+  key: string,
+  value: Buffer,
+  logger: TLogger
+) => Promise<void>;
+
+export interface KafkaTopicPublisher<TPayload> {
+  publish(key: string, payload: TPayload): Promise<void>;
+}
+
+export interface CreateKafkaTopicPublisherInput<
+  TPayload,
+  TLogger extends KafkaLogger = KafkaLogger
+> {
+  producer: Producer;
+  logger: TLogger;
+  topic: string;
+  publish: PublishKafkaTopicMessage<TLogger>;
+  serialize?: (payload: TPayload) => Buffer;
+}
+
 export interface KafkaProducerProxy {
   publishMessage(input: PublishKafkaMessageInput): Promise<void>;
   publishBatch(input: PublishKafkaBatchInput): Promise<boolean>;
@@ -132,6 +155,35 @@ export interface CreateKafkaProducerProxyInput {
   producer: Producer;
   logger: KafkaLogger;
   compressionType?: CompressionTypes;
+}
+
+function serializeJsonPayload(payload: unknown): Buffer {
+  return Buffer.from(JSON.stringify(payload), "utf-8");
+}
+
+/**
+ * Facade for publishing typed payloads to one Kafka topic.
+ * Callers provide only key + domain payload while this boundary owns serialization and routing.
+ */
+export function createKafkaTopicPublisher<
+  TPayload,
+  TLogger extends KafkaLogger = KafkaLogger
+>(
+  input: CreateKafkaTopicPublisherInput<TPayload, TLogger>
+): KafkaTopicPublisher<TPayload> {
+  const serialize = input.serialize ?? ((payload: TPayload) => serializeJsonPayload(payload));
+
+  return {
+    async publish(key: string, payload: TPayload): Promise<void> {
+      await input.publish(
+        input.producer,
+        input.topic,
+        key,
+        serialize(payload),
+        input.logger
+      );
+    },
+  };
 }
 
 /**

@@ -31,5 +31,7 @@ export * from "./runtime/lifecycle.js";
 export * from "./runtime/logger.js";
 export * from "./runtime/raw-event.js";
 export * from "./runtime/secrets.js";
+export * from "./runtime/service-bootstrap.js";
 export * from "./runtime/source.js";
+export * from "./runtime/topic-router.js";
 export * from "./runtime/url.js";

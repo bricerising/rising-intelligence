@@ -26,6 +26,11 @@ import {
   createBriefResultPublisher,
   type BriefResultPublisher,
 } from "./publishing-facade.js";
+import {
+  buildFailureBriefResultPayload,
+  parseBriefResultPayload,
+  type BriefResultPayload,
+} from "./result-payload-adapter.js";
 import type {
   EvidenceStrategy,
   LlmProvider,
@@ -1122,38 +1127,20 @@ async function buildSuccessResult(
   });
 }
 
-function buildFailureResult(
-  requestId: string,
-  producedAt: Date,
-  code: string,
-  message: string,
-  retryable: boolean
-) {
-  return {
-    request_id: requestId,
-    produced_at: producedAt.toISOString(),
-    failure: {
-      error_code: code,
-      error_message: message,
-      retryable,
-    },
-  };
-}
-
 function isDuplicateKeyError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
 async function persistResult(
   prisma: PrismaClient,
-  payload: Record<string, unknown>,
+  payload: BriefResultPayload,
   status: BriefStatus
 ): Promise<"created" | "duplicate"> {
   try {
     await prisma.briefResult.create({
       data: {
-        requestId: payload.request_id as string,
-        producedAt: new Date(payload.produced_at as string),
+        requestId: payload.request_id,
+        producedAt: new Date(payload.produced_at),
         status,
         result: payload as Prisma.InputJsonValue,
       },
@@ -1491,25 +1478,10 @@ async function settleBudgetSpendUsd(
   return newSpent;
 }
 
-function asResultPayload(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Persisted brief result payload is not an object");
-  }
-
-  const payload = value as Record<string, unknown>;
-  if (typeof payload.request_id !== "string" || payload.request_id.length === 0) {
-    throw new Error("Persisted brief result payload is missing request_id");
-  }
-  if (typeof payload.produced_at !== "string" || payload.produced_at.length === 0) {
-    throw new Error("Persisted brief result payload is missing produced_at");
-  }
-  return payload;
-}
-
 async function loadPersistedResult(
   prisma: PrismaClient,
   requestId: string
-): Promise<{ status: BriefStatus; payload: Record<string, unknown> } | null> {
+): Promise<{ status: BriefStatus; payload: BriefResultPayload } | null> {
   const existing = await prisma.briefResult.findUnique({
     where: { requestId },
     select: { status: true, result: true },
@@ -1520,14 +1492,14 @@ async function loadPersistedResult(
 
   return {
     status: existing.status,
-    payload: asResultPayload(existing.result),
+    payload: parseBriefResultPayload(existing.result),
   };
 }
 
 async function republishPersistedResult(
   ctx: ProcessContext,
   requestId: string,
-  publisher: BriefResultPublisher
+  publisher: BriefResultPublisher<BriefResultPayload>
 ): Promise<BriefStatus | null> {
   const existing = await loadPersistedResult(ctx.prisma, requestId);
   ctx.healthContext.postgresHealthy = true;
@@ -1560,14 +1532,20 @@ async function rollbackBudgetReservation(
 
 async function emitFailureResult(
   ctx: ProcessContext,
-  publisher: BriefResultPublisher,
+  publisher: BriefResultPublisher<BriefResultPayload>,
   requestId: string,
   producedAt: Date,
   code: string,
   message: string,
   retryable: boolean
 ): Promise<void> {
-  const failureResult = buildFailureResult(requestId, producedAt, code, message, retryable);
+  const failureResult = buildFailureBriefResultPayload(
+    requestId,
+    producedAt,
+    code,
+    message,
+    retryable
+  );
   const persisted = await persistResult(ctx.prisma, failureResult, BriefStatus.failure);
   ctx.healthContext.postgresHealthy = true;
   if (persisted === "duplicate") {
@@ -1587,13 +1565,13 @@ export async function processSummaryRequest(
   request: ParsedSummaryRequest
 ): Promise<void> {
   const logger = ctx.logger.child({ requestId: request.requestId });
-  const publisher = createBriefResultPublisher({
+  const publisher = createBriefResultPublisher<BriefResultPayload>({
     producer: ctx.producer,
     logger,
     topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
   });
   const producedAt = new Date();
-  let existingResult: { status: BriefStatus; payload: Record<string, unknown> } | null = null;
+  let existingResult: { status: BriefStatus; payload: BriefResultPayload } | null = null;
 
   try {
     existingResult = await loadPersistedResult(ctx.prisma, request.requestId);

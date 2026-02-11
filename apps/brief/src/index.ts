@@ -3,12 +3,15 @@ import type { Redis } from "ioredis";
 import type { EachBatchPayload } from "kafkajs";
 import { PrismaClient, Prisma, TrendWindow } from "@rising-intelligence/db";
 import {
+  createTopicBatchRouter,
+  processKafkaBatchMessages,
   createKafkaBatchLifecycle,
+  type BatchTopicHandler,
   closeServer,
   serializeError,
   runService,
   runShutdownSteps,
-  createServiceLogger,
+  createServiceBootstrap,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
 import { getConfig } from "./config.js";
@@ -46,6 +49,8 @@ interface RuntimeContext {
   prisma: PrismaClient;
   redis: Redis;
 }
+
+const bootstrap = createServiceBootstrap(getConfig);
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
@@ -181,9 +186,64 @@ function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessa
   ]);
 }
 
+function createTopicBatchHandler(
+  ctx: RuntimeContext,
+  topicHandler: TopicMessageHandler
+): BatchTopicHandler {
+  return async (payload: EachBatchPayload): Promise<void> => {
+    const { isRunning, isStale, heartbeat, commitOffsetsIfNecessary } = payload;
+    const batchLifecycle = createKafkaBatchLifecycle(
+      { isRunning, isStale, heartbeat },
+      LOOP_HEARTBEAT_INTERVAL_MESSAGES
+    );
+    if (!batchLifecycle.shouldContinue()) {
+      return;
+    }
+
+    const { completed } = await processKafkaBatchMessages(
+      ctx,
+      payload,
+      batchLifecycle,
+      {
+        deserialize: (value) => value,
+        onEmptyValue(_ctx, messageContext): void {
+          ctx.logger.warn(messageContext, "Skipping message with empty value");
+        },
+        async onMessage(_ctx, messageContext, messageValue): Promise<void> {
+          await topicHandler({
+            messageValue,
+            messageLogger: ctx.logger.child(messageContext),
+            heartbeat,
+          });
+        },
+      },
+      { resolveOffsets: true }
+    );
+
+    await commitOffsetsIfNecessary();
+    if (!completed) {
+      return;
+    }
+
+    await batchLifecycle.flushHeartbeat();
+  };
+}
+
+function createBatchTopicHandlers(
+  ctx: RuntimeContext
+): Map<string, BatchTopicHandler> {
+  const messageHandlers = createTopicMessageHandlers(ctx);
+  return new Map<string, BatchTopicHandler>(
+    [...messageHandlers.entries()].map(([topic, handler]) => [
+      topic,
+      createTopicBatchHandler(ctx, handler),
+    ])
+  );
+}
+
 async function initialize(): Promise<RuntimeContext> {
-  const config = getConfig();
-  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
+  const config = bootstrap.getConfig();
+  const logger = bootstrap.getLogger();
   logger.info({ service: config.SERVICE_NAME }, "Starting brief service");
 
   const healthContext = createHealthContext(config.LLM_DAILY_BUDGET_USD);
@@ -235,77 +295,16 @@ async function initialize(): Promise<RuntimeContext> {
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
-  const topicHandlers = createTopicMessageHandlers(ctx);
+  const topicBatchRouter = createTopicBatchRouter({
+    logger: ctx.logger,
+    handlers: createBatchTopicHandlers(ctx),
+  });
 
   await ctx.kafkaConsumerContext.consumer.run({
     autoCommit: false,
     eachBatchAutoResolve: false,
     eachBatch: async (payload: EachBatchPayload) => {
-      const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
-      const batchLifecycle = createKafkaBatchLifecycle(
-        { isRunning, isStale, heartbeat },
-        LOOP_HEARTBEAT_INTERVAL_MESSAGES
-      );
-      if (!batchLifecycle.shouldContinue()) {
-        return;
-      }
-
-      const topicHandler = topicHandlers.get(batch.topic);
-      for (const message of batch.messages) {
-        if (!batchLifecycle.shouldContinue()) {
-          break;
-        }
-
-        if (!message.value) {
-          ctx.logger.warn(
-            {
-              kafkaTopic: batch.topic,
-              partition: batch.partition,
-              offset: message.offset,
-            },
-            "Skipping message with empty value"
-          );
-          resolveOffset(message.offset);
-          await commitOffsetsIfNecessary();
-          await batchLifecycle.onMessageHandled();
-          continue;
-        }
-
-        const messageLogger = ctx.logger.child({
-          kafkaTopic: batch.topic,
-          partition: batch.partition,
-          offset: message.offset,
-        });
-
-        if (!topicHandler) {
-          messageLogger.warn(
-            {
-              topic: batch.topic,
-            },
-            "Unknown topic, skipping message"
-          );
-          resolveOffset(message.offset);
-          await commitOffsetsIfNecessary();
-          await batchLifecycle.onMessageHandled();
-          continue;
-        }
-
-        await topicHandler({
-          messageValue: message.value,
-          messageLogger,
-          heartbeat,
-        });
-        resolveOffset(message.offset);
-        await commitOffsetsIfNecessary();
-        await batchLifecycle.onMessageHandled();
-      }
-
-      await commitOffsetsIfNecessary();
-      if (!batchLifecycle.shouldContinue()) {
-        return;
-      }
-
-      await batchLifecycle.flushHeartbeat();
+      await topicBatchRouter.handle(payload);
     },
   });
 }
@@ -349,20 +348,15 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   ]);
 }
 
-let _logger: pino.Logger | null = null;
-
 runService<RuntimeContext>({
-  name: "brief",
-  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
+  name: bootstrap.getServiceName(),
+  shutdownTimeoutMs: bootstrap.getShutdownTimeoutMs(),
   getLogger() {
-    if (!_logger) {
-      _logger = createServiceLogger("brief", "info");
-    }
-    return _logger;
+    return bootstrap.getLogger();
   },
   async initialize() {
     const ctx = await initialize();
-    _logger = ctx.logger;
+    bootstrap.setRuntimeLogger(ctx.logger);
     return ctx;
   },
   async run(ctx) {

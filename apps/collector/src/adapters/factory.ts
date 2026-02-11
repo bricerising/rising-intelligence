@@ -121,38 +121,38 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
       "rss",
       (config) => config.RSS_ENABLED,
       ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createRSSAdapter(
-          config.FEEDS_CONFIG_PATH,
-          config.RSS_POLL_INTERVAL_SECONDS * 1000,
-          checkpointStore,
-          createAdapterLogger(logger, "rss"),
-          contentFetcherConfig
-        )
+        constructors.createRSSAdapter({
+          feedsConfigPath: config.FEEDS_CONFIG_PATH,
+          pollIntervalMs: config.RSS_POLL_INTERVAL_SECONDS * 1000,
+          checkpoints: checkpointStore,
+          logger: createAdapterLogger(logger, "rss"),
+          contentFetcherConfig,
+        })
     ),
     createImplementedAdapterDefinition(
       "hackernews",
       (config) => config.HN_ENABLED,
       ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createHackerNewsAdapter(
-          config.HN_MODE,
-          config.HN_POLL_INTERVAL_SECONDS * 1000,
-          config.HN_MAX_ITEMS_PER_POLL,
-          checkpointStore,
-          createAdapterLogger(logger, "hackernews"),
-          contentFetcherConfig
-        )
+        constructors.createHackerNewsAdapter({
+          mode: config.HN_MODE,
+          pollIntervalMs: config.HN_POLL_INTERVAL_SECONDS * 1000,
+          maxItems: config.HN_MAX_ITEMS_PER_POLL,
+          checkpoints: checkpointStore,
+          logger: createAdapterLogger(logger, "hackernews"),
+          contentFetcherConfig,
+        })
     ),
     createImplementedAdapterDefinition(
       "lobsters",
       (config) => config.LOBSTERS_ENABLED,
       ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createLobstersAdapter(
-          config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
-          config.LOBSTERS_MAX_ITEMS_PER_POLL,
-          checkpointStore,
-          createAdapterLogger(logger, "lobsters"),
-          contentFetcherConfig
-        )
+        constructors.createLobstersAdapter({
+          pollIntervalMs: config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
+          maxItems: config.LOBSTERS_MAX_ITEMS_PER_POLL,
+          checkpoints: checkpointStore,
+          logger: createAdapterLogger(logger, "lobsters"),
+          contentFetcherConfig,
+        })
     ),
     createUnsupportedAdapterDefinition("reddit", (config) => config.REDDIT_ENABLED),
     createUnsupportedAdapterDefinition("bluesky", (config) => config.BLUESKY_ENABLED),

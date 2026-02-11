@@ -283,18 +283,20 @@ export class RSSAdapter implements SourceAdapter {
 /**
  * Factory function to create RSS adapter
  */
-export function createRSSAdapter(
-  feedsConfigPath: string,
-  pollIntervalMs: number,
-  checkpoints: CheckpointStore,
-  logger: Logger,
-  contentFetcherConfig?: ContentFetcherConfig
-): SourceAdapter {
+export interface CreateRSSAdapterInput {
+  feedsConfigPath: string;
+  pollIntervalMs: number;
+  checkpoints: CheckpointStore;
+  logger: Logger;
+  contentFetcherConfig?: ContentFetcherConfig;
+}
+
+export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
   return new RSSAdapter(
-    feedsConfigPath,
-    pollIntervalMs,
-    checkpoints,
-    logger,
-    contentFetcherConfig
+    input.feedsConfigPath,
+    input.pollIntervalMs,
+    input.checkpoints,
+    input.logger,
+    input.contentFetcherConfig
   );
 }

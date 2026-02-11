@@ -222,24 +222,28 @@ export class HackerNewsAdapter implements SourceAdapter {
 /**
  * Factory function to create HN adapter
  */
+export interface CreateHackerNewsAdapterInput {
+  mode: string;
+  pollIntervalMs: number;
+  maxItems: number;
+  checkpoints: CheckpointStore;
+  logger: Logger;
+  contentFetcherConfig?: ContentFetcherConfig;
+}
+
 export function createHackerNewsAdapter(
-  mode: string,
-  pollIntervalMs: number,
-  maxItems: number,
-  checkpoints: CheckpointStore,
-  logger: Logger,
-  contentFetcherConfig?: ContentFetcherConfig
+  input: CreateHackerNewsAdapterInput
 ): SourceAdapter {
-  const validMode = (["top", "new", "best"].includes(mode)
-    ? mode
+  const validMode = (["top", "new", "best"].includes(input.mode)
+    ? input.mode
     : "top") as HNMode;
 
   return new HackerNewsAdapter(
     validMode,
-    pollIntervalMs,
-    maxItems,
-    checkpoints,
-    logger,
-    contentFetcherConfig
+    input.pollIntervalMs,
+    input.maxItems,
+    input.checkpoints,
+    input.logger,
+    input.contentFetcherConfig
   );
 }

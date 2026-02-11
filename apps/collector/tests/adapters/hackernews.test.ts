@@ -416,7 +416,13 @@ describe("HackerNewsAdapter", () => {
 
   describe("factory function", () => {
     it("createHackerNewsAdapter returns valid adapter with default mode", () => {
-      const adapter = createHackerNewsAdapter("invalid", 300000, 30, createMockCheckpoints(), createTestLogger());
+      const adapter = createHackerNewsAdapter({
+        mode: "invalid",
+        pollIntervalMs: 300000,
+        maxItems: 30,
+        checkpoints: createMockCheckpoints(),
+        logger: createTestLogger(),
+      });
 
       expect(adapter.name).toBe("hackernews");
       expect(adapter.source).toBe("hackernews");
@@ -425,7 +431,13 @@ describe("HackerNewsAdapter", () => {
 
     it("createHackerNewsAdapter accepts valid modes", () => {
       for (const mode of ["top", "new", "best"]) {
-        const adapter = createHackerNewsAdapter(mode, 300000, 30, createMockCheckpoints(), createTestLogger());
+        const adapter = createHackerNewsAdapter({
+          mode,
+          pollIntervalMs: 300000,
+          maxItems: 30,
+          checkpoints: createMockCheckpoints(),
+          logger: createTestLogger(),
+        });
         expect(adapter.name).toBe("hackernews");
       }
     });

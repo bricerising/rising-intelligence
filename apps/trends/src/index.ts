@@ -2,11 +2,13 @@ import type { Server } from "node:http";
 import type { EachBatchPayload } from "kafkajs";
 import { PrismaClient } from "@rising-intelligence/db";
 import {
+  createTopicBatchRouter,
+  type BatchTopicHandler,
   closeServer,
   serializeError,
   runService,
   runShutdownSteps,
-  createServiceLogger,
+  createServiceBootstrap,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
 import { getConfig } from "./config.js";
@@ -43,7 +45,7 @@ interface RuntimeContext extends TrendsContext {
   snapshotInFlight: boolean;
 }
 
-type BatchTopicHandler = (payload: EachBatchPayload) => Promise<void>;
+const bootstrap = createServiceBootstrap(getConfig);
 
 async function initializeAllowlist(
   allowlistPath: string,
@@ -57,8 +59,8 @@ async function initializeAllowlist(
 }
 
 async function initializeTrends(): Promise<RuntimeContext> {
-  const config = getConfig();
-  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
+  const config = bootstrap.getConfig();
+  const logger = bootstrap.getLogger();
 
   logger.info({ service: config.SERVICE_NAME }, "Starting trends service");
 
@@ -171,22 +173,16 @@ function createBatchTopicHandlers(ctx: RuntimeContext): Map<string, BatchTopicHa
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
-  const batchTopicHandlers = createBatchTopicHandlers(ctx);
+  const topicBatchRouter = createTopicBatchRouter({
+    logger: ctx.logger,
+    handlers: createBatchTopicHandlers(ctx),
+  });
 
   await ctx.kafkaConsumerContext.consumer.run({
     autoCommit: false,
     eachBatchAutoResolve: false,
     eachBatch: async (payload: EachBatchPayload) => {
-      const topicHandler = batchTopicHandlers.get(payload.batch.topic);
-      if (topicHandler) {
-        await topicHandler(payload);
-        return;
-      }
-
-      ctx.logger.warn(
-        { topic: payload.batch.topic, partition: payload.batch.partition },
-        "Received batch for unexpected topic; skipping"
-      );
+      await topicBatchRouter.handle(payload);
     },
   });
 }
@@ -237,20 +233,15 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   ]);
 }
 
-let _logger: pino.Logger | null = null;
-
 runService<RuntimeContext>({
-  name: "trends",
-  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
+  name: bootstrap.getServiceName(),
+  shutdownTimeoutMs: bootstrap.getShutdownTimeoutMs(),
   getLogger() {
-    if (!_logger) {
-      _logger = createServiceLogger("trends", "info");
-    }
-    return _logger;
+    return bootstrap.getLogger();
   },
   async initialize() {
     const ctx = await initializeTrends();
-    _logger = ctx.logger;
+    bootstrap.setRuntimeLogger(ctx.logger);
     return ctx;
   },
   async run(ctx) {

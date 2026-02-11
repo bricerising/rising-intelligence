@@ -449,7 +449,12 @@ official_blogs:
   describe("factory function", () => {
     it("createRSSAdapter returns a valid SourceAdapter", () => {
       writeFileSync(feedsPath, "official_blogs: []");
-      const adapter = createRSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+      const adapter = createRSSAdapter({
+        feedsConfigPath: feedsPath,
+        pollIntervalMs: 300000,
+        checkpoints: createMockCheckpoints(),
+        logger: createTestLogger(),
+      });
 
       expect(adapter.name).toBe("rss");
       expect(adapter.source).toBe("rss");

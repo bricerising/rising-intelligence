@@ -4,7 +4,7 @@ import { getSecretValue, loadDotEnv, parseConfig, zBooleanEnv } from "@rising-in
 const ConfigSchema = z.object({
   // Service
   SERVICE_NAME: z.string().default("collector"),
-  PORT: z.coerce.number().default(3000),
+  PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
 
   // Kafka
@@ -23,44 +23,44 @@ const ConfigSchema = z.object({
   // Hacker News
   HN_ENABLED: zBooleanEnv("true"),
   HN_MODE: z.enum(["top", "new", "best"]).default("top"),
-  HN_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
-  HN_MAX_ITEMS_PER_POLL: z.coerce.number().default(30),
+  HN_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  HN_MAX_ITEMS_PER_POLL: z.coerce.number().int().positive().default(30),
 
   // Lobsters
   LOBSTERS_ENABLED: zBooleanEnv("true"),
-  LOBSTERS_POLL_INTERVAL_SECONDS: z.coerce.number().default(600),
-  LOBSTERS_MAX_ITEMS_PER_POLL: z.coerce.number().default(25),
+  LOBSTERS_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(600),
+  LOBSTERS_MAX_ITEMS_PER_POLL: z.coerce.number().int().positive().default(25),
 
   // Reddit
   REDDIT_ENABLED: zBooleanEnv("false"),
   REDDIT_CLIENT_ID: z.string().optional(),
   REDDIT_CLIENT_SECRET: z.string().optional(),
   REDDIT_SUBREDDITS: z.string().default("aws,MachineLearning,programming"),
-  REDDIT_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
-  REDDIT_MAX_ITEMS_PER_POLL: z.coerce.number().default(25),
+  REDDIT_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  REDDIT_MAX_ITEMS_PER_POLL: z.coerce.number().int().positive().default(25),
 
   // RSS
   RSS_ENABLED: zBooleanEnv("true"),
-  RSS_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
+  RSS_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
 
   // Bluesky
   BLUESKY_ENABLED: zBooleanEnv("false"),
-  BLUESKY_POLL_INTERVAL_SECONDS: z.coerce.number().default(300),
+  BLUESKY_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   BLUESKY_QUERIES: z.string().default("aws,bedrock,ai,llm,typescript,rust"),
 
   // Mastodon
   MASTODON_ENABLED: zBooleanEnv("false"),
-  MASTODON_POLL_INTERVAL_SECONDS: z.coerce.number().default(600),
+  MASTODON_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(600),
   MASTODON_INSTANCES: z.string().default("hachyderm.io,fosstodon.org"),
   MASTODON_TAGS: z.string().default("aws,ai,machinelearning,typescript,rust"),
 
   // GitHub
   GITHUB_ENABLED: zBooleanEnv("false"),
   GITHUB_TOKEN: z.string().optional(),
-  GITHUB_POLL_INTERVAL_SECONDS: z.coerce.number().default(3600),
+  GITHUB_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(3600),
 
   // Graceful shutdown
-  SHUTDOWN_TIMEOUT_MS: z.coerce.number().default(30000),
+  SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

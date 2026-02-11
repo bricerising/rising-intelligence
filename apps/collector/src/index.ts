@@ -4,7 +4,7 @@ import {
   serializeError,
   runService,
   runShutdownSteps,
-  createServiceLogger,
+  createServiceBootstrap,
   BackoffManager,
   sleep,
   isRateLimitError,
@@ -49,6 +49,8 @@ interface CollectorContext {
   lastSeenCleanupAt: number;
 }
 
+const bootstrap = createServiceBootstrap(getConfig);
+
 function mapUnknownErrorType(error: unknown): CollectorErrorType {
   if (!(error instanceof Error)) {
     return "parse_error";
@@ -69,8 +71,8 @@ function mapUnknownErrorType(error: unknown): CollectorErrorType {
 }
 
 async function initializeCollector(): Promise<CollectorContext> {
-  const config = getConfig();
-  const logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
+  const config = bootstrap.getConfig();
+  const logger = bootstrap.getLogger();
 
   logger.info({ service: config.SERVICE_NAME }, "Starting collector service");
 
@@ -306,29 +308,15 @@ async function gracefulShutdown(ctx: CollectorContext): Promise<void> {
   ]);
 }
 
-let _logger: pino.Logger | null = null;
-let _runtimeConfig: ReturnType<typeof getConfig> | null = null;
-
-function getRuntimeConfig(): ReturnType<typeof getConfig> {
-  if (!_runtimeConfig) {
-    _runtimeConfig = getConfig();
-  }
-  return _runtimeConfig;
-}
-
 runService<CollectorContext>({
-  name: getRuntimeConfig().SERVICE_NAME,
-  shutdownTimeoutMs: getRuntimeConfig().SHUTDOWN_TIMEOUT_MS,
+  name: bootstrap.getServiceName(),
+  shutdownTimeoutMs: bootstrap.getShutdownTimeoutMs(),
   getLogger() {
-    if (!_logger) {
-      const config = getRuntimeConfig();
-      _logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
-    }
-    return _logger;
+    return bootstrap.getLogger();
   },
   async initialize() {
     const ctx = await initializeCollector();
-    _logger = ctx.logger;
+    bootstrap.setRuntimeLogger(ctx.logger);
     return ctx;
   },
   async run(ctx) {

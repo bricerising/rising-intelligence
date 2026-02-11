@@ -203,18 +203,22 @@ export class LobstersAdapter implements SourceAdapter {
 /**
  * Factory function to create Lobsters adapter
  */
+export interface CreateLobstersAdapterInput {
+  pollIntervalMs: number;
+  maxItems: number;
+  checkpoints: CheckpointStore;
+  logger: Logger;
+  contentFetcherConfig?: ContentFetcherConfig;
+}
+
 export function createLobstersAdapter(
-  pollIntervalMs: number,
-  maxItems: number,
-  checkpoints: CheckpointStore,
-  logger: Logger,
-  contentFetcherConfig?: ContentFetcherConfig
+  input: CreateLobstersAdapterInput
 ): SourceAdapter {
   return new LobstersAdapter(
-    pollIntervalMs,
-    maxItems,
-    checkpoints,
-    logger,
-    contentFetcherConfig
+    input.pollIntervalMs,
+    input.maxItems,
+    input.checkpoints,
+    input.logger,
+    input.contentFetcherConfig
   );
 }

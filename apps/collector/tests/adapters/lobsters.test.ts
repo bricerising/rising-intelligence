@@ -419,7 +419,12 @@ describe("LobstersAdapter", () => {
 
   describe("factory function", () => {
     it("createLobstersAdapter returns a valid SourceAdapter", () => {
-      const adapter = createLobstersAdapter(600000, 25, createMockCheckpoints(), createTestLogger());
+      const adapter = createLobstersAdapter({
+        pollIntervalMs: 600000,
+        maxItems: 25,
+        checkpoints: createMockCheckpoints(),
+        logger: createTestLogger(),
+      });
 
       expect(adapter.name).toBe("lobsters");
       expect(adapter.source).toBe("lobsters");
