@@ -20,7 +20,10 @@ import {
   getPreviousCounterKey,
   writePreviousWindowCounts,
 } from "./redis.js";
-import { publishSnapshot } from "./kafka/producer.js";
+import {
+  createTrendsSnapshotPublisher,
+  type TrendsSnapshotPublisher,
+} from "./publishing-facade.js";
 
 const TOPIC_METRIC_LIMIT = 30;
 const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
@@ -149,6 +152,7 @@ async function computeWindowMetrics(
 
 async function publishWindowSnapshot(
   ctx: SnapshotContext,
+  publisher: TrendsSnapshotPublisher,
   window: TrendWindow
 ): Promise<PublishedWindowSnapshot> {
   const startTime = Date.now();
@@ -190,13 +194,7 @@ async function publishWindowSnapshot(
   };
 
   const snapshotKey = `${window}:${generatedAtIso}`;
-  await publishSnapshot(
-    ctx.producer,
-    ctx.config.KAFKA_TOPIC_TRENDS_SNAPSHOTS,
-    snapshotKey,
-    Buffer.from(JSON.stringify(snapshot), "utf-8"),
-    ctx.logger
-  );
+  await publisher.publishSnapshot(snapshotKey, snapshot);
 
   await ctx.prisma.trendSnapshot.create({
     data: {
@@ -223,9 +221,15 @@ async function publishWindowSnapshot(
 }
 
 export async function publishSnapshots(ctx: SnapshotContext): Promise<PublishedWindowSnapshot[]> {
+  const publisher = createTrendsSnapshotPublisher({
+    producer: ctx.producer,
+    logger: ctx.logger,
+    topic: ctx.config.KAFKA_TOPIC_TRENDS_SNAPSHOTS,
+  });
+
   const publishedSnapshots: PublishedWindowSnapshot[] = [];
   for (const window of ctx.config.WINDOWS) {
-    publishedSnapshots.push(await publishWindowSnapshot(ctx, window));
+    publishedSnapshots.push(await publishWindowSnapshot(ctx, publisher, window));
   }
   return publishedSnapshots;
 }

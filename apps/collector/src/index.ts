@@ -15,28 +15,26 @@ import { getConfig } from "./config.js";
 import {
   createKafkaProducer,
   disconnectProducer,
-  publishEvent,
-  TOPICS,
   KafkaProducerContext,
 } from "./kafka/producer.js";
 import {
+  type CollectorErrorType,
   createHealthContext,
   startHealthServer,
   HealthContext,
-  incrementEventsIngested,
   incrementEventsFailed,
   observePollDuration,
   observePollItemsCount,
   incrementCheckpointUpdated,
   incrementRateLimitBackoff,
-  incrementTopicsExtracted,
 } from "./health.js";
 import { CheckpointStore } from "./checkpoint.js";
-import { loadAllowlist, extractTopics, CompiledAllowlist } from "./topics/extractor.js";
-import { serializeRawEvent, serializeDeadLetterEvent, serializeHeartbeat, generateDlqId } from "./serializer.js";
-import type { SourceAdapter, DeadLetterEvent, CollectorHeartbeat } from "./types.js";
+import { loadAllowlist, CompiledAllowlist } from "./topics/extractor.js";
+import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
 import { createContentFetcherConfig } from "./content-fetcher.js";
 import { buildCollectorAdapters } from "./adapters/factory.js";
+import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
+import { createCollectorPublisher } from "./publishing-facade.js";
 
 interface CollectorContext {
   config: ReturnType<typeof getConfig>;
@@ -51,7 +49,7 @@ interface CollectorContext {
   lastSeenCleanupAt: number;
 }
 
-function mapUnknownErrorType(error: unknown): string {
+function mapUnknownErrorType(error: unknown): CollectorErrorType {
   if (!(error instanceof Error)) {
     return "parse_error";
   }
@@ -151,7 +149,21 @@ async function runAdapter(
 ): Promise<void> {
   const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
   const adapterLogger = ctx.logger.child({ adapter: adapter.name });
+  const publisher = createCollectorPublisher({
+    producer: kafkaContext.producer,
+    logger: adapterLogger,
+  });
   const backoff = new BackoffManager(adapter.name, adapterLogger);
+  const eventProcessor = createCollectorEventProcessor({
+    adapterName: adapter.name,
+    adapterSource: adapter.source,
+    allowlist,
+    checkpointStore,
+    healthContext,
+    logger: adapterLogger,
+    publishRawEvent: (event) => publisher.publishRawEvent(event),
+    publishDeadLetterEvent: (event) => publisher.publishDeadLetterEvent(event),
+  });
 
   while (!ctx.shutdownRequested) {
     const pollStartTime = Date.now();
@@ -166,54 +178,10 @@ async function runAdapter(
         lastCheckpointKey = checkpointKey;
         lastCheckpointValue = checkpointValue;
 
-        if (checkpointStore.hasSeen(adapter.source, event.event_id)) {
-          adapterLogger.debug({ eventId: event.event_id }, "Duplicate event skipped");
-          continue;
+        const processingResult = await eventProcessor.process(event);
+        if (processingResult.status === "ingested") {
+          batchCount++;
         }
-
-        const topics = extractTopics(
-          { title: event.title, text: event.text },
-          allowlist
-        );
-        event.tags = topics;
-        for (const topic of topics) {
-          incrementTopicsExtracted(healthContext, topic);
-        }
-
-        if (!event.event_id || !event.text) {
-          const dlqEvent: DeadLetterEvent = {
-            dlq_id: generateDlqId(),
-            occurred_at: new Date().toISOString(),
-            source: adapter.name,
-            error_code: "VALIDATION_FAILED",
-            error_message: "Missing required fields: event_id or text",
-            raw_reference: event.url ?? event.event_id,
-          };
-
-          await publishEvent(
-            kafkaContext.producer,
-            TOPICS.DLQ,
-            dlqEvent.dlq_id,
-            serializeDeadLetterEvent(dlqEvent),
-            adapterLogger
-          );
-          incrementEventsFailed(healthContext, adapter.source, "parse_error");
-          continue;
-        }
-
-        await publishEvent(
-          kafkaContext.producer,
-          TOPICS.RAW_EVENTS,
-          event.event_id,
-          serializeRawEvent(event),
-          adapterLogger
-        );
-
-        checkpointStore.markSeen(adapter.source, event.event_id);
-        incrementEventsIngested(healthContext, adapter.source);
-        healthContext.lastEventAt = new Date();
-
-        batchCount++;
       }
 
       if (lastCheckpointKey && lastCheckpointValue) {
@@ -246,13 +214,7 @@ async function runAdapter(
         items_fetched: batchCount,
         status: "healthy",
       };
-      await publishEvent(
-        kafkaContext.producer,
-        TOPICS.HEARTBEAT,
-        adapter.source,
-        serializeHeartbeat(heartbeat),
-        adapterLogger
-      );
+      await publisher.publishHeartbeat(heartbeat);
 
       adapterLogger.info({ batchCount }, "Poll cycle complete");
       backoff.reset();
@@ -279,13 +241,7 @@ async function runAdapter(
         error_message: error instanceof Error ? error.message : String(error),
       };
       try {
-        await publishEvent(
-          kafkaContext.producer,
-          TOPICS.HEARTBEAT,
-          adapter.source,
-          serializeHeartbeat(heartbeat),
-          adapterLogger
-        );
+        await publisher.publishHeartbeat(heartbeat);
       } catch {
         // Ignore heartbeat publish errors
       }
@@ -351,13 +307,22 @@ async function gracefulShutdown(ctx: CollectorContext): Promise<void> {
 }
 
 let _logger: pino.Logger | null = null;
+let _runtimeConfig: ReturnType<typeof getConfig> | null = null;
+
+function getRuntimeConfig(): ReturnType<typeof getConfig> {
+  if (!_runtimeConfig) {
+    _runtimeConfig = getConfig();
+  }
+  return _runtimeConfig;
+}
 
 runService<CollectorContext>({
-  name: "collector",
-  shutdownTimeoutMs: getConfig().SHUTDOWN_TIMEOUT_MS,
+  name: getRuntimeConfig().SERVICE_NAME,
+  shutdownTimeoutMs: getRuntimeConfig().SHUTDOWN_TIMEOUT_MS,
   getLogger() {
     if (!_logger) {
-      _logger = createServiceLogger("collector", "info");
+      const config = getRuntimeConfig();
+      _logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
     }
     return _logger;
   },

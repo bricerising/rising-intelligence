@@ -221,6 +221,32 @@ describe("trends processBatch", () => {
     expect(payload.resolveOffset).not.toHaveBeenCalled();
   });
 
+  it("stops processing when batch becomes stale mid-loop", async () => {
+    const msg1 = makeMessage("1", makeValidPayload("rss:1"));
+    const msg2 = makeMessage("2", makeValidPayload("rss:2"));
+    let stale = false;
+    const payload = makePayload([msg1, msg2], {
+      isStale: vi.fn(() => stale),
+    });
+    const ctx = makeContext();
+
+    mocks.applyEventToWindows
+      .mockImplementationOnce(async () => {
+        stale = true;
+        return { duplicate: false, buckets: {} };
+      })
+      .mockResolvedValue({ duplicate: false, buckets: {} });
+
+    await processBatch(ctx, payload);
+
+    expect(mocks.applyEventToWindows).toHaveBeenCalledTimes(1);
+    expect(payload.resolveOffset).toHaveBeenCalledTimes(1);
+    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    const upsert = ctx.prisma.consumerLag.upsert as ReturnType<typeof vi.fn>;
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("processes multiple messages in order", async () => {
     const resolveOrder: string[] = [];
     const msg1 = makeMessage("1", makeValidPayload("rss:1"));
@@ -233,6 +259,20 @@ describe("trends processBatch", () => {
 
     expect(resolveOrder).toEqual(["1", "2"]);
     expect(ctx.healthContext.metrics.eventsProcessed).toBe(2);
+  });
+
+  it("heartbeats once per interval and once on flush", async () => {
+    const messages = Array.from({ length: 50 }, (_, index) =>
+      makeMessage(`${index + 1}`, makeValidPayload(`rss:${index + 1}`))
+    );
+    const payload = makePayload(messages);
+    const ctx = makeContext();
+
+    await processBatch(ctx, payload);
+
+    expect(payload.heartbeat).toHaveBeenCalledTimes(2);
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(payload.resolveOffset).toHaveBeenCalledTimes(50);
   });
 
   it("updates consumer lag when interval has elapsed", async () => {

@@ -1,4 +1,18 @@
-export function printHelp(errorMessage?: string) {
+import type { CommandRegistry } from "./command-registry.js";
+
+function renderCommands(registry: CommandRegistry): string {
+  const rows = registry.list().map((command) => ({
+    label: `${command.group} ${command.command}`,
+    summary: command.summary,
+  }));
+
+  const width = rows.reduce((max, row) => Math.max(max, row.label.length), 0) + 2;
+  return rows
+    .map((row) => `  ${row.label.padEnd(width)}${row.summary}`)
+    .join("\n");
+}
+
+export function printHelp(registry: CommandRegistry, errorMessage?: string) {
   if (errorMessage) {
     // eslint-disable-next-line no-console
     console.error(errorMessage);
@@ -13,12 +27,7 @@ Usage:
   riops <group> <command> [flags]
 
 Commands:
-  schema-registry publish-protos   Publish protobuf schemas + subjects
-  kafka create-topics              Create required Kafka topics
-  kafka topics                     List all Kafka topics
-  lgtm urls                        Print local dev endpoints
-  brief trigger                    Publish a manual SummaryRequest to Kafka
-  topics list                      List distinct topics from raw_events table
+${renderCommands(registry)}
 
 Flags (schema-registry publish-protos):
   --schema-registry-url <url>      Default: $SCHEMA_REGISTRY_URL or http://localhost:8081
@@ -90,3 +99,4 @@ Examples:
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
 `);
 }
+

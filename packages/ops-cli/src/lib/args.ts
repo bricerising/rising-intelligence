@@ -1,9 +1,11 @@
+export type CliFlags = Record<string, string | boolean>;
+
 export type ParsedArgs =
   | { kind: "help" }
   | {
       kind: "command";
       command: string[];
-      flags: Record<string, string | boolean>;
+      flags: CliFlags;
     };
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -16,7 +18,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   const command: string[] = [];
-  const flags: Record<string, string | boolean> = {};
+  const flags: CliFlags = {};
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];

@@ -1,5 +1,8 @@
 import { Readability } from "@mozilla/readability";
-import { createUrlSafetyFacade } from "@rising-intelligence/shared";
+import {
+  createUrlSafetyFacade,
+  type UrlSafetyFacade,
+} from "@rising-intelligence/shared";
 import { JSDOM, VirtualConsole } from "jsdom";
 import type { Logger } from "pino";
 
@@ -37,10 +40,14 @@ export interface ArticleContent {
   success: boolean;
 }
 
-/**
- * Track last request time per domain for rate limiting
- */
-const domainLastRequest = new Map<string, number>();
+export interface ArticleContentFetcher {
+  fetch(url: string): Promise<ArticleContent | null>;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const urlSafetyFacade = createUrlSafetyFacade();
 
 /**
@@ -75,27 +82,53 @@ function isDomainBlocked(url: string, blockedDomains: Set<string>): boolean {
   return false;
 }
 
-/**
- * Wait for domain rate limit delay
- */
-async function waitForDomainDelay(
-  url: string,
-  domainDelayMs: number
-): Promise<void> {
-  const domain = extractDomain(url);
-  if (!domain) return;
+class InMemoryDomainRequestLimiter {
+  private static readonly MAX_TRACKED_DOMAINS = 10_000;
 
-  const lastRequest = domainLastRequest.get(domain);
-  if (lastRequest !== undefined) {
-    const elapsed = Date.now() - lastRequest;
-    if (elapsed < domainDelayMs) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, domainDelayMs - elapsed)
-      );
+  private readonly lastRequestByDomain = new Map<string, number>();
+
+  constructor(
+    private readonly domainDelayMs: number,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  async wait(url: string): Promise<void> {
+    if (this.domainDelayMs <= 0) {
+      return;
     }
+
+    const domain = extractDomain(url);
+    if (!domain) {
+      return;
+    }
+
+    const lastRequest = this.lastRequestByDomain.get(domain);
+    if (lastRequest !== undefined) {
+      const elapsed = this.now() - lastRequest;
+      const delayMs = this.domainDelayMs - elapsed;
+      if (delayMs > 0) {
+        await wait(delayMs);
+      }
+    }
+
+    this.rememberRequest(domain, this.now());
   }
 
-  domainLastRequest.set(domain, Date.now());
+  private rememberRequest(domain: string, timestamp: number): void {
+    if (this.lastRequestByDomain.has(domain)) {
+      this.lastRequestByDomain.delete(domain);
+    }
+    this.lastRequestByDomain.set(domain, timestamp);
+
+    if (this.lastRequestByDomain.size <= InMemoryDomainRequestLimiter.MAX_TRACKED_DOMAINS) {
+      return;
+    }
+
+    const oldestDomain = this.lastRequestByDomain.keys().next().value;
+    if (typeof oldestDomain === "string") {
+      this.lastRequestByDomain.delete(oldestDomain);
+    }
+  }
 }
 
 /**
@@ -163,7 +196,7 @@ function extractContent(html: string, url: string): ArticleContent {
       htmlLength: html.length,
       success: true,
     };
-  } catch (error) {
+  } catch {
     return {
       text: "",
       title: null,
@@ -173,67 +206,99 @@ function extractContent(html: string, url: string): ArticleContent {
   }
 }
 
+class DisabledArticleContentFetcher implements ArticleContentFetcher {
+  async fetch(): Promise<null> {
+    return null;
+  }
+}
+
+class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
+  private readonly domainRequestLimiter: InMemoryDomainRequestLimiter;
+
+  constructor(
+    private readonly config: ContentFetcherConfig,
+    private readonly logger: Logger,
+    private readonly safetyFacade: UrlSafetyFacade = urlSafetyFacade
+  ) {
+    this.domainRequestLimiter = new InMemoryDomainRequestLimiter(
+      config.domainDelayMs
+    );
+  }
+
+  async fetch(url: string): Promise<ArticleContent | null> {
+    if (!this.safetyFacade.isAllowedFetchUrl(url)) {
+      this.logger.debug({ url }, "Skipping disallowed fetch URL");
+      return null;
+    }
+
+    if (isDomainBlocked(url, this.config.blockedDomains)) {
+      this.logger.debug({ url }, "Skipping blocked domain");
+      return null;
+    }
+
+    await this.domainRequestLimiter.wait(url);
+
+    try {
+      const html = await fetchHtml(url, this.config.timeoutMs, this.config.userAgent);
+      const content = extractContent(html, url);
+
+      if (!content.success || content.text.length < this.config.minContentLength) {
+        this.logger.debug(
+          { url, textLength: content.text.length },
+          "Content extraction failed or too short"
+        );
+        return null;
+      }
+
+      const normalizedContent: ArticleContent = {
+        ...content,
+        text: content.text.slice(0, this.config.maxContentLength),
+      };
+
+      this.logger.debug(
+        {
+          url,
+          textLength: normalizedContent.text.length,
+          htmlLength: normalizedContent.htmlLength,
+        },
+        "Article content extracted successfully"
+      );
+
+      return normalizedContent;
+    } catch (error) {
+      this.logger.debug(
+        {
+          url,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to fetch article content"
+      );
+      return null;
+    }
+  }
+}
+
+export function createArticleContentFetcher(
+  config: ContentFetcherConfig,
+  logger: Logger
+): ArticleContentFetcher {
+  if (!config.enabled) {
+    return new DisabledArticleContentFetcher();
+  }
+
+  return new ReadabilityArticleContentFetcher(config, logger);
+}
+
 /**
- * Fetch and extract article content from URL
+ * Backward-compatible convenience API used by tests and one-off callers.
  */
 export async function fetchArticleContent(
   url: string,
   config: ContentFetcherConfig,
   logger: Logger
 ): Promise<ArticleContent | null> {
-  // Check if fetching is enabled
-  if (!config.enabled) {
-    return null;
-  }
-
-  if (!urlSafetyFacade.isAllowedFetchUrl(url)) {
-    logger.debug({ url }, "Skipping disallowed fetch URL");
-    return null;
-  }
-
-  // Check if domain is blocked
-  if (isDomainBlocked(url, config.blockedDomains)) {
-    logger.debug({ url }, "Skipping blocked domain");
-    return null;
-  }
-
-  // Wait for domain rate limit
-  await waitForDomainDelay(url, config.domainDelayMs);
-
-  try {
-    // Fetch HTML
-    const html = await fetchHtml(url, config.timeoutMs, config.userAgent);
-
-    // Extract content
-    const content = extractContent(html, url);
-
-    // Validate content length
-    if (!content.success || content.text.length < config.minContentLength) {
-      logger.debug(
-        { url, textLength: content.text.length },
-        "Content extraction failed or too short"
-      );
-      return null;
-    }
-
-    // Truncate if too long
-    if (content.text.length > config.maxContentLength) {
-      content.text = content.text.substring(0, config.maxContentLength);
-    }
-
-    logger.debug(
-      { url, textLength: content.text.length, htmlLength: content.htmlLength },
-      "Article content extracted successfully"
-    );
-
-    return content;
-  } catch (error) {
-    logger.debug(
-      { url, error: (error as Error).message },
-      "Failed to fetch article content"
-    );
-    return null;
-  }
+  const fetcher = createArticleContentFetcher(config, logger);
+  return fetcher.fetch(url);
 }
 
 /**

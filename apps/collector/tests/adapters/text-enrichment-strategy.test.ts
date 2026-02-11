@@ -1,25 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { ContentFetcherConfig } from "../../src/content-fetcher.js";
-
-const { mockFetchArticleContent } = vi.hoisted(() => ({
-  mockFetchArticleContent: vi.fn(),
-}));
-
-vi.mock("../../src/content-fetcher.js", async () => {
-  const actual = await vi.importActual<typeof import("../../src/content-fetcher.js")>(
-    "../../src/content-fetcher.js"
-  );
-  return {
-    ...actual,
-    fetchArticleContent: mockFetchArticleContent,
-  };
-});
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  ArticleContentFetcher,
+  ContentFetcherConfig,
+} from "../../src/content-fetcher.js";
 
 import {
   createTextEnrichmentStrategy,
   NoopTextEnrichmentStrategy,
   ArticleFetchTextEnrichmentStrategy,
 } from "../../src/adapters/text-enrichment-strategy.js";
+
+const mockFetchArticleContent = vi.fn();
+const mockArticleContentFetcher = {
+  fetch: mockFetchArticleContent,
+} as ArticleContentFetcher;
 
 function createTestLogger() {
   return {
@@ -67,7 +61,8 @@ describe("text enrichment strategy", () => {
     const strategy = createTextEnrichmentStrategy(
       enabledConfig,
       createTestLogger(),
-      "message"
+      "message",
+      mockArticleContentFetcher
     );
 
     expect(strategy).toBeInstanceOf(ArticleFetchTextEnrichmentStrategy);
@@ -77,7 +72,8 @@ describe("text enrichment strategy", () => {
     const strategy = createTextEnrichmentStrategy(
       enabledConfig,
       createTestLogger(),
-      "message"
+      "message",
+      mockArticleContentFetcher
     );
 
     await expect(
@@ -102,7 +98,8 @@ describe("text enrichment strategy", () => {
     const strategy = createTextEnrichmentStrategy(
       enabledConfig,
       logger,
-      "Fetched article content"
+      "Fetched article content",
+      mockArticleContentFetcher
     );
 
     await expect(
@@ -114,6 +111,9 @@ describe("text enrichment strategy", () => {
       })
     ).resolves.toBe("enriched text");
     expect(mockFetchArticleContent).toHaveBeenCalledTimes(1);
+    expect(mockFetchArticleContent).toHaveBeenCalledWith(
+      "https://example.com/article"
+    );
     expect(logger.debug).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "rss",
@@ -130,7 +130,8 @@ describe("text enrichment strategy", () => {
     const strategy = createTextEnrichmentStrategy(
       enabledConfig,
       createTestLogger(),
-      "Fetched article content"
+      "Fetched article content",
+      mockArticleContentFetcher
     );
 
     await expect(

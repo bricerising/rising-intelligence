@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { z } from "zod";
 
 /**
  * Compiled topic definition with pre-compiled regex patterns.
@@ -28,26 +29,134 @@ export interface CompiledAllowlist {
 /**
  * Raw YAML structure for the allowlist file.
  */
-interface RawAllowlist {
-  defaults?: {
-    max_topics_per_event?: number;
-    regex_case_insensitive?: boolean;
-    default_priority?: number;
-  };
-  topics: Array<{
-    key: string;
-    display_name: string;
-    priority?: number;
-    aliases?: string[];
-    matchers: Array<{
-      type: "keyword" | "regex";
-      value?: string;
-      pattern?: string;
-    }>;
-  }>;
-  suppression?: {
-    muted_topics?: string[];
-  };
+const RawMatcherSchema = z.object({
+  type: z.string().min(1),
+  value: z.string().optional(),
+  pattern: z.string().optional(),
+});
+
+const RawTopicSchema = z.object({
+  key: z.string().min(1),
+  display_name: z.string().min(1),
+  priority: z.number().int().optional(),
+  aliases: z.array(z.string()).optional(),
+  matchers: z.array(RawMatcherSchema).min(1),
+});
+
+const RawAllowlistSchema = z.object({
+  defaults: z
+    .object({
+      max_topics_per_event: z.number().int().positive().optional(),
+      regex_case_insensitive: z.boolean().optional(),
+      default_priority: z.number().int().optional(),
+    })
+    .optional(),
+  topics: z.array(RawTopicSchema).min(1),
+  suppression: z
+    .object({
+      muted_topics: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+
+type RawAllowlist = z.infer<typeof RawAllowlistSchema>;
+type RawMatcher = z.infer<typeof RawMatcherSchema>;
+type MatcherType = CompiledMatcher["type"];
+
+interface MatcherCompileContext {
+  topicKey: string;
+  matcher: RawMatcher;
+  caseInsensitive: boolean;
+}
+
+type MatcherCompiler = (context: MatcherCompileContext) => CompiledMatcher;
+
+const MATCHER_COMPILERS: Record<MatcherType, MatcherCompiler> = {
+  keyword: ({ topicKey, matcher }) => {
+    if (!matcher.value) {
+      throw new Error(`Topic ${topicKey}: keyword matcher missing 'value'`);
+    }
+
+    return {
+      type: "keyword",
+      value: matcher.value.toLowerCase(),
+    };
+  },
+  regex: ({ topicKey, matcher, caseInsensitive }) => {
+    if (!matcher.pattern) {
+      throw new Error(`Topic ${topicKey}: regex matcher missing 'pattern'`);
+    }
+
+    try {
+      const flags = caseInsensitive ? "i" : "";
+      return {
+        type: "regex",
+        pattern: new RegExp(matcher.pattern, flags),
+      };
+    } catch (error) {
+      throw new Error(
+        `Topic ${topicKey}: invalid regex pattern '${matcher.pattern}': ${error}`
+      );
+    }
+  },
+};
+
+interface MatcherEvaluationContext {
+  content: string;
+  lowerContent: string;
+}
+
+const MATCHER_EVALUATORS: {
+  [K in MatcherType]: (
+    matcher: Extract<CompiledMatcher, { type: K }>,
+    context: MatcherEvaluationContext
+  ) => boolean;
+} = {
+  keyword: (matcher, context) => context.lowerContent.includes(matcher.value),
+  regex: (matcher, context) => matcher.pattern.test(context.content),
+};
+
+function isMatcherType(value: string): value is MatcherType {
+  return value === "keyword" || value === "regex";
+}
+
+function parseAllowlist(content: string): RawAllowlist {
+  const decoded = parseYaml(content) as unknown;
+  const parsed = RawAllowlistSchema.safeParse(decoded);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  const issue = parsed.error.issues[0];
+  const path = issue.path.length > 0 ? issue.path.join(".") : "root";
+  throw new Error(`Invalid allowlist format at '${path}': ${issue.message}`);
+}
+
+function compileMatcher(
+  topicKey: string,
+  matcher: RawMatcher,
+  caseInsensitive: boolean
+): CompiledMatcher {
+  const normalizedType = matcher.type.trim().toLowerCase();
+  if (!isMatcherType(normalizedType)) {
+    throw new Error(`Topic ${topicKey}: unsupported matcher type '${matcher.type}'`);
+  }
+
+  return MATCHER_COMPILERS[normalizedType]({
+    topicKey,
+    matcher,
+    caseInsensitive,
+  });
+}
+
+function matchesCompiledMatcher(
+  matcher: CompiledMatcher,
+  context: MatcherEvaluationContext
+): boolean {
+  if (matcher.type === "keyword") {
+    return MATCHER_EVALUATORS.keyword(matcher, context);
+  }
+  return MATCHER_EVALUATORS.regex(matcher, context);
 }
 
 /**
@@ -58,7 +167,7 @@ interface RawAllowlist {
  */
 export function loadAllowlist(path: string): CompiledAllowlist {
   const content = readFileSync(path, "utf-8");
-  const raw = parseYaml(content) as RawAllowlist;
+  const raw = parseAllowlist(content);
 
   const defaultPriority = raw.defaults?.default_priority ?? 50;
   const caseInsensitive = raw.defaults?.regex_case_insensitive ?? true;
@@ -68,38 +177,9 @@ export function loadAllowlist(path: string): CompiledAllowlist {
   const topics: CompiledTopic[] = [];
 
   for (const topic of raw.topics) {
-    const matchers: CompiledMatcher[] = [];
-
-    for (const matcher of topic.matchers) {
-      if (matcher.type === "keyword") {
-        if (!matcher.value) {
-          throw new Error(
-            `Topic ${topic.key}: keyword matcher missing 'value'`
-          );
-        }
-        matchers.push({
-          type: "keyword",
-          value: matcher.value.toLowerCase(),
-        });
-      } else if (matcher.type === "regex") {
-        if (!matcher.pattern) {
-          throw new Error(
-            `Topic ${topic.key}: regex matcher missing 'pattern'`
-          );
-        }
-        try {
-          const flags = caseInsensitive ? "i" : "";
-          matchers.push({
-            type: "regex",
-            pattern: new RegExp(matcher.pattern, flags),
-          });
-        } catch (error) {
-          throw new Error(
-            `Topic ${topic.key}: invalid regex pattern '${matcher.pattern}': ${error}`
-          );
-        }
-      }
-    }
+    const matchers: CompiledMatcher[] = topic.matchers.map((matcher) =>
+      compileMatcher(topic.key, matcher, caseInsensitive)
+    );
 
     topics.push({
       key: topic.key,
@@ -140,7 +220,10 @@ export function extractTopics(
   allowlist: CompiledAllowlist
 ): string[] {
   const content = `${event.title ?? ""} ${event.text}`;
-  const lowerContent = content.toLowerCase();
+  const matcherContext: MatcherEvaluationContext = {
+    content,
+    lowerContent: content.toLowerCase(),
+  };
   const matches: TopicMatch[] = [];
 
   // Step 1: Find ALL matching topics
@@ -152,15 +235,7 @@ export function extractTopics(
 
     // Check each matcher (any match counts)
     for (const matcher of topic.matchers) {
-      let matched = false;
-
-      if (matcher.type === "keyword") {
-        matched = lowerContent.includes(matcher.value);
-      } else {
-        matched = matcher.pattern.test(content);
-      }
-
-      if (matched) {
+      if (matchesCompiledMatcher(matcher, matcherContext)) {
         matches.push({ key: topic.key, priority: topic.priority });
         break; // Only add topic once (first matching matcher wins)
       }

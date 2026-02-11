@@ -1,4 +1,4 @@
-import { BriefStatus, Prisma, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
+import { BriefStatus, Prisma, Source, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import { serializeError } from "@rising-intelligence/shared";
@@ -22,7 +22,10 @@ import {
   EVIDENCE_EXCERPT_MAX_LENGTH,
 } from "./grounding-facade.js";
 import { executeCodexCli } from "./llm/codex-cli.js";
-import { publishBriefResult } from "./kafka/producer.js";
+import {
+  createBriefResultPublisher,
+  type BriefResultPublisher,
+} from "./publishing-facade.js";
 import type {
   EvidenceStrategy,
   LlmProvider,
@@ -30,7 +33,6 @@ import type {
   ParsedSummaryTopic,
 } from "./types.js";
 import { compileTopicGlobMatchers, matchesAnyTopicGlob } from "./topic-glob.js";
-import { Source } from "@rising-intelligence/db";
 
 interface ProcessContext {
   config: Config;
@@ -1443,7 +1445,7 @@ async function loadPersistedResult(
 async function republishPersistedResult(
   ctx: ProcessContext,
   requestId: string,
-  logger: pino.Logger
+  publisher: BriefResultPublisher
 ): Promise<BriefStatus | null> {
   const existing = await loadPersistedResult(ctx.prisma, requestId);
   ctx.healthContext.postgresHealthy = true;
@@ -1451,13 +1453,7 @@ async function republishPersistedResult(
     return null;
   }
 
-  await publishBriefResult(
-    ctx.producer,
-    ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
-    requestId,
-    Buffer.from(JSON.stringify(existing.payload), "utf-8"),
-    logger
-  );
+  await publisher.publishResult(requestId, existing.payload);
   return existing.status;
 }
 
@@ -1482,6 +1478,7 @@ async function rollbackBudgetReservation(
 
 async function emitFailureResult(
   ctx: ProcessContext,
+  publisher: BriefResultPublisher,
   requestId: string,
   producedAt: Date,
   code: string,
@@ -1493,20 +1490,14 @@ async function emitFailureResult(
   ctx.healthContext.postgresHealthy = true;
   if (persisted === "duplicate") {
     incrementDuplicatesSkipped(ctx.healthContext);
-    const republishedStatus = await republishPersistedResult(ctx, requestId, ctx.logger);
+    const republishedStatus = await republishPersistedResult(ctx, requestId, publisher);
     if (!republishedStatus) {
       throw new Error(`Unable to republish existing failure result for request ${requestId}`);
     }
     return;
   }
 
-  await publishBriefResult(
-    ctx.producer,
-    ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
-    requestId,
-    Buffer.from(JSON.stringify(failureResult), "utf-8"),
-    ctx.logger
-  );
+  await publisher.publishResult(requestId, failureResult);
 }
 
 export async function processSummaryRequest(
@@ -1514,6 +1505,11 @@ export async function processSummaryRequest(
   request: ParsedSummaryRequest
 ): Promise<void> {
   const logger = ctx.logger.child({ requestId: request.requestId });
+  const publisher = createBriefResultPublisher({
+    producer: ctx.producer,
+    logger,
+    topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
+  });
   const producedAt = new Date();
   let existingResult: { status: BriefStatus; payload: Record<string, unknown> } | null = null;
 
@@ -1531,13 +1527,7 @@ export async function processSummaryRequest(
     incrementDuplicatesSkipped(ctx.healthContext);
     incrementGeneration(ctx.healthContext, "skipped");
     try {
-      await publishBriefResult(
-        ctx.producer,
-        ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
-        request.requestId,
-        Buffer.from(JSON.stringify(existingResult.payload), "utf-8"),
-        logger
-      );
+      await publisher.publishResult(request.requestId, existingResult.payload);
       logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
       return;
     } catch (error) {
@@ -1563,6 +1553,7 @@ export async function processSummaryRequest(
       logger.warn({ error: serializeError(error) }, "Summary request failed non-retryable pre-processing");
       await emitFailureResult(
         ctx,
+        publisher,
         request.requestId,
         producedAt,
         error.code,
@@ -1610,6 +1601,7 @@ export async function processSummaryRequest(
     incrementGeneration(ctx.healthContext, "skipped");
     await emitFailureResult(
       ctx,
+      publisher,
       request.requestId,
       producedAt,
       "budget_exceeded",
@@ -1642,7 +1634,7 @@ export async function processSummaryRequest(
       budgetReserved = false;
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
-      const republishedStatus = await republishPersistedResult(ctx, request.requestId, logger);
+      const republishedStatus = await republishPersistedResult(ctx, request.requestId, publisher);
       if (!republishedStatus) {
         throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
       }
@@ -1676,13 +1668,7 @@ export async function processSummaryRequest(
       }
     }
 
-    await publishBriefResult(
-      ctx.producer,
-      ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
-      request.requestId,
-      Buffer.from(JSON.stringify(successResult.payload), "utf-8"),
-      logger
-    );
+    await publisher.publishResult(request.requestId, successResult.payload);
 
     incrementGeneration(ctx.healthContext, "success");
     incrementLlmCostUsd(ctx.healthContext, successResult.metrics.costUsd);
@@ -1725,6 +1711,7 @@ export async function processSummaryRequest(
       logger.warn({ error: serializeError(error) }, "Brief request failed non-retryable validation");
       await emitFailureResult(
         ctx,
+        publisher,
         request.requestId,
         producedAt,
         error.code,

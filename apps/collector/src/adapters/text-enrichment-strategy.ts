@@ -1,7 +1,8 @@
 import type { Logger } from "pino";
 import {
-  fetchArticleContent,
+  createArticleContentFetcher,
   createContentFetcherConfig,
+  type ArticleContentFetcher,
   type ContentFetcherConfig,
 } from "../content-fetcher.js";
 
@@ -22,10 +23,9 @@ export class NoopTextEnrichmentStrategy implements TextEnrichmentStrategy {
   }
 }
 
-export class ArticleFetchTextEnrichmentStrategy
-implements TextEnrichmentStrategy {
+export class ArticleFetchTextEnrichmentStrategy implements TextEnrichmentStrategy {
   constructor(
-    private readonly config: ContentFetcherConfig,
+    private readonly articleContentFetcher: ArticleContentFetcher,
     private readonly logger: Logger,
     private readonly successLogMessage: string
   ) {}
@@ -36,7 +36,7 @@ implements TextEnrichmentStrategy {
       return text;
     }
 
-    const articleContent = await fetchArticleContent(url, this.config, this.logger);
+    const articleContent = await this.articleContentFetcher.fetch(url);
     if (!articleContent?.success) {
       return text;
     }
@@ -58,14 +58,21 @@ export function resolveContentFetcherConfig(
 export function createTextEnrichmentStrategy(
   config: ContentFetcherConfig | undefined,
   logger: Logger,
-  successLogMessage: string
+  successLogMessage: string,
+  articleContentFetcher?: ArticleContentFetcher
 ): TextEnrichmentStrategy {
   const resolvedConfig = resolveContentFetcherConfig(config);
   if (!resolvedConfig.enabled) {
     return new NoopTextEnrichmentStrategy();
   }
-  return new ArticleFetchTextEnrichmentStrategy(
+
+  const fetcher = articleContentFetcher ?? createArticleContentFetcher(
     resolvedConfig,
+    logger
+  );
+
+  return new ArticleFetchTextEnrichmentStrategy(
+    fetcher,
     logger,
     successLogMessage
   );

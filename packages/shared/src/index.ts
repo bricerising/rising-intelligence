@@ -25,6 +25,7 @@ export * from "./runtime/env.js";
 export * from "./runtime/errors.js";
 export * from "./runtime/health.js";
 export * from "./runtime/http.js";
+export * from "./runtime/kafka-batch.js";
 export * from "./runtime/kafka.js";
 export * from "./runtime/lifecycle.js";
 export * from "./runtime/logger.js";

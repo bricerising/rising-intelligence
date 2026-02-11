@@ -4,19 +4,14 @@ import {
   getSecretValue,
   resolveDatabaseUrl,
 } from "@rising-intelligence/shared";
+import type { CliFlags } from "../../lib/args.js";
+import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
+import {
+  parseNonNegativeIntegerStrict,
+  parsePositiveIntegerStrict,
+} from "../../lib/number.js";
 
-type Flags = Record<string, string | boolean>;
-
-function getStringFlag(flags: Flags, name: string): string | undefined {
-  const value = flags[name];
-  return typeof value === "string" ? value : undefined;
-}
-
-function getBooleanFlag(flags: Flags, name: string): boolean {
-  return flags[name] === true;
-}
-
-function getDatabaseUrl(flags: Flags): string {
+function getDatabaseUrl(flags: CliFlags): string {
   const databaseUrlFlag = getStringFlag(flags, "database-url");
   const databaseUrlEnv = getEnvString("DATABASE_URL");
 
@@ -37,17 +32,23 @@ function getDatabaseUrl(flags: Flags): string {
 
   return resolveDatabaseUrl(databaseUrlFlag || databaseUrlEnv, {
     host,
-    port: parseInt(port, 10),
+    port: parsePositiveIntegerStrict(port, "--postgres-port"),
     db,
     user,
     password,
   });
 }
 
-export async function topicsList(flags: Flags): Promise<void> {
+export async function topicsList(flags: CliFlags): Promise<void> {
   const databaseUrl = getDatabaseUrl(flags);
   const showCounts = getBooleanFlag(flags, "counts");
-  const minCount = parseInt(getStringFlag(flags, "min-count") || "0", 10);
+  const minCountRaw = getStringFlag(flags, "min-count");
+  if (minCountRaw && !showCounts) {
+    throw new Error("--min-count requires --counts");
+  }
+  const minCount = minCountRaw
+    ? parseNonNegativeIntegerStrict(minCountRaw, "--min-count")
+    : 0;
 
   const prisma = new PrismaClient({
     datasources: {
@@ -84,26 +85,21 @@ export async function topicsList(flags: Flags): Promise<void> {
       ...(showCounts ? [minCount] : [])
     );
 
-    // eslint-disable-next-line no-console
     console.log(`\nTopics in raw_events (${results.length}):\n`);
 
     if (results.length === 0) {
-      // eslint-disable-next-line no-console
       console.log(`  (no topics found)`);
     } else {
       for (const row of results) {
         if (showCounts) {
-          const count = typeof row.count === 'bigint' ? Number(row.count) : row.count;
-          // eslint-disable-next-line no-console
+          const count = typeof row.count === "bigint" ? Number(row.count) : row.count;
           console.log(`  ${row.topic.padEnd(40)} ${count}`);
         } else {
-          // eslint-disable-next-line no-console
           console.log(`  ${row.topic}`);
         }
       }
     }
 
-    // eslint-disable-next-line no-console
     console.log();
   } finally {
     await prisma.$disconnect();

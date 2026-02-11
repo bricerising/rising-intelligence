@@ -1,4 +1,4 @@
-import { Kafka, logLevel, type Consumer, type Producer } from "kafkajs";
+import { CompressionTypes, Kafka, logLevel, type Consumer, type Producer } from "kafkajs";
 
 type LoggerMethod = (bindings: Record<string, unknown>, message?: string) => void;
 
@@ -106,6 +106,80 @@ export interface KafkaProducerConnection {
   kafka: Kafka;
   producer: Producer;
   brokers: string[];
+}
+
+export interface PublishKafkaMessageInput {
+  topic: string;
+  key: string;
+  value: Buffer;
+  logMessage: string;
+  logContext?: Record<string, unknown>;
+}
+
+export interface PublishKafkaBatchInput {
+  topic: string;
+  messages: Array<{ key: string; value: Buffer }>;
+  logMessage: string;
+  logContext?: Record<string, unknown>;
+}
+
+export interface KafkaProducerProxy {
+  publishMessage(input: PublishKafkaMessageInput): Promise<void>;
+  publishBatch(input: PublishKafkaBatchInput): Promise<boolean>;
+}
+
+export interface CreateKafkaProducerProxyInput {
+  producer: Producer;
+  logger: KafkaLogger;
+  compressionType?: CompressionTypes;
+}
+
+/**
+ * Proxy around KafkaJS producer sends so services share one publish contract
+ * (compression, payload shape, and logging) while keeping service-level facades.
+ */
+export function createKafkaProducerProxy(
+  input: CreateKafkaProducerProxyInput
+): KafkaProducerProxy {
+  const compressionType = input.compressionType ?? CompressionTypes.GZIP;
+
+  return {
+    async publishMessage(message): Promise<void> {
+      await input.producer.send({
+        topic: message.topic,
+        compression: compressionType,
+        messages: [{ key: message.key, value: message.value }],
+      });
+
+      input.logger.debug(
+        { topic: message.topic, key: message.key, ...message.logContext },
+        message.logMessage
+      );
+    },
+
+    async publishBatch(message): Promise<boolean> {
+      if (message.messages.length === 0) {
+        return false;
+      }
+
+      await input.producer.send({
+        topic: message.topic,
+        compression: compressionType,
+        messages: message.messages,
+      });
+
+      input.logger.debug(
+        {
+          topic: message.topic,
+          count: message.messages.length,
+          ...message.logContext,
+        },
+        message.logMessage
+      );
+
+      return true;
+    },
+  };
 }
 
 export interface ConnectKafkaConsumerOptions {

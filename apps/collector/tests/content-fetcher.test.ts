@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createArticleContentFetcher,
   fetchArticleContent,
   createContentFetcherConfig,
   type ContentFetcherConfig,
@@ -106,6 +107,23 @@ describe("content fetcher URL safety", () => {
     ).resolves.toBeNull();
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a disabled fetcher when content fetching is off", async () => {
+    const logger = createTestLogger();
+    const fetcher = createArticleContentFetcher(
+      {
+        ...contentFetcherConfig,
+        enabled: false,
+      },
+      logger
+    );
+
+    await expect(
+      fetcher.fetch("https://example.com/article")
+    ).resolves.toBeNull();
+
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("normalizes blocked domains to lowercase", () => {

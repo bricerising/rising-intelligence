@@ -1,7 +1,11 @@
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
-import { parseCanonicalSource, serializeError } from "@rising-intelligence/shared";
+import {
+  createKafkaBatchLifecycle,
+  parseCanonicalSource,
+  serializeError,
+} from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
@@ -172,22 +176,23 @@ async function processBatchWithStrategy<TMessage>(
   strategy: BatchMessageStrategy<TMessage>
 ): Promise<boolean> {
   const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+  const batchLifecycle = createKafkaBatchLifecycle(
+    { isRunning, isStale, heartbeat },
+    LOOP_HEARTBEAT_INTERVAL_MESSAGES
+  );
 
-  if (!isRunning() || isStale()) {
+  if (!batchLifecycle.shouldContinue()) {
     return false;
   }
 
-  let messagesSinceHeartbeat = 0;
-  const maybeHeartbeat = async () => {
-    messagesSinceHeartbeat += 1;
-    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
-      return;
-    }
-    await heartbeat();
-    messagesSinceHeartbeat = 0;
-  };
+  let completedBatch = true;
 
   for (const message of batch.messages) {
+    if (!batchLifecycle.shouldContinue()) {
+      completedBatch = false;
+      break;
+    }
+
     const messageContext: MessageContext = {
       kafkaTopic: batch.topic,
       partition: batch.partition,
@@ -198,7 +203,7 @@ async function processBatchWithStrategy<TMessage>(
       incrementError(ctx.healthContext, "parse_error");
       ctx.logger.warn(messageContext, strategy.emptyValueLogMessage);
       resolveOffset(message.offset);
-      await maybeHeartbeat();
+      await batchLifecycle.onMessageHandled();
       continue;
     }
 
@@ -215,17 +220,21 @@ async function processBatchWithStrategy<TMessage>(
         strategy.deserializeFailureLogMessage
       );
       resolveOffset(message.offset);
-      await maybeHeartbeat();
+      await batchLifecycle.onMessageHandled();
       continue;
     }
 
     await strategy.handleMessage(ctx, decoded, messageContext);
     resolveOffset(message.offset);
-    await maybeHeartbeat();
+    await batchLifecycle.onMessageHandled();
   }
 
   await commitOffsetsIfNecessary();
-  await heartbeat();
+  if (!completedBatch || !batchLifecycle.shouldContinue()) {
+    return false;
+  }
+
+  await batchLifecycle.flushHeartbeat();
   return true;
 }
 

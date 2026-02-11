@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import type { PrismaClient } from "@rising-intelligence/db";
-import { serializeError } from "@rising-intelligence/shared";
+import { createKafkaBatchLifecycle, serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { KafkaConsumerContext } from "./kafka/consumer.js";
@@ -128,8 +128,12 @@ export async function updateLag(
 
 export async function processBatch(ctx: PersisterContext, payload: EachBatchPayload): Promise<void> {
   const { batch, isRunning, isStale, pause, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
+  const batchLifecycle = createKafkaBatchLifecycle(
+    { isRunning, isStale, heartbeat },
+    LOOP_HEARTBEAT_INTERVAL_MESSAGES
+  );
 
-  if (!isRunning() || isStale()) {
+  if (!batchLifecycle.shouldContinue()) {
     return;
   }
 
@@ -157,18 +161,13 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
   }
 
   observeBatchSize(ctx.healthContext, batch.messages.length);
-  let messagesSinceHeartbeat = 0;
-  const maybeHeartbeat = async () => {
-    messagesSinceHeartbeat += 1;
-    if (messagesSinceHeartbeat < LOOP_HEARTBEAT_INTERVAL_MESSAGES) {
-      return;
-    }
-    await heartbeat();
-    messagesSinceHeartbeat = 0;
-  };
 
   const events: ParsedRawEvent[] = [];
   for (const message of batch.messages) {
+    if (!batchLifecycle.shouldContinue()) {
+      return;
+    }
+
     if (!message.value) {
       incrementEventsSkipped(ctx.healthContext, "malformed");
       incrementError(ctx.healthContext, "parse_error");
@@ -180,7 +179,7 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
         },
         "Skipping message with empty value"
       );
-      await maybeHeartbeat();
+      await batchLifecycle.onMessageHandled();
       continue;
     }
 
@@ -200,7 +199,11 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
         "Failed to deserialize event"
       );
     }
-    await maybeHeartbeat();
+    await batchLifecycle.onMessageHandled();
+  }
+
+  if (!batchLifecycle.shouldContinue()) {
+    return;
   }
 
   try {
@@ -243,11 +246,14 @@ export async function processBatch(ctx: PersisterContext, payload: EachBatchPayl
 
   for (const message of batch.messages) {
     resolveOffset(message.offset);
-    await maybeHeartbeat();
   }
 
   await commitOffsetsIfNecessary();
-  await heartbeat();
+  if (!batchLifecycle.shouldContinue()) {
+    return;
+  }
+
+  await batchLifecycle.flushHeartbeat();
 
   const lastMessage = batch.messages.at(-1);
   if (!lastMessage) {

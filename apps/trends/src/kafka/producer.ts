@@ -1,6 +1,8 @@
-import { CompressionTypes } from "kafkajs";
 import type { Kafka, Producer } from "kafkajs";
-import { createKafkaProducerFactory } from "@rising-intelligence/shared";
+import {
+  createKafkaProducerFactory,
+  createKafkaProducerProxy,
+} from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -29,12 +31,15 @@ export async function publishSnapshot(
   value: Buffer,
   logger: Logger
 ): Promise<void> {
-  await producer.send({
+  await createKafkaProducerProxy({
+    producer,
+    logger,
+  }).publishMessage({
     topic,
-    compression: CompressionTypes.GZIP,
-    messages: [{ key, value }],
+    key,
+    value,
+    logMessage: "Trend snapshot published",
   });
-  logger.debug({ topic, key }, "Trend snapshot published");
 }
 
 export async function publishSummaryRequest(
@@ -44,12 +49,15 @@ export async function publishSummaryRequest(
   value: Buffer,
   logger: Logger
 ): Promise<void> {
-  await producer.send({
+  await createKafkaProducerProxy({
+    producer,
+    logger,
+  }).publishMessage({
     topic,
-    compression: CompressionTypes.GZIP,
-    messages: [{ key, value }],
+    key,
+    value,
+    logMessage: "Summary request published",
   });
-  logger.debug({ topic, key }, "Summary request published");
 }
 
 export async function disconnectKafkaProducer(producer: Producer, logger: Logger): Promise<void> {

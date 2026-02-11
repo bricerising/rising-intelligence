@@ -35,6 +35,13 @@ export interface SourceHealth {
   error_message?: string;
 }
 
+export type CollectorErrorType =
+  | "parse_error"
+  | "kafka_error"
+  | "auth_error"
+  | "rate_limit"
+  | "network_error";
+
 export interface Metrics {
   eventsIngested: Map<string, number>;
   eventsFailed: Map<string, Map<string, number>>;
@@ -232,7 +239,7 @@ export function incrementEventsIngested(ctx: HealthContext, source: string, coun
 export function incrementEventsFailed(
   ctx: HealthContext,
   source: string,
-  errorType: string,
+  errorType: CollectorErrorType,
   count = 1
 ): void {
   let errorMap = ctx.metrics.eventsFailed.get(source);

@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import type { EachBatchPayload } from "kafkajs";
 import { PrismaClient, Prisma, TrendWindow } from "@rising-intelligence/db";
 import {
+  createKafkaBatchLifecycle,
   closeServer,
   serializeError,
   runService,
@@ -47,6 +48,7 @@ interface RuntimeContext {
 }
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
+const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
 
 interface TopicMessageHandlerInput {
   messageValue: Buffer;
@@ -240,13 +242,17 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
     eachBatchAutoResolve: false,
     eachBatch: async (payload: EachBatchPayload) => {
       const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
-      if (!isRunning() || isStale()) {
+      const batchLifecycle = createKafkaBatchLifecycle(
+        { isRunning, isStale, heartbeat },
+        LOOP_HEARTBEAT_INTERVAL_MESSAGES
+      );
+      if (!batchLifecycle.shouldContinue()) {
         return;
       }
 
-      let messagesSinceHeartbeat = 0;
+      const topicHandler = topicHandlers.get(batch.topic);
       for (const message of batch.messages) {
-        if (!isRunning() || isStale()) {
+        if (!batchLifecycle.shouldContinue()) {
           break;
         }
 
@@ -261,10 +267,10 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
           );
           resolveOffset(message.offset);
           await commitOffsetsIfNecessary();
+          await batchLifecycle.onMessageHandled();
           continue;
         }
 
-        const topicHandler = topicHandlers.get(batch.topic);
         const messageLogger = ctx.logger.child({
           kafkaTopic: batch.topic,
           partition: batch.partition,
@@ -280,6 +286,7 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
           );
           resolveOffset(message.offset);
           await commitOffsetsIfNecessary();
+          await batchLifecycle.onMessageHandled();
           continue;
         }
 
@@ -290,16 +297,15 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
         });
         resolveOffset(message.offset);
         await commitOffsetsIfNecessary();
-
-        messagesSinceHeartbeat += 1;
-        if (messagesSinceHeartbeat >= 20) {
-          await heartbeat();
-          messagesSinceHeartbeat = 0;
-        }
+        await batchLifecycle.onMessageHandled();
       }
 
       await commitOffsetsIfNecessary();
-      await heartbeat();
+      if (!batchLifecycle.shouldContinue()) {
+        return;
+      }
+
+      await batchLifecycle.flushHeartbeat();
     },
   });
 }

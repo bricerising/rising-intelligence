@@ -1,56 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CollectorAdapterFactoryConfig } from "../../src/adapters/factory.js";
+import {
+  createCollectorAdapterFactory,
+  type CollectorAdapterFactoryConfig,
+} from "../../src/adapters/factory.js";
 import type { ContentFetcherConfig } from "../../src/content-fetcher.js";
+import type { SourceAdapter } from "../../src/types.js";
 
-const adapterMocks = vi.hoisted(() => {
-  const rssAdapter = {
-    name: "rss",
-    source: "rss",
-    pollIntervalMs: 1_000,
-    initialize: vi.fn(),
-    fetch: async function* () {},
-    shutdown: vi.fn(),
-  };
-
-  const hackerNewsAdapter = {
-    name: "hackernews",
-    source: "hackernews",
-    pollIntervalMs: 1_000,
-    initialize: vi.fn(),
-    fetch: async function* () {},
-    shutdown: vi.fn(),
-  };
-
-  const lobstersAdapter = {
-    name: "lobsters",
-    source: "lobsters",
-    pollIntervalMs: 1_000,
-    initialize: vi.fn(),
-    fetch: async function* () {},
-    shutdown: vi.fn(),
-  };
-
+function createSourceAdapter(name: string, source: SourceAdapter["source"]): SourceAdapter {
   return {
-    rssAdapter,
-    hackerNewsAdapter,
-    lobstersAdapter,
-    createRSSAdapter: vi.fn(() => rssAdapter),
-    createHackerNewsAdapter: vi.fn(() => hackerNewsAdapter),
-    createLobstersAdapter: vi.fn(() => lobstersAdapter),
+    name,
+    source,
+    pollIntervalMs: 1_000,
+    async initialize() {
+      return undefined;
+    },
+    async *fetch() {
+      return;
+    },
+    async shutdown() {
+      return undefined;
+    },
   };
-});
+}
 
-vi.mock("../../src/adapters/rss.js", () => ({
-  createRSSAdapter: adapterMocks.createRSSAdapter,
-}));
+const adapterMocks = {
+  rssAdapter: createSourceAdapter("rss", "rss"),
+  hackerNewsAdapter: createSourceAdapter("hackernews", "hackernews"),
+  lobstersAdapter: createSourceAdapter("lobsters", "lobsters"),
+};
 
-vi.mock("../../src/adapters/hackernews.js", () => ({
-  createHackerNewsAdapter: adapterMocks.createHackerNewsAdapter,
-}));
-
-vi.mock("../../src/adapters/lobsters.js", () => ({
-  createLobstersAdapter: adapterMocks.createLobstersAdapter,
-}));
+const constructorMocks = {
+  createRSSAdapter: vi.fn(() => adapterMocks.rssAdapter),
+  createHackerNewsAdapter: vi.fn(() => adapterMocks.hackerNewsAdapter),
+  createLobstersAdapter: vi.fn(() => adapterMocks.lobstersAdapter),
+};
 
 function createLogger() {
   const logger = {
@@ -102,15 +85,13 @@ describe("collector adapter factory", () => {
     vi.clearAllMocks();
   });
 
-  it("creates enabled implemented adapters with expected constructor args", async () => {
-    const { buildCollectorAdapters } = await import(
-      "../../src/adapters/factory.js"
-    );
+  it("creates enabled implemented adapters with expected constructor args", () => {
     const logger = createLogger();
     const checkpointStore = {} as any;
     const config = createAdapterConfig();
+    const factory = createCollectorAdapterFactory(constructorMocks);
 
-    const result = buildCollectorAdapters({
+    const result = factory.build({
       config,
       checkpointStore,
       logger,
@@ -123,14 +104,14 @@ describe("collector adapter factory", () => {
     ]);
     expect(result.unsupportedEnabledAdapters).toEqual([]);
 
-    expect(adapterMocks.createRSSAdapter).toHaveBeenCalledWith(
+    expect(constructorMocks.createRSSAdapter).toHaveBeenCalledWith(
       "./config/feeds.yaml",
       120_000,
       checkpointStore,
       logger,
       contentFetcherConfig
     );
-    expect(adapterMocks.createHackerNewsAdapter).toHaveBeenCalledWith(
+    expect(constructorMocks.createHackerNewsAdapter).toHaveBeenCalledWith(
       "best",
       90_000,
       25,
@@ -138,15 +119,12 @@ describe("collector adapter factory", () => {
       logger,
       contentFetcherConfig
     );
-    expect(adapterMocks.createLobstersAdapter).not.toHaveBeenCalled();
+    expect(constructorMocks.createLobstersAdapter).not.toHaveBeenCalled();
     expect(logger.child).toHaveBeenCalledWith({ adapter: "rss" });
     expect(logger.child).toHaveBeenCalledWith({ adapter: "hackernews" });
   });
 
-  it("reports enabled unsupported adapters from the same registry", async () => {
-    const { buildCollectorAdapters } = await import(
-      "../../src/adapters/factory.js"
-    );
+  it("reports enabled unsupported adapters from the same registry", () => {
     const logger = createLogger();
     const checkpointStore = {} as any;
     const config = createAdapterConfig({
@@ -156,8 +134,9 @@ describe("collector adapter factory", () => {
       MASTODON_ENABLED: true,
       GITHUB_ENABLED: true,
     });
+    const factory = createCollectorAdapterFactory(constructorMocks);
 
-    const result = buildCollectorAdapters({
+    const result = factory.build({
       config,
       checkpointStore,
       logger,

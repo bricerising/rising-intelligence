@@ -151,6 +151,30 @@ describe("processBatch", () => {
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
   });
 
+  it("aborts before persistence when batch becomes stale mid-loop", async () => {
+    let stale = false;
+    deserializeMocks.deserializeRawEvent.mockImplementationOnce(() => {
+      stale = true;
+      return createEvent("rss:1");
+    });
+
+    const ctx = createMockContext();
+    const payload = createMockPayload(
+      [
+        { offset: "10", value: Buffer.from("{}") },
+        { offset: "11", value: Buffer.from("{}") },
+      ],
+      { isStale: vi.fn(() => stale) }
+    );
+
+    await processBatch(ctx, payload);
+
+    expect(deserializeMocks.deserializeRawEvent).toHaveBeenCalledTimes(1);
+    expect(persistMocks.persistBatch).not.toHaveBeenCalled();
+    expect(payload.resolveOffset).not.toHaveBeenCalled();
+    expect(payload.commitOffsetsIfNecessary).not.toHaveBeenCalled();
+  });
+
   it("pauses partition when circuit breaker is open", async () => {
     const cb = new PostgresCircuitBreaker(1, 50);
     cb.recordFailure();
@@ -210,6 +234,35 @@ describe("processBatch", () => {
     expect(payload.resolveOffset).toHaveBeenCalledWith("10");
     expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
     expect(payload.heartbeat).toHaveBeenCalledOnce();
+  });
+
+  it("heartbeats once per interval during parsing and once on flush", async () => {
+    let eventNumber = 0;
+    deserializeMocks.deserializeRawEvent.mockImplementation(() => {
+      eventNumber += 1;
+      return createEvent(`rss:${eventNumber}`);
+    });
+    persistMocks.persistBatch.mockResolvedValue({
+      attempted: 50,
+      inserted: 50,
+      duplicates: 0,
+      insertedBySource: new Map([[Source.rss, 50]]),
+    });
+    redisMocks.markEventsSeen.mockResolvedValue(undefined);
+
+    const ctx = createMockContext();
+    const payload = createMockPayload(
+      Array.from({ length: 50 }, (_, index) => ({
+        offset: `${index + 10}`,
+        value: Buffer.from("{}"),
+      }))
+    );
+
+    await processBatch(ctx, payload);
+
+    expect(payload.heartbeat).toHaveBeenCalledTimes(2);
+    expect(payload.resolveOffset).toHaveBeenCalledTimes(50);
+    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
   });
 
   it("skips messages with null value", async () => {

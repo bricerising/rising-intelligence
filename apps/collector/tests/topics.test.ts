@@ -183,6 +183,40 @@ describe("Hashtag Extraction", () => {
 });
 
 describe("Allowlist loading and validation", () => {
+  it("throws when allowlist is missing topics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-allowlist-"));
+    const path = join(dir, "allowlist.yaml");
+    writeFileSync(
+      path,
+      `
+defaults:
+  max_topics_per_event: 5
+`,
+      "utf-8"
+    );
+
+    expect(() => loadAllowlist(path)).toThrow(/invalid allowlist format/i);
+  });
+
+  it("throws on unsupported matcher types", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-allowlist-"));
+    const path = join(dir, "allowlist.yaml");
+    writeFileSync(
+      path,
+      `
+topics:
+  - key: test.bad_matcher
+    display_name: Bad Matcher
+    matchers:
+      - type: fuzzy
+        value: "x"
+`,
+      "utf-8"
+    );
+
+    expect(() => loadAllowlist(path)).toThrow(/unsupported matcher type/i);
+  });
+
   it("throws on invalid regex patterns", () => {
     const dir = mkdtempSync(join(tmpdir(), "ri-allowlist-"));
     const path = join(dir, "allowlist.yaml");

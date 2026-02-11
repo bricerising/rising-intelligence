@@ -1,6 +1,8 @@
-import { CompressionTypes } from "kafkajs";
 import type { Kafka, Producer } from "kafkajs";
-import { createKafkaProducerFactory } from "@rising-intelligence/shared";
+import {
+  createKafkaProducerFactory,
+  createKafkaProducerProxy,
+} from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
 
@@ -36,12 +38,15 @@ export async function publishEvent(
   value: Buffer,
   logger: Logger
 ): Promise<void> {
-  await producer.send({
+  await createKafkaProducerProxy({
+    producer,
+    logger,
+  }).publishMessage({
     topic,
-    compression: CompressionTypes.GZIP,
-    messages: [{ key, value }],
+    key,
+    value,
+    logMessage: "Event published to Kafka",
   });
-  logger.debug({ topic, key }, "Event published to Kafka");
 }
 
 export async function publishBatch(
@@ -50,14 +55,14 @@ export async function publishBatch(
   messages: Array<{ key: string; value: Buffer }>,
   logger: Logger
 ): Promise<void> {
-  if (messages.length === 0) return;
-
-  await producer.send({
+  await createKafkaProducerProxy({
+    producer,
+    logger,
+  }).publishBatch({
     topic,
-    compression: CompressionTypes.GZIP,
     messages,
+    logMessage: "Batch published to Kafka",
   });
-  logger.debug({ topic, count: messages.length }, "Batch published to Kafka");
 }
 
 export async function disconnectProducer(
