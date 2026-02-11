@@ -18,7 +18,7 @@ Key outputs:
 1. **Query mode (default)**:
    - `topics: []`
    - `query.lookback_days` (default `7`, max `30`)
-   - `query.topic_globs` (default `["*"]`)
+   - `query.topic_globs` (default `["*"]`; may be derived from one or more `--feed-config` YAML files and unioned with explicit `--topic-globs`)
    - `query.max_events_per_topic` (optional)
    - `report.timezone` (optional IANA timezone string)
    - `report.start_at` / `report.end_at` (optional ISO8601 framing bounds)
@@ -36,3 +36,12 @@ Key outputs:
   - `--dry-run` for non-mutating preview
   - `--all` or default missing-only mode
   - optional `--source`, `--limit`, `--batch-size`
+
+Feed-config derivation rules for `brief trigger`:
+
+- Parse all `--feed-config` YAML files (repeatable flag).
+- Traverse all sections and collect non-empty `topics` arrays.
+- Ignore empty arrays and warn.
+- Include topics from disabled feed entries.
+- Union derived values with explicit `--topic-globs`.
+- Fail if any selected feed-config file is missing/unreadable.

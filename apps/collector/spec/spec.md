@@ -103,13 +103,26 @@ As an operator, I can restart the collector without re-processing large amounts 
 - **FR-008**: Service MUST extract topics from event content using the allowlist before publishing.
 - **FR-009**: Service MUST validate the allowlist on startup and fail loudly if regexes are invalid.
 - **FR-010**: Service MUST pre-compile all regex matchers on startup for performance.
+- **FR-011 (POS source pack)**: Service MUST support a POS-focused public feed set configuration (`feeds.pos.yaml`) alongside the existing tech feed set (`feeds.tech.yaml`, renamed from `feeds.yaml`). `FEEDS_CONFIG_PATH` accepts a comma-separated list of config files.
+- **FR-012 (Market filters)**: Service MUST load market filter profiles from `infra/config/market-filters/*.yaml` and evaluate all discovered profiles.
+- **FR-013 (Profile match ingest gate)**: Service MUST ingest an item if it matches at least one market profile.
+- **FR-014 (High-volume strict gate)**: Service MUST apply entity+keyword strict gating for high-volume feeds (phase 1: PR Newswire).
+- **FR-015 (Low-volume keyword gate)**: Service MUST apply market keyword filtering to low-volume feeds.
+- **FR-016 (EDGAR watchlist forms)**: Service MUST ingest only high-signal EDGAR forms in phase 1 (`8-K`, `6-K`, `10-Q`, `10-K`, `20-F`, `40-F`).
+- **FR-017 (EDGAR detail metadata)**: Service MUST fetch EDGAR filing detail pages and extract metadata for matching entries.
+- **FR-018 (No document download in phase 1)**: Service MUST NOT download primary filing documents for EDGAR in phase 1.
+- **FR-019 (Market profile tagging)**: Service MUST add market tags (for example `market.pos`) to `RawEvent.tags` for matched profiles.
+- **FR-020 (Match audit metadata)**: Service MUST persist market classification context in `source_meta` (`market_profiles`, `match_reasons`).
+- **FR-021 (EDGAR stable identity)**: Service SHOULD key EDGAR identity by CIK and accession number in `source_meta`.
 
 ### Non-Functional Requirements
 
-- **NFR-001**: Ingest loop SHOULD make new items available within the configured poll interval (typically 5–15 minutes) and within 60 minutes worst-case.
+- **NFR-001**: Ingest loop SHOULD make new items available within each source's configured poll interval (source-dependent; EDGAR phase-1 baseline is 30 minutes with jitter) and within 60 minutes worst-case.
 - **NFR-002**: Service MUST tolerate upstream downtime without crashing.
 - **NFR-003**: Service MUST have zero database dependencies (no Postgres, no Redis).
 - **NFR-004**: Service MUST be stateless except for checkpoints (can run multiple instances with partitioned sources).
+- **NFR-005 (EDGAR rate safety)**: EDGAR company feed polling MUST run with a single 30-minute base interval and significant random jitter. `EDGAR_POLL_JITTER_RATIO` MUST be validated on startup to be within 0.0–1.0 inclusive; invalid values MUST cause a fail-fast startup error.
+- **NFR-006 (Filter explainability)**: Filtering outcomes SHOULD be auditable through structured metadata and metrics.
 
 ## Data Flow
 
@@ -139,6 +152,50 @@ See `social-adapters.md` for Bluesky and Mastodon implementation details.
 ## Topic Extraction
 
 The Collector extracts topics at ingestion time to ensure `RawEvent.tags` is populated before events reach Kafka.
+
+## POS Source-Pack Policy (Phase 1)
+
+Phase 1 focuses on publicly accessible sources and POS/payments relevance.
+
+### Included source classes
+
+- SEC/EDGAR per-company Atom feeds (full watchlist coverage supplied by operator)
+- SEC press releases
+- Federal Reserve RSS
+- BIS RSS
+- CISA advisory feeds
+- Target corporate RSS
+- PR Newswire all releases RSS
+
+### High-volume vs low-volume behavior
+
+- High-volume feed(s): PR Newswire (phase 1)
+- Low-volume feed(s): all other phase-1 sources
+
+**Strict gate for high-volume feeds**:
+- must match at least one watchlist entity term, and
+- must match at least one market keyword term.
+
+**Gate for low-volume feeds**:
+- must match at least one market keyword term.
+
+### Market profile loading and matching
+
+- Collector loads all profile files in `infra/config/market-filters/`.
+- There is no active-profile selector in phase 1.
+- An entry is retained if any profile matches.
+- For retained entries:
+  - add `market.<profile>` tags to `RawEvent.tags`
+  - add `source_meta.market_profiles[]`
+  - add `source_meta.match_reasons[]` with compact rule hints
+
+### EDGAR-specific behavior
+
+- Watchlist coverage includes all requested companies (P1/P2/P3).
+- Allowed forms are restricted to: `8-K`, `6-K`, `10-Q`, `10-K`, `20-F`, `40-F`.
+- Collector fetches filing detail-page metadata.
+- Collector does not download filing primary documents in phase 1.
+- Collector should enrich `source_meta` with: `cik`, `form_type`, `accession_number`, `filed_date`, `accepted_at`, and `filing_detail_url` when available.
 
 ### Allowlist Loading and Validation
 
@@ -321,8 +378,11 @@ CHECKPOINT_PATH=/data/checkpoints.db
 # Topics allowlist (for topic extraction)
 TOPICS_ALLOWLIST_PATH=/config/topics.allowlist.yaml
 
-# Feeds configuration (curated RSS sources)
-FEEDS_CONFIG_PATH=/config/feeds.yaml
+# Feed configurations (multiple configs supported)
+FEEDS_CONFIG_PATH=/config/feeds.tech.yaml,/config/feeds.pos.yaml
+
+# Market profile filters (all YAMLs in this folder are loaded)
+MARKET_FILTERS_DIR=/config/market-filters
 
 # Hacker News
 HN_ENABLED=true
@@ -352,17 +412,22 @@ MASTODON_TAGS=aws,ai,machinelearning,typescript,rust,devops
 # GitHub (optional - for releases tracking)
 GITHUB_ENABLED=true
 GITHUB_TOKEN=...
+
+# EDGAR source-pack behavior
+EDGAR_FORMS_ALLOWLIST=8-K,6-K,10-Q,10-K,20-F,40-F
+EDGAR_FETCH_DETAIL_METADATA=true
+EDGAR_DOWNLOAD_PRIMARY_DOCS=false
+EDGAR_POLL_INTERVAL_SECONDS=1800
+EDGAR_POLL_JITTER_RATIO=0.4  # Must be 0.0–1.0; startup fails otherwise
 ```
 
 ### Feeds Configuration File
 
-See `infra/config/feeds.yaml` for the curated list of RSS feeds including:
-- **Official Blogs**: AWS, Google Cloud, Azure, GitHub, Cloudflare
-- **AI Research**: Google Research, OpenAI, DeepMind
-- **Aggregators**: Techmeme, InfoQ
-- **Open Source**: GitHub Trending, GitHub Releases
+See `infra/config/feeds.tech.yaml` for the tech/AI/cloud feed set (renamed from `feeds.yaml`).
+See `infra/config/feeds.pos.yaml` for the POS/public-source feed set.
+See `infra/config/market-filters/*.yaml` for profile-level filtering rules.
 
-Each feed has configurable poll intervals and priority levels.
+Multiple feed config files coexist; `FEEDS_CONFIG_PATH` accepts a comma-separated list. Each feed has configurable polling, source classification, and filtering policy.
 
 Note: No `DATABASE_URL` or `REDIS_URL` — the collector doesn't need them.
 

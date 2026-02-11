@@ -34,3 +34,15 @@
   - recompute `raw_events.tags` and `raw_events.topics` from allowlist rules
   - default to missing tags/topics for safe backfill
   - support `--all`, `--source`, `--limit`, `--batch-size`, and `--dry-run`
+
+## Phase 6: Feed-config to topic-glob derivation (POS source-pack)
+
+- `brief trigger --feed-config <path>` (repeatable)
+  - parse one or more feed YAML files
+  - derive globs from all non-empty `topics` arrays across all sections
+  - include entries regardless of `enabled` status
+  - union with explicit `--topic-globs`
+  - ignore empty `topics: []` with warnings
+  - fail fast when a selected feed-config path is missing/unreadable
+  - if derivation is empty but explicit globs exist, proceed with warning
+  - if both are absent, keep default wildcard (`*`)

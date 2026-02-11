@@ -51,3 +51,41 @@
 ### T011: Mastodon adapter
 
 - **Acceptance**: Public timeline posts from configured instances are emitted; per-instance rate limiting.
+
+## Phase 5: POS source-pack (public feeds, phase 1)
+
+### T012: POS feed-set config
+
+- **Acceptance**: `infra/config/feeds.pos.yaml` exists with phase-1 public feeds (EDGAR watchlist, SEC, Fed, BIS, CISA, Target, PR Newswire).
+
+### T013: Market filter profile directory
+
+- **Acceptance**: Collector loads all `infra/config/market-filters/*.yaml` profiles at startup; startup fails loudly for invalid profile YAML.
+
+### T014: High-volume strict gate
+
+- **Acceptance**: PR Newswire items are ingested only when they match both an entity term and a market keyword.
+
+### T015: Low-volume keyword gate
+
+- **Acceptance**: Low-volume public-feed items are ingested only when they match market keywords.
+
+### T016: Market tags + metadata
+
+- **Acceptance**: Matching entries include `market.<profile>` in `RawEvent.tags` and also set `source_meta.market_profiles` + `source_meta.match_reasons`.
+
+### T017: EDGAR high-signal forms allowlist
+
+- **Acceptance**: EDGAR ingestion is restricted to `8-K`, `6-K`, `10-Q`, `10-K`, `20-F`, `40-F`.
+
+### T018: EDGAR filing detail metadata enrichment
+
+- **Acceptance**: For retained EDGAR entries, collector fetches filing detail pages and stores normalized metadata (cik, form_type, accession_number, filed_date, accepted_at, filing_detail_url where available).
+
+### T019: No primary-doc downloads (phase 1)
+
+- **Acceptance**: Collector does not download primary filing documents for EDGAR events.
+
+### T020: EDGAR polling guardrails
+
+- **Acceptance**: EDGAR uses a single 30-minute base polling interval with significant jitter to reduce bursty request patterns.

@@ -43,6 +43,12 @@ As an operator, I can recompute `raw_events.tags` and `raw_events.topics` from t
 
 **Independent Test**: `riops topics retag --dry-run` reports candidate updates without mutating rows; re-running without `--dry-run` updates matching rows idempotently.
 
+### Scenario 4 — Feed-Config Derived Query Filters (Priority: P2)
+
+As an operator, I can pass one or more feed YAML files to `riops brief trigger` so it derives topic globs from feed metadata and unions them with explicit topic globs.
+
+**Independent Test**: `riops brief trigger --feed-config ... --topic-globs ... --dry-run` emits a query-mode `SummaryRequest` with merged `query.topic_globs` and warning/error behavior per policy.
+
 ## Requirements
 
 ### Functional Requirements
@@ -59,6 +65,14 @@ As an operator, I can recompute `raw_events.tags` and `raw_events.topics` from t
 - **FR-010**: CLI MUST support `topics retag` to recompute `raw_events.tags` and `raw_events.topics` from the allowlist.
 - **FR-011**: `topics retag` MUST default to rows with empty `tags` or `topics` and support `--all` to process all rows.
 - **FR-012**: `topics retag` MUST support `--dry-run`, `--source`, `--limit`, and `--batch-size` for safe operational execution.
+- **FR-013**: `brief trigger` MUST support repeated `--feed-config <path>` flags for deriving topic globs from YAML feed config files.
+- **FR-014**: Derived topic globs MUST be the union of all non-empty `topics` arrays found across all feed entries in selected YAML files, regardless of section name.
+- **FR-015**: `brief trigger` MUST union derived globs with explicit `--topic-globs` values.
+- **FR-016**: If a `--feed-config` file does not exist or is unreadable, command MUST fail with actionable error output.
+- **FR-017**: Feed entries with empty `topics: []` MUST be ignored for derivation and SHOULD emit warnings.
+- **FR-018**: Topic derivation MUST include entries even if `enabled: false` (briefing scope is based on collected data, not collection toggles).
+- **FR-019**: If feed-derived globs are empty but explicit `--topic-globs` are provided, command MAY proceed and SHOULD warn.
+- **FR-020**: If neither feed-derived globs nor explicit globs are provided, query mode defaults to wildcard (`*`).
 
 ### Non-Functional Requirements
 

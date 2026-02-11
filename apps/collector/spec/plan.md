@@ -4,9 +4,11 @@
 
 Build `apps/collector` as a simple ingestion service: External APIs → Kafka. No database dependencies.
 
+This plan includes a phase-1 POS intelligence source-pack rollout (public feeds only) with EDGAR detail metadata enrichment and market-profile filtering.
+
 ## Architecture (High Level)
 
-- **Input**: External APIs (RSS, HN, Reddit)
+- **Input**: External APIs (RSS/Atom feeds, EDGAR company feeds, HN, Reddit)
 - **Output**: Kafka (`events.raw`, `events.raw.dlq`)
 - **State**: Local checkpoints only (SQLite file)
 - **No dependencies**: No Postgres, no Redis
@@ -77,6 +79,29 @@ Note: No `@rising-intelligence/db` — collector doesn't use Prisma.
 
 - GitHub releases adapter
 - Twitter/X adapter (if API access available)
+
+### Phase 5: POS source-pack integration (phase 1)
+
+- Add POS-focused feed config (`infra/config/feeds.pos.yaml`) with public feeds:
+  - EDGAR watchlist (all provided companies)
+  - SEC press releases
+  - Federal Reserve RSS
+  - BIS RSS
+  - CISA advisories
+  - Target corporate feeds
+  - PR Newswire all releases
+- Add market profile filter directory (`infra/config/market-filters/*.yaml`)
+- Apply filter policy:
+  - PR Newswire (high-volume): strict entity + keyword gate
+  - low-volume feeds: keyword gate
+- Add market classification metadata and tags:
+  - `RawEvent.tags` includes `market.<profile>`
+  - `source_meta.market_profiles[]` and `source_meta.match_reasons[]`
+- Enforce EDGAR constraints:
+  - forms allowlist: `8-K,6-K,10-Q,10-K,20-F,40-F`
+  - fetch filing detail metadata
+  - do not download primary filing documents
+- Use one EDGAR base polling interval (30 minutes) with jitter ratio validated to 0.0–1.0 on startup.
 
 ## Key Implementation Details
 
@@ -359,6 +384,11 @@ class BackoffManager {
 - Soak test: 24h continuous run, verify no crashes
 - Restart test: kill mid-batch, verify checkpoint recovery
 - Rate limit test: simulate 429s, verify backoff behavior
+- PR Newswire strict-gate test: item without entity+keyword match is dropped
+- Low-volume keyword-gate test: item without market keyword is dropped
+- EDGAR detail metadata test: retained filing includes expected detail-page fields in `source_meta`
+- EDGAR safety test: primary document downloads are never performed in phase 1
+- Market profile tagging test: retained event carries `market.<profile>` tag and metadata classification
 
 ## Metrics
 

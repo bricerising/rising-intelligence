@@ -17,6 +17,35 @@ Collector is primarily a stateless transformer from "source items" → `RawEvent
   - error type/code
   - a redacted sample of the raw payload or URL reference
 
+### Phase-1 source-pack metadata additions
+
+For phase-1 POS/public feeds, collector enriches `RawEvent.source_meta` with classification and audit fields.
+
+Expected fields (when available):
+
+- `source_type` (for example `edgar`, `policy`, `security`, `wire`, `merchant`)
+- `signal_tier` (`high_volume` or `low_volume`)
+- `market_profiles` (`string[]`)
+- `match_reasons` (`string[]`)
+- `feed_name`
+- `feed_url`
+
+EDGAR-specific metadata fields:
+
+- `cik`
+- `form_type`
+- `accession_number`
+- `filed_date`
+- `accepted_at`
+- `filing_detail_url`
+- `primary_document_name` (detail metadata only, no document download)
+
+### Tags vs market profiles
+
+- `RawEvent.tags` continues to store canonical topic tags.
+- Market classification tags are also added as `market.<profile>` keys.
+- `source_meta.market_profiles` remains the audit source of truth for why an item passed ingest filters.
+
 ## Checkpoint storage (MVP)
 
 MVP decision:

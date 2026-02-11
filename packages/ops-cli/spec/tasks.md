@@ -33,3 +33,22 @@
 ### T008: Topic re-tag backfill command
 
 - **Acceptance**: `riops topics retag` recomputes `raw_events.tags` + `raw_events.topics` from allowlist rules, defaults to rows with empty topic/tag arrays, supports `--all`, and includes a safe `--dry-run` mode.
+
+### T009: Feed-config flag for brief trigger
+
+- **Acceptance**: `riops brief trigger` accepts repeatable `--feed-config <path>` flags and validates each path.
+
+### T010: Topic-glob derivation from feed YAML
+
+- **Acceptance**: `riops brief trigger` derives topic globs from all non-empty `topics` arrays across all YAML sections, including feeds marked `enabled: false`.
+
+### T011: Merge derived and explicit topic globs
+
+- **Acceptance**: Derived globs are unioned with explicit `--topic-globs`, deduped, and emitted in query payload.
+
+### T012: Warning/error behavior
+
+- **Acceptance**:
+  - missing feed YAML path fails command with actionable error;
+  - empty `topics: []` entries are ignored with warnings;
+  - empty derived globs with explicit topic globs proceeds with warning.
