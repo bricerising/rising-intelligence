@@ -1,5 +1,9 @@
 # Tasks: Collector Service
 
+## Progress
+
+- 2026-02-11: Implemented T009 source staleness metrics (`ri_collector_last_success_timestamp{source}`, `ri_collector_source_healthy{source}`) and preserved per-source `last_poll_at` across error states.
+
 ## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton

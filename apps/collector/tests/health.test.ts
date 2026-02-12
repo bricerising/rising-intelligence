@@ -161,6 +161,54 @@ describe("health handler", () => {
     expect(metricsRes.body).toContain("ri_collector_poll_items_count_bucket");
   });
 
+  it("exports per-source staleness gauges for alerting", () => {
+    const ctx = createHealthContext();
+    ctx.kafkaHealthy = true;
+    ctx.checkpointsHealthy = true;
+    ctx.allowlistHealthy = true;
+
+    const rssLastSuccess = "2026-02-11T00:00:05.000Z";
+    ctx.sourceHealth.set("rss", {
+      status: "healthy",
+      last_poll_at: rssLastSuccess,
+      items_fetched: 3,
+    });
+    ctx.sourceHealth.set("hackernews", {
+      status: "error",
+      last_poll_at: "2026-02-10T23:59:05.000Z",
+      error_message: "rate limited",
+    });
+
+    const handler = createHealthHandler(createHandlers(ctx));
+    const metricsRes = createMockRes();
+    handler({ method: "GET", url: "/metrics" } as any, metricsRes as any);
+
+    expect(metricsRes.statusCode).toBe(200);
+    expect(metricsRes.body).toContain(
+      `ri_collector_last_success_timestamp{source="rss"} ${Math.floor(Date.parse(rssLastSuccess) / 1000)}`
+    );
+    expect(metricsRes.body).toContain('ri_collector_source_healthy{source="rss"} 1');
+    expect(metricsRes.body).toContain('ri_collector_source_healthy{source="hackernews"} 0');
+  });
+
+  it("marks source_healthy=0 when no successful poll timestamp exists", () => {
+    const ctx = createHealthContext();
+    ctx.kafkaHealthy = true;
+    ctx.checkpointsHealthy = true;
+    ctx.allowlistHealthy = true;
+    ctx.sourceHealth.set("rss", {
+      status: "healthy",
+    });
+
+    const handler = createHealthHandler(createHandlers(ctx));
+    const metricsRes = createMockRes();
+    handler({ method: "GET", url: "/metrics" } as any, metricsRes as any);
+
+    expect(metricsRes.statusCode).toBe(200);
+    expect(metricsRes.body).toContain('ri_collector_last_success_timestamp{source="rss"} 0');
+    expect(metricsRes.body).toContain('ri_collector_source_healthy{source="rss"} 0');
+  });
+
   it("caps topic metric cardinality and aggregates overflow into other", () => {
     const ctx = createHealthContext();
     ctx.kafkaHealthy = true;

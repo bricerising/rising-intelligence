@@ -148,6 +148,19 @@ export function getHealthStatus(ctx: HealthContext): HealthStatus {
   };
 }
 
+function toUnixTimestampSeconds(value: string | undefined): number {
+  if (!value || value.trim().length === 0) {
+    return 0;
+  }
+
+  const parsedMs = Date.parse(value);
+  if (Number.isNaN(parsedMs)) {
+    return 0;
+  }
+
+  return Math.floor(parsedMs / 1000);
+}
+
 export function formatMetrics(ctx: HealthContext): string {
   const lines: string[] = [];
 
@@ -226,6 +239,33 @@ export function formatMetrics(ctx: HealthContext): string {
   for (const [topic, count] of ctx.metrics.topicsExtracted) {
     lines.push(
       `ri_collector_topics_extracted_total{topic="${quoteMetricLabelValue(topic)}"} ${count}`
+    );
+  }
+
+  const sourceEntries = [...ctx.sourceHealth.entries()].sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+
+  const sourceLastSuccessTimestamp = sourceEntries.map(([source, health]) => ({
+    source,
+    health,
+    lastSuccessTimestamp: toUnixTimestampSeconds(health.last_poll_at),
+  }));
+
+  lines.push("# HELP ri_collector_last_success_timestamp Last successful poll timestamp (Unix seconds)");
+  lines.push("# TYPE ri_collector_last_success_timestamp gauge");
+  for (const entry of sourceLastSuccessTimestamp) {
+    lines.push(
+      `ri_collector_last_success_timestamp{source="${quoteMetricLabelValue(entry.source)}"} ${entry.lastSuccessTimestamp}`
+    );
+  }
+
+  lines.push("# HELP ri_collector_source_healthy Source health status (1=healthy, 0=not healthy)");
+  lines.push("# TYPE ri_collector_source_healthy gauge");
+  for (const entry of sourceLastSuccessTimestamp) {
+    const isHealthy = entry.health.status === "healthy" && entry.lastSuccessTimestamp > 0;
+    lines.push(
+      `ri_collector_source_healthy{source="${quoteMetricLabelValue(entry.source)}"} ${isHealthy ? 1 : 0}`
     );
   }
 

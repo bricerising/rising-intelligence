@@ -261,6 +261,8 @@ async function runAdapter(
 
       healthContext.sourceHealth.set(adapter.name, {
         status: "error",
+        last_poll_at: lastSuccessfulPollAt,
+        items_fetched: 0,
         error_message: error instanceof Error ? error.message : String(error),
       });
 
