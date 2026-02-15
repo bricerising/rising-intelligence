@@ -14,6 +14,7 @@ docker compose up --build collector
 
 - Tech feeds: `infra/config/feeds.tech.yaml` (renamed from `feeds.yaml`)
 - POS feeds: `infra/config/feeds.pos.yaml`
+- Baseline POS feeds include EDGAR/SEC/Fed/BIS/CISA/PR Newswire plus public payments newsroom feeds (PYMNTS, PaymentsJournal).
 - Market profiles: `infra/config/market-filters/*.yaml`
 - EDGAR polling baseline: 30 minutes with jitter
 - EDGAR form allowlist: `8-K,6-K,10-Q,10-K,20-F,40-F`

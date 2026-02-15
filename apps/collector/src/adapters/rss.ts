@@ -21,7 +21,7 @@ const MIN_RSS_CONTENT_LENGTH = 300;
 const DEFAULT_FEED_POLL_INTERVAL_SECONDS = 900;
 const DEFAULT_FEED_PRIORITY = 50;
 const DEFAULT_EDGAR_FORMS_ALLOWLIST = ["8-K", "6-K", "10-Q", "10-K", "20-F", "40-F"];
-const SEC_USER_AGENT = "RisingIntelligence/1.0 (https://github.com/rising-intelligence)";
+const DEFAULT_SEC_USER_AGENT = "Rising Intelligence contact@example.com";
 
 interface FeedConfig {
   id: string;
@@ -69,6 +69,7 @@ export interface RSSAdapterOptions {
   edgarDownloadPrimaryDocs?: boolean;
   edgarPollIntervalSeconds?: number;
   edgarPollJitterRatio?: number;
+  secUserAgent?: string;
   random?: () => number;
   fetchEdgarDetailMetadata?: EdgarDetailMetadataFetcher;
 }
@@ -357,11 +358,12 @@ function extractSimpleField(html: string, patterns: RegExp[]): string | undefine
 }
 
 async function defaultFetchEdgarDetailMetadata(
-  filingDetailUrl: string
+  filingDetailUrl: string,
+  secUserAgent: string
 ): Promise<EdgarDetailMetadata | null> {
   const response = await fetch(filingDetailUrl, {
     headers: {
-      "User-Agent": SEC_USER_AGENT,
+      "User-Agent": secUserAgent,
       Accept: "text/html,application/xhtml+xml",
     },
   });
@@ -420,6 +422,7 @@ export class RSSAdapter implements SourceAdapter {
   private edgarDownloadPrimaryDocs: boolean;
   private edgarPollIntervalMs: number;
   private edgarPollJitterRatio: number;
+  private secUserAgent: string;
   private random: () => number;
   private fetchEdgarDetailMetadata: EdgarDetailMetadataFetcher;
   private nextPollAtByFeed = new Map<string, number>();
@@ -451,8 +454,10 @@ export class RSSAdapter implements SourceAdapter {
       (options.edgarPollIntervalSeconds ?? 1800) * 1000
     );
     this.edgarPollJitterRatio = options.edgarPollJitterRatio ?? 0.4;
+    this.secUserAgent = options.secUserAgent?.trim() || DEFAULT_SEC_USER_AGENT;
     this.random = options.random ?? Math.random;
-    this.fetchEdgarDetailMetadata = options.fetchEdgarDetailMetadata ?? defaultFetchEdgarDetailMetadata;
+    this.fetchEdgarDetailMetadata = options.fetchEdgarDetailMetadata
+      ?? ((filingDetailUrl) => defaultFetchEdgarDetailMetadata(filingDetailUrl, this.secUserAgent));
     this.textEnrichmentStrategy = createTextEnrichmentStrategy(
       contentFetcherConfig,
       logger,
@@ -461,7 +466,7 @@ export class RSSAdapter implements SourceAdapter {
     this.parser = new Parser({
       timeout: 30000,
       headers: {
-        "User-Agent": SEC_USER_AGENT,
+        "User-Agent": this.secUserAgent,
         // Some feeds (for example InfoQ) reject strict RSS-only Accept headers.
         Accept: "*/*",
       },
@@ -839,6 +844,7 @@ export interface CreateRSSAdapterInput {
   edgarDownloadPrimaryDocs?: boolean;
   edgarPollIntervalSeconds?: number;
   edgarPollJitterRatio?: number;
+  secUserAgent?: string;
 }
 
 export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
@@ -856,6 +862,7 @@ export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
       edgarDownloadPrimaryDocs: input.edgarDownloadPrimaryDocs,
       edgarPollIntervalSeconds: input.edgarPollIntervalSeconds,
       edgarPollJitterRatio: input.edgarPollJitterRatio,
+      secUserAgent: input.secUserAgent,
     }
   );
 }

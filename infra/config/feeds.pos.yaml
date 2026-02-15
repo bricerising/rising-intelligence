@@ -103,7 +103,7 @@ policy_feeds:
     topics: ["macro.fed", "market.pos"]
 
   - name: BIS News and Speeches
-    url: https://www.bis.org/rss/index.xml
+    url: https://www.bis.org/doclist/all_pressrels.rss
     source_type: policy
     topics: ["macro.bis", "market.pos"]
 
@@ -119,6 +119,18 @@ merchant_feeds:
     source_type: merchant
     topics: ["merchant.target", "market.pos"]
     entity_terms: ["target"]
+
+  - name: PYMNTS Payments News
+    url: https://www.pymnts.com/feed/
+    source_type: merchant
+    poll_interval_seconds: 900
+    topics: ["market.pos", "payments.general"]
+
+  - name: PaymentsJournal News
+    url: https://www.paymentsjournal.com/feed/
+    source_type: merchant
+    poll_interval_seconds: 900
+    topics: ["market.pos", "payments.general"]
 
 wire_feeds:
   - name: PR Newswire All Releases

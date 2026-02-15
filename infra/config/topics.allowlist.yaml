@@ -530,6 +530,43 @@ topics:
       - type: regex
         pattern: "\\bcyber[- ]?espionage\\b"
 
+  # ===========================================================================
+  # POS & Payments Intelligence (Priority 78-82)
+  # ===========================================================================
+  - key: market.pos
+    display_name: Point of Sale
+    priority: 82
+    aliases: ["POS", "Payment Terminal", "Card Present"]
+    matchers:
+      - type: keyword
+        value: "point of sale"
+      - type: keyword
+        value: "pos terminal"
+      - type: keyword
+        value: "payment terminal"
+      - type: keyword
+        value: "card present"
+      - type: keyword
+        value: "tap to pay"
+      - type: keyword
+        value: "contactless payment"
+
+  - key: payments.general
+    display_name: Merchant Payments
+    priority: 78
+    aliases: ["Payment Processing", "Merchant Acquiring"]
+    matchers:
+      - type: regex
+        pattern: "\\bpayment(s)?\\b"
+      - type: keyword
+        value: "merchant acquiring"
+      - type: keyword
+        value: "payment processor"
+      - type: keyword
+        value: "payment gateway"
+      - type: keyword
+        value: "interchange"
+
 suppression:
   # Topics to exclude from trending/alerts (still tracked, just muted)
   muted_topics: []

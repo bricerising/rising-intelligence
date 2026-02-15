@@ -61,6 +61,7 @@ function createAdapterConfig(
     EDGAR_DOWNLOAD_PRIMARY_DOCS: false,
     EDGAR_POLL_INTERVAL_SECONDS: 1800,
     EDGAR_POLL_JITTER_RATIO: 0.4,
+    SEC_USER_AGENT: "Collector Test test@example.com",
     HN_ENABLED: true,
     HN_MODE: "best",
     HN_POLL_INTERVAL_SECONDS: 90,
@@ -132,6 +133,7 @@ describe("collector adapter factory", () => {
         edgarDownloadPrimaryDocs: false,
         edgarPollIntervalSeconds: 1800,
         edgarPollJitterRatio: 0.4,
+        secUserAgent: "Collector Test test@example.com",
       }
     );
     expect(constructorMocks.createHackerNewsAdapter).toHaveBeenCalledWith(

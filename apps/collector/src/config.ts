@@ -48,6 +48,7 @@ const ConfigSchema = z.object({
   EDGAR_DOWNLOAD_PRIMARY_DOCS: zBooleanEnv("false"),
   EDGAR_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(1800),
   EDGAR_POLL_JITTER_RATIO: z.coerce.number().min(0).max(1).default(0.4),
+  SEC_USER_AGENT: z.string().default("Rising Intelligence contact@example.com"),
 
   // Bluesky
   BLUESKY_ENABLED: zBooleanEnv("false"),

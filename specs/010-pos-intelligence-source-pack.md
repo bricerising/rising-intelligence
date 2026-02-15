@@ -27,6 +27,7 @@ It introduces:
   - BIS RSS.
   - CISA advisory XML feeds.
   - Target corporate RSS feeds.
+  - Payments trade/public newsroom RSS feeds (for example PYMNTS, PaymentsJournal).
   - PR Newswire all releases RSS.
 - Collector-side filtering and metadata enrichment for market profiles.
 - `riops brief trigger` spec changes for deriving topic globs from selected feed config YAML files.

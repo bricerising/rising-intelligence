@@ -270,6 +270,7 @@ services:
       TOPICS_ALLOWLIST_PATH: "/config/topics.allowlist.yaml"
       FEEDS_CONFIG_PATH: "/config/feeds.tech.yaml,/config/feeds.pos.yaml"
       MARKET_FILTERS_DIR: "/config/market-filters"
+      SEC_USER_AGENT: "${SEC_USER_AGENT:-Rising Intelligence contact@example.com}"
       LOG_LEVEL: "info"
       # Article content fetching (improves tag extraction)
       FETCH_ARTICLE_CONTENT: "true"

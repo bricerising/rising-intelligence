@@ -20,6 +20,7 @@ const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
   "EDGAR_DOWNLOAD_PRIMARY_DOCS",
   "EDGAR_POLL_INTERVAL_SECONDS",
   "EDGAR_POLL_JITTER_RATIO",
+  "SEC_USER_AGENT",
   "HN_ENABLED",
   "HN_MODE",
   "HN_POLL_INTERVAL_SECONDS",
@@ -161,6 +162,7 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
           edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,
           edgarPollIntervalSeconds: config.EDGAR_POLL_INTERVAL_SECONDS,
           edgarPollJitterRatio: config.EDGAR_POLL_JITTER_RATIO,
+          secUserAgent: config.SEC_USER_AGENT,
         };
 
         return constructors.createRSSAdapter(

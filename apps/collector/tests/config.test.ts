@@ -92,6 +92,7 @@ describe("config", () => {
       expect(config.EDGAR_DOWNLOAD_PRIMARY_DOCS).toBe(false);
       expect(config.EDGAR_POLL_INTERVAL_SECONDS).toBe(1800);
       expect(config.EDGAR_POLL_JITTER_RATIO).toBe(0.4);
+      expect(config.SEC_USER_AGENT).toBe("Rising Intelligence contact@example.com");
     });
 
     it("loads disabled source defaults", async () => {
@@ -112,6 +113,7 @@ describe("config", () => {
       process.env.HN_ENABLED = "false";
       process.env.HN_MODE = "best";
       process.env.LOBSTERS_MAX_ITEMS_PER_POLL = "50";
+      process.env.SEC_USER_AGENT = "Unit Test test@example.com";
 
       const { loadConfig } = await import("../src/config.js");
 
@@ -124,6 +126,7 @@ describe("config", () => {
       expect(config.HN_ENABLED).toBe(false);
       expect(config.HN_MODE).toBe("best");
       expect(config.LOBSTERS_MAX_ITEMS_PER_POLL).toBe(50);
+      expect(config.SEC_USER_AGENT).toBe("Unit Test test@example.com");
     });
 
     it("coerces numeric values correctly", async () => {
