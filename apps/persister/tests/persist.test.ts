@@ -90,7 +90,7 @@ describe("persistBatch", () => {
     expect(createManyData.topics).toEqual(["aws.bedrock", "ai.agents"]);
   });
 
-  it("converts null sourceMeta to undefined for Prisma", async () => {
+  it("adds quality metadata when sourceMeta is null", async () => {
     const createMany = vi.fn().mockResolvedValue({ count: 1 });
 
     const prisma = {
@@ -103,7 +103,11 @@ describe("persistBatch", () => {
     await persistBatch(prisma, [event]);
 
     const createManyData = createMany.mock.calls[0][0].data[0];
-    expect(createManyData.sourceMeta).toBeUndefined();
+    expect(createManyData.sourceMeta).toMatchObject({
+      ri_quality: expect.objectContaining({
+        schema_version: 1,
+      }),
+    });
   });
 
   it("passes through non-null sourceMeta", async () => {
@@ -119,7 +123,8 @@ describe("persistBatch", () => {
     await persistBatch(prisma, [event]);
 
     const createManyData = createMany.mock.calls[0][0].data[0];
-    expect(createManyData.sourceMeta).toEqual({ subreddit: "aws", score: 42 });
+    expect(createManyData.sourceMeta).toMatchObject({ subreddit: "aws", score: 42 });
+    expect(createManyData.sourceMeta.ri_quality).toBeDefined();
   });
 
   it("propagates Postgres errors", async () => {
@@ -183,6 +188,117 @@ describe("persistBatch", () => {
     expect(data.lang).toBe("en");
     expect(data.extractedHashtags).toEqual(["#aws"]);
     expect(data.extractedUrls).toEqual(["https://example.com"]);
+    expect(data.sourceMeta.ri_quality).toBeDefined();
+  });
+
+  it("normalizes malformed URLs and strips tracking query params", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("rss:url-normalize", Source.rss);
+    event.url =
+      "https://aws.amazon.comabout-aws/whats-new/2026/02/test/?utm_source=feed&utm_medium=rss&id=42#section";
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.url).toBe("https://aws.amazon.com/about-aws/whats-new/2026/02/test?id=42");
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      normalized_url: true,
+      invalid_url: false,
+      url_issue_codes: expect.arrayContaining([
+        "repaired_known_url_typo",
+        "removed_tracking_query_params",
+        "removed_fragment",
+      ]),
+    });
+  });
+
+  it("flags stale events when fetchedAt is over 30 days after publishedAt", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("rss:stale", Source.rss);
+    event.fetchedAt = new Date("2026-02-15T10:00:00.000Z");
+    event.publishedAt = new Date("2025-12-01T10:00:00.000Z");
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      stale_event: true,
+      stale_age_hours: expect.any(Number),
+      published_in_future: false,
+    });
+  });
+
+  it("infers tags/topics for untagged events from content", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("rss:infer-topics", Source.rss);
+    event.tags = [];
+    event.title = "OpenAI and Anthropic launch new LLM agents";
+    event.text = "OpenAI announced GPT updates while Anthropic shipped Claude agents for developers.";
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.tags).toEqual(
+      expect.arrayContaining(["ai.openai", "ai.anthropic", "ai.llm", "ai.agents"])
+    );
+    expect(data.topics).toEqual(data.tags);
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      inferred_topics: true,
+      inferred_topic_count: data.tags.length,
+    });
+  });
+
+  it("infers English language for missing lang values", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("rss:infer-lang", Source.rss);
+    event.lang = null;
+    event.title = "New cloud deployment guidance";
+    event.text = "The team released a new guide for cloud migration and security with better performance.";
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.lang).toBe("en");
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      inferred_lang: true,
+      lang_inference_method: "heuristic_en",
+    });
+  });
+
+  it("replaces placeholder comments text with title when available", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("news:comments-placeholder", Source.news);
+    event.title = "A detailed incident write-up";
+    event.text = "Comments";
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.text).toBe("A detailed incident write-up");
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      low_information_text: true,
+      text_issue_codes: expect.arrayContaining(["comments_placeholder_text"]),
+    });
   });
 });
 

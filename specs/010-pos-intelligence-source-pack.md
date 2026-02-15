@@ -1,7 +1,8 @@
 # Spec 010: POS Intelligence Source Pack
 
 **Created**: 2026-02-11  
-**Status**: Proposed
+**Updated**: 2026-02-15  
+**Status**: Implemented (phase-1 public feeds)
 
 ## Overview
 
@@ -132,3 +133,10 @@ When `riops brief trigger` is used with `--feed-config`:
 4. EDGAR polling runs at 30-minute base cadence with jitter.
 5. EDGAR events include filing detail-page metadata but no downloaded primary-doc payload.
 6. `riops brief trigger` can derive/merge topic globs from multiple `--feed-config` files with warning/error behaviors as specified.
+
+## Implementation Notes
+
+- Baseline feed config lives in `infra/config/feeds.pos.yaml`.
+- Baseline market profile lives in `infra/config/market-filters/pos.yaml`.
+- Collector implementation and tests are in `apps/collector/src/adapters/rss.ts` and `apps/collector/tests/adapters/rss.test.ts`.
+- Feed-derived topic glob behavior for `riops brief trigger` is implemented in `packages/ops-cli/src/commands/brief/feed-config.ts` and `packages/ops-cli/src/commands/brief/trigger.ts`.

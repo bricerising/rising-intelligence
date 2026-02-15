@@ -6,7 +6,7 @@ defaults:
   signal_tier: low_volume
 
 edgar_watchlist:
-  # Extend this list to cover the full operator watchlist (P1/P2/P3).
+  # Baseline POS/payments watchlist. Extend with operator-provided P1/P2/P3 entries as needed.
   - name: EDGAR - Block, Inc.
     url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001512673&type=&owner=exclude&count=100&output=atom
     source_type: edgar
@@ -22,18 +22,74 @@ edgar_watchlist:
     entity_terms: ["fiserv", "clover"]
 
   - name: EDGAR - Global Payments Inc.
-    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001060391&type=&owner=exclude&count=100&output=atom
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001123360&type=&owner=exclude&count=100&output=atom
     source_type: edgar
-    cik: "0001060391"
+    cik: "0001123360"
     topics: ["market.pos", "payments.globalpayments"]
     entity_terms: ["global payments"]
 
-  - name: EDGAR - Adyen N.V.
-    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001707432&type=&owner=exclude&count=100&output=atom
+  - name: EDGAR - Adyen N.V./ADR
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001788707&type=&owner=exclude&count=100&output=atom
     source_type: edgar
-    cik: "0001707432"
+    cik: "0001788707"
     topics: ["market.pos", "payments.adyen"]
     entity_terms: ["adyen"]
+
+  - name: EDGAR - Toast, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001650164&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001650164"
+    topics: ["market.pos", "payments.toast"]
+    entity_terms: ["toast"]
+
+  - name: EDGAR - PayPal Holdings, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001633917&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001633917"
+    topics: ["market.pos", "payments.paypal"]
+    entity_terms: ["paypal"]
+
+  - name: EDGAR - Shopify Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001594805&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001594805"
+    topics: ["market.pos", "payments.shopify"]
+    entity_terms: ["shopify"]
+
+  - name: EDGAR - Fidelity National Information Services, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001136893&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001136893"
+    topics: ["market.pos", "payments.fis"]
+    entity_terms: ["fidelity national information services", "fis"]
+
+  - name: EDGAR - NCR Voyix Corp
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000070866&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000070866"
+    topics: ["market.pos", "merchant.ncr"]
+    entity_terms: ["ncr", "ncr voyix"]
+
+  - name: EDGAR - Marqeta, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001522540&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001522540"
+    topics: ["market.pos", "payments.marqeta"]
+    entity_terms: ["marqeta"]
+
+  - name: EDGAR - WEX Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001309108&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001309108"
+    topics: ["market.pos", "payments.wex"]
+    entity_terms: ["wex"]
+
+  - name: EDGAR - ACI Worldwide, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000935036&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000935036"
+    topics: ["market.pos", "payments.aci"]
+    entity_terms: ["aci worldwide", "aci"]
 
 policy_feeds:
   - name: SEC Press Releases
@@ -75,9 +131,14 @@ wire_feeds:
       - "adyen"
       - "block"
       - "fiserv"
+      - "fis"
       - "global payments"
+      - "paypal"
+      - "marqeta"
       - "toast"
       - "ncr"
+      - "wex"
+      - "aci worldwide"
       - "verifone"
       - "ingenico"
       - "stripe"

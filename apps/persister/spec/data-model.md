@@ -13,7 +13,7 @@ Persister is a Kafka consumer that materializes `RawEvent` messages to Postgres 
 
 1. **Consume**: Read batches of `RawEvent` from Kafka
 2. **Deserialize**: Parse protobuf messages
-3. **Transform**: Map proto fields to Postgres columns
+3. **Transform**: Normalize/map proto fields to Postgres columns
 4. **Persist**: Batch insert to `raw_events` table
 5. **Dedupe Cache**: Mark events as "seen" in Redis
 6. **Commit**: Commit Kafka offsets after successful persist
@@ -56,7 +56,7 @@ TTL = 24 hours. This allows other services to quickly check if an event exists w
 | `source` | `source` | Enum → TEXT |
 | `fetched_at` | `fetched_at` | ISO8601 → TIMESTAMPTZ |
 | `published_at` | `published_at` | Optional |
-| `url` | `url` | Optional |
+| `url` | `url` | Optional; normalized and tracking params stripped |
 | `title` | `title` | Optional |
 | `text` | `text` | Required |
 | `author.id` | `author_id` | Denormalized |
@@ -66,11 +66,20 @@ TTL = 24 hours. This allows other services to quickly check if an event exists w
 | `engagement.comments` | `engagement_comments` | Optional |
 | `engagement.likes` | `engagement_likes` | Optional |
 | `engagement.shares` | `engagement_shares` | Optional |
-| `lang` | `lang` | Optional |
-| `tags` | `tags` | TEXT[] |
+| `lang` | `lang` | Optional; inferred when missing (`source_meta`/heuristic) |
+| `tags` | `tags` | TEXT[]; inferred conservatively when empty |
 | `extracted.hashtags` | `extracted_hashtags` | TEXT[] |
 | `extracted.urls` | `extracted_urls` | TEXT[] |
-| `source_meta_json` | `source_meta` | JSON string → JSONB |
+| `source_meta_json` | `source_meta` | JSON string → JSONB, plus Persister `ri_quality` annotations |
+
+## Ingest Quality Annotations
+
+Persister appends `source_meta.ri_quality` metadata for downstream interpretation:
+
+- URL quality (`normalized_url`, `invalid_url`, `url_issue_codes`)
+- text quality (`low_information_text`, `text_issue_codes`)
+- staleness (`stale_event`, `stale_age_hours`, `published_in_future`)
+- inference markers (`inferred_topics`, `inferred_topic_count`, `inferred_lang`, `lang_inference_method`)
 
 ## Batching Strategy
 

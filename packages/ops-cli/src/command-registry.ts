@@ -165,6 +165,22 @@ const DEFAULT_COMMANDS: readonly CliCommandDefinition[] = [
     loadModule: () => import("./commands/topics/retag.js"),
     exportName: "topicsRetag",
   }),
+  createLazyCommandDefinition({
+    group: "events",
+    command: "enrich",
+    aliases: ["events:backfill"],
+    summary: "Retrofit raw_events tags/topics and quality metadata",
+    loadModule: () => import("./commands/events/enrich.js"),
+    exportName: "eventsEnrich",
+  }),
+  createLazyCommandDefinition({
+    group: "db",
+    command: "snapshot",
+    aliases: ["db:backup"],
+    summary: "Create Postgres snapshot backups (single-run or scheduled loop)",
+    loadModule: () => import("./commands/db/snapshot.js"),
+    exportName: "dbSnapshot",
+  }),
 ];
 
 export function createDefaultCommandRegistry(): CommandRegistry {

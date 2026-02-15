@@ -52,3 +52,11 @@
   - missing feed YAML path fails command with actionable error;
   - empty `topics: []` entries are ignored with warnings;
   - empty derived globs with explicit topic globs proceeds with warning.
+
+### T013: Events enrichment backfill command
+
+- **Acceptance**: `riops events enrich` runs ordered enrichment steps (default `retag,quality`) with `--dry-run`, `--steps`, `--source`, `--limit`, `--batch-size`, and `--missing-only`.
+
+### T014: Postgres snapshot backup command + scheduler mode
+
+- **Acceptance**: `riops db snapshot` creates `pg_dump` backup files with `--output-dir`, `--retention-days`, `--label`, and `--dry-run` support, and supports `--loop` with configurable interval for Compose automation.

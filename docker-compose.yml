@@ -232,6 +232,23 @@ services:
     command: ["kafka", "create-topics"]
     restart: on-failure
 
+  postgres-snapshot:
+    build:
+      context: .
+      dockerfile: ./packages/ops-cli/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-rising}:${POSTGRES_PASSWORD:-rising}@postgres:5432/${POSTGRES_DB:-rising_intelligence}"
+      POSTGRES_SNAPSHOT_DIR: "/backups/postgres"
+      POSTGRES_SNAPSHOT_INTERVAL_SECONDS: "${POSTGRES_SNAPSHOT_INTERVAL_SECONDS:-86400}"
+      POSTGRES_SNAPSHOT_RETENTION_DAYS: "${POSTGRES_SNAPSHOT_RETENTION_DAYS:-14}"
+    volumes:
+      - postgres-snapshots:/backups/postgres
+    command: ["db", "snapshot", "--loop"]
+    restart: unless-stopped
+
   # =============================================================================
   # Application Services
   # =============================================================================
@@ -409,4 +426,5 @@ volumes:
   tempo-data:
   redis-data:
   postgres-data:
+  postgres-snapshots:
   collector-checkpoints:

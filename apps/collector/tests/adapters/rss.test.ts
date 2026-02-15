@@ -762,7 +762,7 @@ official_blogs:
     source_type: edgar
     market_gate: true
     signal_tier: low_volume
-    cik: "0001707432"
+    cik: "0001788707"
 `
       );
 
@@ -826,7 +826,7 @@ official_blogs:
           source_type: "edgar",
           signal_tier: "low_volume",
           form_type: "8-K",
-          cik: "0001707432",
+          cik: "0001788707",
           filed_date: "2026-02-01",
           accepted_at: "2026-02-01T12:05:00Z",
           primary_document_name: "form8k.htm",
@@ -893,8 +893,8 @@ official_blogs:
       );
       const feeds = (adapter as any).feeds as any[];
 
-      // 10 feeds: 4 EDGAR + 3 policy + 1 security + 1 merchant + 1 wire
-      expect(feeds.length).toBeGreaterThanOrEqual(10);
+      // 18 feeds: 12 EDGAR + 3 policy + 1 security + 1 merchant + 1 wire
+      expect(feeds.length).toBeGreaterThanOrEqual(18);
 
       // Every feed must have market_gate: true (inherited from defaults)
       for (const feed of feeds) {
@@ -910,10 +910,14 @@ official_blogs:
 
       // EDGAR feeds must have source_type and cik
       const edgarFeeds = feeds.filter((f: any) => f.source_type === "edgar");
-      expect(edgarFeeds.length).toBeGreaterThanOrEqual(4);
+      expect(edgarFeeds.length).toBeGreaterThanOrEqual(12);
       for (const feed of edgarFeeds) {
         expect(feed.cik).toBeTruthy();
       }
+
+      const byName = new Map(feeds.map((feed: any) => [feed.name, feed]));
+      expect(byName.get("EDGAR - Global Payments Inc.")?.cik).toBe("0001123360");
+      expect(byName.get("EDGAR - Adyen N.V./ADR")?.cik).toBe("0001788707");
     });
   });
 

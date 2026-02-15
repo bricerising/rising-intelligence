@@ -6,6 +6,7 @@ import {
   upsertConsumerLag as upsertSharedConsumerLag,
 } from "@rising-intelligence/db";
 import type { ParsedRawEvent } from "./types.js";
+import { prepareRawEventForPersistence } from "./enrich.js";
 
 export interface PersistBatchResult {
   attempted: number;
@@ -30,30 +31,29 @@ function groupBySource(events: ParsedRawEvent[]): Map<Source, ParsedRawEvent[]> 
 }
 
 function toCreateManyInput(event: ParsedRawEvent) {
-  const sourceMeta = event.sourceMeta === null
-    ? undefined
-    : (event.sourceMeta as Prisma.InputJsonValue);
+  const prepared = prepareRawEventForPersistence(event);
+  const sourceMeta = prepared.sourceMeta as Prisma.InputJsonValue;
 
   return {
-    eventId: event.eventId,
-    source: event.source,
-    fetchedAt: event.fetchedAt,
-    publishedAt: event.publishedAt,
-    url: event.url,
-    title: event.title,
-    text: event.text,
-    authorId: event.authorId,
-    authorHandle: event.authorHandle,
-    authorDisplayName: event.authorDisplayName,
-    engagementScore: event.engagementScore,
-    engagementComments: event.engagementComments,
-    engagementLikes: event.engagementLikes,
-    engagementShares: event.engagementShares,
-    lang: event.lang,
-    tags: event.tags,
-    extractedHashtags: event.extractedHashtags,
-    extractedUrls: event.extractedUrls,
-    topics: event.tags,
+    eventId: prepared.eventId,
+    source: prepared.source,
+    fetchedAt: prepared.fetchedAt,
+    publishedAt: prepared.publishedAt,
+    url: prepared.url,
+    title: prepared.title,
+    text: prepared.text,
+    authorId: prepared.authorId,
+    authorHandle: prepared.authorHandle,
+    authorDisplayName: prepared.authorDisplayName,
+    engagementScore: prepared.engagementScore,
+    engagementComments: prepared.engagementComments,
+    engagementLikes: prepared.engagementLikes,
+    engagementShares: prepared.engagementShares,
+    lang: prepared.lang,
+    tags: prepared.tags,
+    extractedHashtags: prepared.extractedHashtags,
+    extractedUrls: prepared.extractedUrls,
+    topics: prepared.topics,
     sourceMeta,
   };
 }

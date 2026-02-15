@@ -17,6 +17,12 @@ npm run build
 ./node_modules/.bin/riops topics retag --dry-run
 ./node_modules/.bin/riops topics retag --source rss --limit 100 --dry-run
 ./node_modules/.bin/riops topics retag --all --batch-size 500
+./node_modules/.bin/riops events enrich --dry-run
+./node_modules/.bin/riops events enrich --steps retag,quality --source rss --limit 100 --dry-run
+./node_modules/.bin/riops events enrich --missing-only --batch-size 500 --dry-run
+./node_modules/.bin/riops db snapshot
+./node_modules/.bin/riops db snapshot --output-dir ./backups/postgres --label manual --retention-days 30
+./node_modules/.bin/riops db snapshot --dry-run
 ```
 
 ## Docker Compose
@@ -25,4 +31,5 @@ The stack runs `ops-cli` on startup. Re-run manually:
 
 ```bash
 docker compose run --rm ops-cli schema-registry publish-protos
+docker compose run --rm ops-cli db snapshot
 ```

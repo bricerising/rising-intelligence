@@ -37,6 +37,41 @@ Key outputs:
   - `--all` or default missing-only mode
   - optional `--source`, `--limit`, `--batch-size`
 
+`events enrich` uses:
+
+- **Inputs**:
+  - Postgres `raw_events` rows (full event fields required for enrichment transforms)
+  - Topics allowlist YAML when `retag` step is enabled
+- **Behavioral pipeline**:
+  - Ordered step execution (default: `retag,quality`)
+  - `retag`: recompute `tags/topics` from allowlist
+  - `quality`: apply ingest-quality normalization/annotation rules (URL/text/lang/topic fallback metadata)
+- **Outputs**:
+  - In-place updates to changed fields (`tags`, `topics`, `url`, `text`, `lang`, `source_meta`)
+- **Execution controls**:
+  - `--steps <csv>` to choose/sequence steps
+  - `--missing-only` to restrict updates to rows with empty `tags/topics`
+  - optional `--source`, `--limit`, `--batch-size`
+  - `--dry-run` preview mode
+
+`db snapshot` uses:
+
+- **Inputs**:
+  - Postgres connection info (`DATABASE_URL` or `postgres-*` flags)
+  - Output target directory (`--output-dir` or `POSTGRES_SNAPSHOT_DIR`)
+- **Behavior**:
+  - Runs `pg_dump` in custom/compressed format (`-Fc`)
+  - Writes timestamped snapshot files (`postgres-<db>-<utc>.dump`)
+  - Optionally appends sanitized labels to filenames
+  - Optionally prunes snapshots older than `--retention-days`
+  - Supports long-running loop mode (`--loop`) for scheduled snapshots
+- **Outputs**:
+  - Filesystem snapshots in output directory
+  - Summary logs (file path, size, prune count)
+- **Execution controls**:
+  - `--dry-run` for non-mutating planning
+  - `--interval-seconds` for loop cadence (default daily / 86400)
+
 Feed-config derivation rules for `brief trigger`:
 
 - Parse all `--feed-config` YAML files (repeatable flag).

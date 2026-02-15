@@ -27,16 +27,24 @@ Run:
 ./node_modules/.bin/riops topics retag --dry-run
 ./node_modules/.bin/riops topics retag --source rss --limit 100 --dry-run
 ./node_modules/.bin/riops topics retag --all --batch-size 500
+./node_modules/.bin/riops events enrich --dry-run
+./node_modules/.bin/riops events enrich --steps retag,quality --source rss --limit 100 --dry-run
+./node_modules/.bin/riops events enrich --missing-only --batch-size 500 --dry-run
+./node_modules/.bin/riops db snapshot
+./node_modules/.bin/riops db snapshot --output-dir ./backups/postgres --label manual --retention-days 30
+./node_modules/.bin/riops db snapshot --dry-run
 ```
 
 ## Usage (via Docker Compose)
 
 The local Compose stack includes an `ops-cli` one-shot service that runs on startup.
+It also includes a long-running `postgres-snapshot` service that executes `riops db snapshot --loop` daily.
 
 Re-run manually:
 
 ```bash
 docker compose run --rm ops-cli schema-registry publish-protos
+docker compose run --rm ops-cli db snapshot
 ```
 
 ## Commands
@@ -46,6 +54,8 @@ docker compose run --rm ops-cli schema-registry publish-protos
 - `brief trigger`: generate + publish a manual `SummaryRequest` to `summary.requests` (query mode by default, explicit mode supported with topic/evidence flags)
 - `topics list`: list distinct topic keys currently present in `raw_events` (optional counts)
 - `topics retag`: recompute `raw_events.tags` + `raw_events.topics` from the allowlist rules (defaults to rows with empty tags/topics)
+- `events enrich`: run a pluggable enrichment pipeline (default `retag,quality`) to retrofit topics + ingest quality metadata on `raw_events`
+- `db snapshot`: create Postgres `pg_dump` snapshots with optional retention pruning and loop mode for schedulers
 
 ## Env
 

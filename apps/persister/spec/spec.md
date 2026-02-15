@@ -18,19 +18,25 @@ This service exists to decouple ingestion (Collector) from storage writes, follo
 ### Single Responsibility
 
 The persister does one thing: consume events and write them to storage. It doesn't:
-- Transform events (that's the Collector's job)
-- Extract topics (that's done by the Collector before publishing)
+- Re-run full topic extraction from allowlist rules (that's the Collector's job)
 - Compute trends (that's the Trends service's job)
 - Make decisions (it just persists)
 
 ### Pre-Enriched Events
 
-Events arrive from `events.raw` with topics already extracted by the Collector. The `tags` field contains canonical topic keys (e.g., `["aws.bedrock", "ai.llm"]`). In MVP, the Persister writes these to both:
+Events arrive from `events.raw` with topics already extracted by the Collector. The `tags` field generally contains canonical topic keys (e.g., `["aws.bedrock", "ai.llm"]`). The Persister applies lightweight ingest hardening before write:
+
+- URL normalization (fix known malformed patterns, strip tracking params, drop invalid URLs to `NULL`)
+- low-information text normalization (`"Comments"`/URL-only fallback to title when possible)
+- staleness annotations (`fetched_at - published_at > 30 days`) in `source_meta.ri_quality`
+- conservative fallback inference for missing `tags`/`lang`
+
+After hardening, Persister writes canonical tags to both:
 
 - `raw_events.tags` (raw tag list, mirror), and
 - `raw_events.topics` (canonical topic keys used for trend computation),
 
-without additional processing.
+and stores quality metadata under `source_meta.ri_quality`.
 
 ### Idempotent Writes
 
@@ -82,6 +88,7 @@ As a downstream service, I can check Redis to see if an event has been persisted
 - **FR-003**: Service MUST set `seen:{source}:{event_id}` in Redis with 24h TTL.
 - **FR-004**: Service MUST handle duplicates gracefully (no errors, no duplicate rows).
 - **FR-005**: Service MUST commit Kafka offsets only after successful persistence.
+- **FR-006**: Service MUST annotate ingest quality in `source_meta.ri_quality` (URL/text/staleness/inference flags).
 
 ### Non-Functional Requirements
 

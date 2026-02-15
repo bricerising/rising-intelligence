@@ -3,6 +3,7 @@
 ## Progress
 
 - 2026-02-11: Implemented T009 source staleness metrics (`ri_collector_last_success_timestamp{source}`, `ri_collector_source_healthy{source}`) and preserved per-source `last_poll_at` across error states.
+- 2026-02-15: Implemented POS source-pack tasks T012-T020 (feed-set config, market-filter loading, high/low-volume gates, market tags + metadata, EDGAR form allowlist + detail metadata, no primary-doc downloads, and 30-minute EDGAR polling jitter guardrails). Expanded EDGAR watchlist coverage in `infra/config/feeds.pos.yaml` and corrected CIK mappings for Global Payments and Adyen.
 
 ## Phase 1: Skeleton + contracts
 

@@ -30,6 +30,7 @@ export * from "./runtime/kafka.js";
 export * from "./runtime/lifecycle.js";
 export * from "./runtime/logger.js";
 export * from "./runtime/raw-event.js";
+export * from "./runtime/raw-event-enrichment.js";
 export * from "./runtime/secrets.js";
 export * from "./runtime/service-bootstrap.js";
 export * from "./runtime/source.js";

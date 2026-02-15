@@ -341,6 +341,28 @@ docker compose exec postgres psql -U rising -d rising_intelligence -c \
 
 ---
 
+### Create/Restore Postgres Snapshots
+
+```bash
+# Manual snapshot via riops
+./node_modules/.bin/riops db snapshot
+
+# Manual snapshot via compose image
+docker compose run --rm ops-cli db snapshot
+
+# Check backup files in named volume
+docker compose run --rm --entrypoint sh postgres-snapshot -lc 'ls -lah /backups/postgres'
+
+# Restore a snapshot (replace filename with one from /backups/postgres)
+docker compose run --rm --entrypoint sh postgres-snapshot -lc \
+  'pg_restore --clean --if-exists --no-owner --no-privileges --dbname "$DATABASE_URL" /backups/postgres/<snapshot-file>.dump'
+```
+
+Compose also runs automatic daily snapshots through the `postgres-snapshot` service
+(`riops db snapshot --loop`, default every `86400` seconds with `14` day retention).
+
+---
+
 ## Recovery Procedures
 
 ### Full System Restart

@@ -98,4 +98,22 @@ describe("CommandRegistry", () => {
     expect(command).not.toBeNull();
     expect(alias).toBe(command);
   });
+
+  it("registers events enrich in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("events", "enrich");
+    const alias = registry.resolve("events", "backfill");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
+
+  it("registers db snapshot in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("db", "snapshot");
+    const alias = registry.resolve("db", "backup");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
 });

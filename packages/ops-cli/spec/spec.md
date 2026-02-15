@@ -49,6 +49,18 @@ As an operator, I can pass one or more feed YAML files to `riops brief trigger` 
 
 **Independent Test**: `riops brief trigger --feed-config ... --topic-globs ... --dry-run` emits a query-mode `SummaryRequest` with merged `query.topic_globs` and warning/error behavior per policy.
 
+### Scenario 5 — Backfill Event Enrichment (Priority: P2)
+
+As an operator, I can retrofit existing `raw_events` with both topic re-tagging and ingest quality metadata annotations.
+
+**Independent Test**: `riops events enrich --dry-run` reports updates for rows requiring retagging/quality annotation; re-running without `--dry-run` updates rows idempotently.
+
+### Scenario 6 — Daily Postgres Snapshots (Priority: P1)
+
+As an operator, I can create on-demand Postgres snapshots and run automated daily snapshots from Docker Compose for disaster recovery.
+
+**Independent Test**: `riops db snapshot` writes a `pg_dump` backup file, and `docker compose up` starts a scheduler service that runs `riops db snapshot --loop` every 24 hours.
+
 ## Requirements
 
 ### Functional Requirements
@@ -73,6 +85,14 @@ As an operator, I can pass one or more feed YAML files to `riops brief trigger` 
 - **FR-018**: Topic derivation MUST include entries even if `enabled: false` (briefing scope is based on collected data, not collection toggles).
 - **FR-019**: If feed-derived globs are empty but explicit `--topic-globs` are provided, command MAY proceed and SHOULD warn.
 - **FR-020**: If neither feed-derived globs nor explicit globs are provided, query mode defaults to wildcard (`*`).
+- **FR-021**: CLI MUST support `events enrich` to run ordered enrichment steps against `raw_events` (default: `retag,quality`).
+- **FR-022**: `events enrich` MUST include retagging behavior compatible with `topics retag`.
+- **FR-023**: `events enrich` MUST support `--steps`, `--dry-run`, `--source`, `--limit`, and `--batch-size`.
+- **FR-024**: `events enrich` MUST support `--missing-only` mode to restrict updates to rows with empty `tags/topics`.
+- **FR-025**: CLI MUST support `db snapshot` to create Postgres backups using `pg_dump`.
+- **FR-026**: `db snapshot` MUST support `--output-dir`, `--retention-days`, `--label`, and `--dry-run` for safe backup operations.
+- **FR-027**: `db snapshot` MUST support a loop/scheduler mode (`--loop` + `--interval-seconds`) suitable for Docker Compose automation.
+- **FR-028**: Snapshot logs/output MUST avoid printing database passwords or secret values.
 
 ### Non-Functional Requirements
 

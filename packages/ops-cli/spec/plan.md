@@ -46,3 +46,10 @@
   - fail fast when a selected feed-config path is missing/unreadable
   - if derivation is empty but explicit globs exist, proceed with warning
   - if both are absent, keep default wildcard (`*`)
+
+## Phase 7: Postgres backup automation
+
+- `db snapshot`
+  - run on-demand `pg_dump` snapshots from CLI
+  - support output directory, retention pruning, and safe dry-run
+  - support loop mode (`--loop`) for Docker Compose daily scheduling
