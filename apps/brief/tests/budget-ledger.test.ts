@@ -20,14 +20,40 @@ function makePrisma(state: BudgetState) {
     briefBudgetTracking: {
       upsert: vi.fn().mockImplementation(async () => ({ spentUsd: state.spentUsd })),
       updateMany: vi.fn().mockImplementation(async (args: any) => {
-        const threshold = Number(args?.where?.spentUsd?.lte ?? Number.POSITIVE_INFINITY);
-        if (state.spentUsd > threshold) {
-          return { count: 0 };
+        const lteThreshold = args?.where?.spentUsd?.lte;
+        if (typeof lteThreshold !== "undefined") {
+          if (state.spentUsd > Number(lteThreshold)) {
+            return { count: 0 };
+          }
+
+          const increment = Number(args?.data?.spentUsd?.increment ?? 0);
+          state.spentUsd += increment;
+          return { count: 1 };
         }
 
-        const increment = Number(args?.data?.spentUsd?.increment ?? 0);
-        state.spentUsd += increment;
-        return { count: 1 };
+        const gteThreshold = args?.where?.spentUsd?.gte;
+        const decrement = args?.data?.spentUsd?.decrement;
+        if (typeof gteThreshold !== "undefined" && typeof decrement !== "undefined") {
+          if (state.spentUsd < Number(gteThreshold)) {
+            return { count: 0 };
+          }
+
+          state.spentUsd -= Number(decrement);
+          return { count: 1 };
+        }
+
+        const increment = args?.data?.spentUsd?.increment;
+        if (typeof increment !== "undefined") {
+          state.spentUsd += Number(increment);
+          return { count: 1 };
+        }
+
+        if (typeof args?.data?.spentUsd === "number") {
+          state.spentUsd = args.data.spentUsd;
+          return { count: 1 };
+        }
+
+        return { count: 0 };
       }),
       findUnique: vi.fn().mockImplementation(async () => ({ spentUsd: state.spentUsd })),
       update: vi.fn().mockImplementation(async (args: any) => {

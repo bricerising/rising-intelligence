@@ -1,4 +1,8 @@
 import type { Logger } from "pino";
+import {
+  buildFunctionDependencies,
+  type FunctionDependencyOverrides,
+} from "@rising-intelligence/shared";
 import type { Config } from "../config.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
@@ -67,47 +71,13 @@ interface AdapterConstructors {
   createLobstersAdapter: typeof createLobstersAdapter;
 }
 
-type AdapterConstructorOverrides = Partial<AdapterConstructors>;
-
-type AdapterConstructorName = keyof AdapterConstructors;
+type AdapterConstructorOverrides = FunctionDependencyOverrides<AdapterConstructors>;
 
 const DEFAULT_ADAPTER_CONSTRUCTORS: AdapterConstructors = {
   createRSSAdapter,
   createHackerNewsAdapter,
   createLobstersAdapter,
 };
-
-class AdapterConstructorBuilder {
-  private readonly constructors: AdapterConstructors = {
-    ...DEFAULT_ADAPTER_CONSTRUCTORS,
-  };
-
-  private setOverride<Name extends AdapterConstructorName>(
-    name: Name,
-    override: AdapterConstructorOverrides[Name]
-  ): void {
-    if (override === undefined) {
-      return;
-    }
-    if (typeof override !== "function") {
-      throw new Error(
-        `Collector adapter constructor override "${name}" must be a function`
-      );
-    }
-    this.constructors[name] = override;
-  }
-
-  withOverrides(overrides: AdapterConstructorOverrides): this {
-    this.setOverride("createRSSAdapter", overrides.createRSSAdapter);
-    this.setOverride("createHackerNewsAdapter", overrides.createHackerNewsAdapter);
-    this.setOverride("createLobstersAdapter", overrides.createLobstersAdapter);
-    return this;
-  }
-
-  build(): AdapterConstructors {
-    return { ...this.constructors };
-  }
-}
 
 interface AdapterDefinition<Name extends AdapterName> {
   readonly kind: "implemented" | "unsupported";
@@ -247,9 +217,11 @@ export class CollectorAdapterFactory {
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
   constructor(constructors: AdapterConstructorOverrides = {}) {
-    this.constructors = new AdapterConstructorBuilder()
-      .withOverrides(constructors)
-      .build();
+    this.constructors = buildFunctionDependencies(
+      "Collector adapter constructor",
+      DEFAULT_ADAPTER_CONSTRUCTORS,
+      constructors
+    );
     this.definitions = createAdapterDefinitions();
   }
 
@@ -277,16 +249,8 @@ export class CollectorAdapterFactory {
   }
 }
 
-const DEFAULT_COLLECTOR_ADAPTER_FACTORY = new CollectorAdapterFactory();
-
 export function createCollectorAdapterFactory(
   constructors: AdapterConstructorOverrides = {}
 ): CollectorAdapterFactory {
   return new CollectorAdapterFactory(constructors);
-}
-
-export function buildCollectorAdapters(
-  input: BuildCollectorAdaptersInput
-): CollectorAdapterBuildResult {
-  return DEFAULT_COLLECTOR_ADAPTER_FACTORY.build(input);
 }

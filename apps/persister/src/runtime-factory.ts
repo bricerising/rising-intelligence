@@ -4,8 +4,10 @@ import {
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
+  createFunctionDependencyFactory,
   closeServer,
-  createInitializationRollbackBuilder,
+  createInitializationResourceBuilder,
+  type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type { Redis } from "ioredis";
 import type pino from "pino";
@@ -43,7 +45,7 @@ export interface PersisterRuntimeFactory {
   createRuntime(config: Config, logger: pino.Logger): Promise<PersisterContext>;
 }
 
-type DependencyOverrides = Partial<PersisterRuntimeFactoryDependencies>;
+type DependencyOverrides = FunctionDependencyOverrides<PersisterRuntimeFactoryDependencies>;
 
 const DEFAULT_DEPENDENCIES: PersisterRuntimeFactoryDependencies = {
   createHealthContext,
@@ -75,45 +77,45 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
   ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<PersisterContext> {
-    const rollbackBuilder = createInitializationRollbackBuilder();
+    const resourceBuilder = createInitializationResourceBuilder();
 
     try {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = this.dependencies.startHealthServer(healthContext, logger);
-      rollbackBuilder.register({
+      const healthServer = await resourceBuilder.create({
         name: "health-server",
-        run: async () => this.dependencies.closeHealthServer(healthServer),
-        errorMessage: "Health server close failed during initialization rollback",
+        create: () => this.dependencies.startHealthServer(healthContext, logger),
+        rollback: async (server) => this.dependencies.closeHealthServer(server),
+        rollbackErrorMessage: "Health server close failed during initialization rollback",
       });
 
-      const prisma = await this.dependencies.createPrismaClient(config);
-      rollbackBuilder.register({
+      const prisma = await resourceBuilder.create({
         name: "postgres",
-        run: async () => this.dependencies.closePrismaClient(prisma),
-        errorMessage: "Postgres disconnect failed during initialization rollback",
+        create: async () => this.dependencies.createPrismaClient(config),
+        rollback: async (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
+        rollbackErrorMessage: "Postgres disconnect failed during initialization rollback",
       });
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await this.dependencies.createRedisClient(
-        config,
-        logger.child({ component: "redis" })
-      );
-      rollbackBuilder.register({
+      const redis = await resourceBuilder.create({
         name: "redis",
-        run: async () => this.dependencies.disconnectRedis(redis),
-        errorMessage: "Redis disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createRedisClient(
+            config,
+            logger.child({ component: "redis" })
+          ),
+        rollback: async (redisClient) => this.dependencies.disconnectRedis(redisClient),
+        rollbackErrorMessage: "Redis disconnect failed during initialization rollback",
       });
       healthContext.redisHealthy = true;
 
-      const kafkaContext = await this.dependencies.createKafkaConsumer(
-        logger.child({ component: "kafka" })
-      );
-      rollbackBuilder.register({
+      const kafkaContext = await resourceBuilder.create({
         name: "kafka-consumer",
-        run: async () =>
-          this.dependencies.disconnectKafkaConsumer(kafkaContext.consumer, logger),
-        errorMessage: "Kafka disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createKafkaConsumer(logger.child({ component: "kafka" })),
+        rollback: async (consumerContext) =>
+          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
+        rollbackErrorMessage: "Kafka disconnect failed during initialization rollback",
       });
       await kafkaContext.consumer.subscribe({
         topic: config.KAFKA_TOPIC_RAW_EVENTS,
@@ -134,7 +136,7 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
         lagWriteTimestamps: new Map(),
       };
     } catch (error) {
-      await rollbackBuilder.rollback(logger);
+      await resourceBuilder.rollback(logger);
       throw error;
     }
   }
@@ -143,8 +145,12 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
 export function createPersisterRuntimeFactory(
   overrides: DependencyOverrides = {}
 ): PersisterRuntimeFactory {
-  return new DefaultPersisterRuntimeFactory({
-    ...DEFAULT_DEPENDENCIES,
-    ...overrides,
+  return createFunctionDependencyFactory({
+    targetName: "Persister runtime dependency",
+    defaults: DEFAULT_DEPENDENCIES,
+    overrides,
+    create(dependencies): PersisterRuntimeFactory {
+      return new DefaultPersisterRuntimeFactory(dependencies);
+    },
   });
 }

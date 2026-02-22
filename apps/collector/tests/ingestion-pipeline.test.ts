@@ -6,7 +6,7 @@ import {
   type CollectorEventProcessResult,
 } from "../src/ingestion-pipeline.js";
 import type { CompiledAllowlist } from "../src/topics/extractor.js";
-import type { DeadLetterEvent, RawEvent } from "../src/types.js";
+import type { DeadLetterEvent, RawEvent, Source } from "../src/types.js";
 
 function createLogger() {
   return {
@@ -66,7 +66,17 @@ interface TestHarness {
   publishDeadLetterEvent: ReturnType<typeof vi.fn>;
 }
 
-function createHarness(hasSeen = false): TestHarness {
+interface CreateHarnessOptions {
+  hasSeen?: boolean;
+  adapterName?: string;
+  adapterSource?: Source;
+}
+
+function createHarness(options: CreateHarnessOptions = {}): TestHarness {
+  const hasSeen = options.hasSeen ?? false;
+  const adapterName = options.adapterName ?? "rss";
+  const adapterSource = options.adapterSource ?? "rss";
+
   const checkpointStore = createCheckpointStore(hasSeen);
   const healthContext = createHealthContext();
   const publishRawEvent = vi.fn(async (_event: RawEvent) => undefined);
@@ -74,8 +84,8 @@ function createHarness(hasSeen = false): TestHarness {
 
   const fixedNow = new Date("2026-02-10T12:00:00.000Z");
   const processor = createCollectorEventProcessor({
-    adapterName: "rss",
-    adapterSource: "rss",
+    adapterName,
+    adapterSource,
     allowlist: createAllowlist(),
     checkpointStore,
     healthContext,
@@ -103,7 +113,7 @@ describe("collector ingestion pipeline", () => {
       checkpointStore,
       publishRawEvent,
       publishDeadLetterEvent,
-    } = createHarness(false);
+    } = createHarness();
 
     const event = createEvent();
     const result = await processor.process(event);
@@ -128,10 +138,31 @@ describe("collector ingestion pipeline", () => {
       processor,
       publishRawEvent,
       publishDeadLetterEvent,
-    } = createHarness(false);
+    } = createHarness();
 
     const event = createEvent({
       tags: ["market.pos"],
+    });
+    const result = await processor.process(event);
+
+    expect(result).toEqual<CollectorEventProcessResult>({
+      status: "ingested",
+      topics: ["aws"],
+    });
+    expect(event.tags).toEqual(["market.pos", "aws"]);
+    expect(publishRawEvent).toHaveBeenCalledWith(event);
+    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+  });
+
+  it("normalizes and deduplicates existing tags before publishing", async () => {
+    const {
+      processor,
+      publishRawEvent,
+      publishDeadLetterEvent,
+    } = createHarness();
+
+    const event = createEvent({
+      tags: [" market.pos ", "aws", "market.pos", ""],
     });
     const result = await processor.process(event);
 
@@ -151,7 +182,7 @@ describe("collector ingestion pipeline", () => {
       checkpointStore,
       publishRawEvent,
       publishDeadLetterEvent,
-    } = createHarness(true);
+    } = createHarness({ hasSeen: true });
 
     const result = await processor.process(createEvent());
 
@@ -173,7 +204,7 @@ describe("collector ingestion pipeline", () => {
       checkpointStore,
       publishRawEvent,
       publishDeadLetterEvent,
-    } = createHarness(false);
+    } = createHarness();
 
     const invalidEvent = createEvent({
       text: "",
@@ -211,6 +242,46 @@ describe("collector ingestion pipeline", () => {
     expect(healthContext.lastEventAt).toBeUndefined();
   });
 
+  it("applies source-specific validation strategy for non-rss adapters", async () => {
+    const {
+      processor,
+      healthContext,
+      checkpointStore,
+      publishRawEvent,
+      publishDeadLetterEvent,
+    } = createHarness({
+      adapterName: "hackernews",
+      adapterSource: "hackernews",
+    });
+
+    const invalidEvent = createEvent({
+      source: "hackernews",
+      text: "",
+      url: "https://news.ycombinator.com/item?id=1",
+      source_meta: {
+        feed_name: "Should not be counted for non-rss",
+        feed_url: "https://example.com/ignored-feed",
+      },
+    });
+    const result = await processor.process(invalidEvent);
+
+    expect(result).toEqual<CollectorEventProcessResult>({
+      status: "invalid",
+      errorCode: "VALIDATION_FAILED",
+    });
+    expect(publishRawEvent).not.toHaveBeenCalled();
+    expect(checkpointStore.markSeen).not.toHaveBeenCalled();
+    expect(publishDeadLetterEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "hackernews",
+        error_code: "VALIDATION_FAILED",
+      })
+    );
+    expect(healthContext.metrics.eventsFailed.get("hackernews")?.get("parse_error")).toBe(1);
+    expect([...healthContext.metrics.rssFeedErrors.values()]).toEqual([]);
+    expect(healthContext.lastEventAt).toBeUndefined();
+  });
+
   it.each([
     {
       label: "event_id",
@@ -233,7 +304,7 @@ describe("collector ingestion pipeline", () => {
       checkpointStore,
       publishRawEvent,
       publishDeadLetterEvent,
-    } = createHarness(false);
+    } = createHarness();
 
     const result = await processor.process(event);
 

@@ -6,6 +6,18 @@ export interface InitializationRollbackBuilder {
   rollback(logger: Logger): Promise<void>;
 }
 
+export interface InitializationResourceStep<TResource> {
+  readonly name: string;
+  create(): Promise<TResource> | TResource;
+  rollback(resource: TResource): Promise<void> | void;
+  readonly rollbackErrorMessage: string;
+}
+
+export interface InitializationResourceBuilder {
+  create<TResource>(step: InitializationResourceStep<TResource>): Promise<TResource>;
+  rollback(logger: Logger): Promise<void>;
+}
+
 /**
  * Builder for startup rollback steps.
  * Steps are executed in reverse registration order so partial initialization
@@ -24,6 +36,31 @@ export function createInitializationRollbackBuilder(): InitializationRollbackBui
       }
 
       await runShutdownSteps(logger, steps);
+    },
+  };
+}
+
+/**
+ * Builder that creates startup resources and automatically registers rollback
+ * handlers for successfully-created resources.
+ */
+export function createInitializationResourceBuilder(): InitializationResourceBuilder {
+  const rollbackBuilder = createInitializationRollbackBuilder();
+
+  return {
+    async create<TResource>(step: InitializationResourceStep<TResource>): Promise<TResource> {
+      const resource = await step.create();
+      rollbackBuilder.register({
+        name: step.name,
+        run: async () => {
+          await step.rollback(resource);
+        },
+        errorMessage: step.rollbackErrorMessage,
+      });
+      return resource;
+    },
+    rollback(logger: Logger): Promise<void> {
+      return rollbackBuilder.rollback(logger);
     },
   };
 }

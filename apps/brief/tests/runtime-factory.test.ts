@@ -106,6 +106,21 @@ describe("createBriefRuntimeFactory", () => {
     vi.clearAllMocks();
   });
 
+  it("uses default dependencies when an override is explicitly undefined", async () => {
+    const config = createConfig();
+    const logger = createLogger();
+    const setup = createDependencies();
+    const factory = createBriefRuntimeFactory({
+      ...setup.dependencies,
+      createHealthContext: undefined,
+    });
+
+    const ctx = await factory.createRuntime(config, logger);
+
+    expect(ctx.healthContext).not.toBe(setup.healthContext);
+    expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
+  });
+
   it("creates a runtime context with healthy dependencies and topic subscriptions", async () => {
     const config = createConfig();
     const logger = createLogger();
@@ -187,5 +202,13 @@ describe("createBriefRuntimeFactory", () => {
       "postgres",
       "health-server",
     ]);
+  });
+
+  it("fails fast when a dependency override is not a function", () => {
+    expect(() =>
+      createBriefRuntimeFactory({
+        createKafkaConsumer: 123 as unknown as BriefRuntimeFactoryDependencies["createKafkaConsumer"],
+      })
+    ).toThrow('Brief runtime dependency override "createKafkaConsumer" must be a function');
   });
 });

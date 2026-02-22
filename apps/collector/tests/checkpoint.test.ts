@@ -215,4 +215,33 @@ describe("CheckpointStore", () => {
 
     store.close();
   });
+
+  it("throws if used after close", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-checkpoints-"));
+    const dbPath = join(dir, "checkpoints.db");
+    const store = new CheckpointStore(dbPath, createTestLogger());
+    await store.initialize();
+
+    store.setCheckpoint("rss", "k", "v");
+    store.markSeen("rss", "event-1");
+    store.close();
+
+    expect(() => store.getCheckpoint("rss", "k")).toThrow(/not initialized/i);
+    expect(() => store.setCheckpoint("rss", "k", "v2")).toThrow(/not initialized/i);
+    expect(() => store.listCheckpoints("r")).toThrow(/not initialized/i);
+    expect(() => store.hasSeen("rss", "event-1")).toThrow(/not initialized/i);
+    expect(() => store.markSeen("rss", "event-2")).toThrow(/not initialized/i);
+    expect(() => store.cleanupSeen()).toThrow(/not initialized/i);
+  });
+
+  it("rejects duplicate initialization", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-checkpoints-"));
+    const dbPath = join(dir, "checkpoints.db");
+    const store = new CheckpointStore(dbPath, createTestLogger());
+
+    await store.initialize();
+    await expect(store.initialize()).rejects.toThrow(/already initialized/i);
+
+    store.close();
+  });
 });

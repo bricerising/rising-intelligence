@@ -5,8 +5,10 @@ import {
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
+  createFunctionDependencyFactory,
   closeServer,
-  createInitializationRollbackBuilder,
+  createInitializationResourceBuilder,
+  type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
@@ -64,7 +66,7 @@ export interface BriefRuntimeFactory {
   createRuntime(config: Config, logger: pino.Logger): Promise<BriefRuntimeContext>;
 }
 
-type DependencyOverrides = Partial<BriefRuntimeFactoryDependencies>;
+type DependencyOverrides = FunctionDependencyOverrides<BriefRuntimeFactoryDependencies>;
 
 const DEFAULT_DEPENDENCIES: BriefRuntimeFactoryDependencies = {
   createHealthContext,
@@ -93,59 +95,61 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
   constructor(private readonly dependencies: BriefRuntimeFactoryDependencies) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<BriefRuntimeContext> {
-    const rollbackBuilder = createInitializationRollbackBuilder();
+    const resourceBuilder = createInitializationResourceBuilder();
 
     try {
       const healthContext = this.dependencies.createHealthContext(config.LLM_DAILY_BUDGET_USD);
-      const healthServer = this.dependencies.startHealthServer(healthContext, logger);
-      rollbackBuilder.register({
+      const healthServer = await resourceBuilder.create({
         name: "health-server",
-        run: async () => this.dependencies.closeHealthServer(healthServer),
-        errorMessage: "Health server close failed during initialization rollback",
+        create: () => this.dependencies.startHealthServer(healthContext, logger),
+        rollback: async (server) => this.dependencies.closeHealthServer(server),
+        rollbackErrorMessage: "Health server close failed during initialization rollback",
       });
 
       this.dependencies.setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
 
-      const prisma = await this.dependencies.createPrismaClient(config);
-      rollbackBuilder.register({
+      const prisma = await resourceBuilder.create({
         name: "postgres",
-        run: async () => this.dependencies.closePrismaClient(prisma),
-        errorMessage: "Postgres disconnect failed during initialization rollback",
+        create: async () => this.dependencies.createPrismaClient(config),
+        rollback: async (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
+        rollbackErrorMessage: "Postgres disconnect failed during initialization rollback",
       });
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await this.dependencies.createRedisClient(
-        config,
-        logger.child({ component: "redis" })
-      );
-      rollbackBuilder.register({
+      const redis = await resourceBuilder.create({
         name: "redis",
-        run: async () => this.dependencies.disconnectRedis(redis, logger),
-        errorMessage: "Redis disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createRedisClient(
+            config,
+            logger.child({ component: "redis" })
+          ),
+        rollback: async (redisClient) => this.dependencies.disconnectRedis(redisClient, logger),
+        rollbackErrorMessage: "Redis disconnect failed during initialization rollback",
       });
       healthContext.redisHealthy = true;
 
-      const kafkaConsumerContext = await this.dependencies.createKafkaConsumer(logger);
-      rollbackBuilder.register({
+      const kafkaConsumerContext = await resourceBuilder.create({
         name: "kafka-consumer",
-        run: async () =>
-          this.dependencies.disconnectKafkaConsumer(kafkaConsumerContext.consumer, logger),
-        errorMessage: "Kafka consumer disconnect failed during initialization rollback",
+        create: async () => this.dependencies.createKafkaConsumer(logger),
+        rollback: async (consumerContext) =>
+          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
+        rollbackErrorMessage: "Kafka consumer disconnect failed during initialization rollback",
       });
       await kafkaConsumerContext.consumer.subscribe({
         topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
         fromBeginning: false,
       });
 
-      const kafkaProducerContext = await this.dependencies.createKafkaProducer(
-        logger.child({ component: "kafka-producer" })
-      );
-      rollbackBuilder.register({
+      const kafkaProducerContext = await resourceBuilder.create({
         name: "kafka-producer",
-        run: async () =>
-          this.dependencies.disconnectKafkaProducer(kafkaProducerContext.producer, logger),
-        errorMessage: "Kafka producer disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createKafkaProducer(
+            logger.child({ component: "kafka-producer" })
+          ),
+        rollback: async (producerContext) =>
+          this.dependencies.disconnectKafkaProducer(producerContext.producer, logger),
+        rollbackErrorMessage: "Kafka producer disconnect failed during initialization rollback",
       });
       healthContext.kafkaHealthy = true;
 
@@ -168,7 +172,7 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
         redis,
       };
     } catch (error) {
-      await rollbackBuilder.rollback(logger);
+      await resourceBuilder.rollback(logger);
       throw error;
     }
   }
@@ -177,8 +181,12 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
 export function createBriefRuntimeFactory(
   overrides: DependencyOverrides = {}
 ): BriefRuntimeFactory {
-  return new DefaultBriefRuntimeFactory({
-    ...DEFAULT_DEPENDENCIES,
-    ...overrides,
+  return createFunctionDependencyFactory({
+    targetName: "Brief runtime dependency",
+    defaults: DEFAULT_DEPENDENCIES,
+    overrides,
+    create(dependencies): BriefRuntimeFactory {
+      return new DefaultBriefRuntimeFactory(dependencies);
+    },
   });
 }

@@ -1,4 +1,3 @@
-import { Server } from "node:http";
 import {
   closeServer,
   serializeError,
@@ -9,70 +8,31 @@ import {
   sleep,
   isRateLimitError,
   isTransientError,
-  type ShutdownStep,
 } from "@rising-intelligence/shared";
-import type pino from "pino";
 import { getConfig } from "./config.js";
 import {
-  createKafkaProducer,
   disconnectProducer,
-  KafkaProducerContext,
 } from "./kafka/producer.js";
 import {
   type CollectorErrorType,
-  createHealthContext,
-  startHealthServer,
-  HealthContext,
   incrementEventsFailed,
-  incrementRssFeedError,
   observePollDuration,
   observePollItemsCount,
   incrementCheckpointUpdated,
   incrementRateLimitBackoff,
 } from "./health.js";
-import { CheckpointStore } from "./checkpoint.js";
-import { loadAllowlist, CompiledAllowlist } from "./topics/extractor.js";
-import {
-  loadMarketFilterProfiles,
-  type MarketFilterProfile,
-} from "./market-filters.js";
 import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
-import { createContentFetcherConfig } from "./content-fetcher.js";
-import { buildCollectorAdapters } from "./adapters/factory.js";
 import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
 import { createCollectorPublisher } from "./publishing-facade.js";
+import {
+  createCollectorRuntimeFactory,
+  type CollectorRuntimeContext,
+} from "./runtime-factory.js";
 
-interface CollectorContext {
-  config: ReturnType<typeof getConfig>;
-  logger: pino.Logger;
-  kafkaContext: KafkaProducerContext;
-  healthContext: HealthContext;
-  healthServer: Server;
-  checkpointStore: CheckpointStore;
-  allowlist: CompiledAllowlist;
-  marketFilterProfiles: MarketFilterProfile[];
-  adapters: SourceAdapter[];
-  shutdownRequested: boolean;
-  lastSeenCleanupAt: number;
-}
+type CollectorContext = CollectorRuntimeContext;
 
 const bootstrap = createServiceBootstrap(getConfig);
-
-class InitializationRollbackBuilder {
-  private readonly steps: ShutdownStep[] = [];
-
-  register(step: ShutdownStep): void {
-    this.steps.unshift(step);
-  }
-
-  async rollback(logger: pino.Logger): Promise<void> {
-    if (this.steps.length === 0) {
-      return;
-    }
-
-    await runShutdownSteps(logger, this.steps);
-  }
-}
+const runtimeFactory = createCollectorRuntimeFactory();
 
 function mapUnknownErrorType(error: unknown): CollectorErrorType {
   if (!(error instanceof Error)) {
@@ -96,128 +56,8 @@ function mapUnknownErrorType(error: unknown): CollectorErrorType {
 async function initializeCollector(): Promise<CollectorContext> {
   const config = bootstrap.getConfig();
   const logger = bootstrap.getLogger();
-  const rollbackBuilder = new InitializationRollbackBuilder();
-
   logger.info({ service: config.SERVICE_NAME }, "Starting collector service");
-
-  try {
-    const healthContext = createHealthContext();
-    const healthServer = startHealthServer(healthContext, logger);
-    rollbackBuilder.register({
-      name: "health-server",
-      run: async () => closeServer(healthServer),
-      errorMessage: "Health server close failed during initialization rollback",
-    });
-
-    const checkpointStore = new CheckpointStore(
-      config.CHECKPOINT_PATH,
-      logger.child({ component: "checkpoint" })
-    );
-    await checkpointStore.initialize();
-    rollbackBuilder.register({
-      name: "checkpoint-store",
-      run: async () => {
-        checkpointStore.close();
-      },
-      errorMessage: "Checkpoint store close failed during initialization rollback",
-    });
-    healthContext.checkpointsHealthy = true;
-
-    let allowlist: CompiledAllowlist;
-    try {
-      allowlist = loadAllowlist(config.TOPICS_ALLOWLIST_PATH);
-      healthContext.allowlistHealthy = true;
-      logger.info(
-        { topicCount: allowlist.topics.length },
-        "Topics allowlist loaded"
-      );
-    } catch (error) {
-      logger.error({ error }, "Failed to load topics allowlist");
-      healthContext.allowlistHealthy = false;
-      throw error;
-    }
-
-    const kafkaContext = await createKafkaProducer(logger);
-    rollbackBuilder.register({
-      name: "kafka-producer",
-      run: async () => disconnectProducer(kafkaContext.producer, logger),
-      errorMessage: "Kafka producer disconnect failed during initialization rollback",
-    });
-    healthContext.kafkaHealthy = true;
-
-    let marketFilterProfiles: MarketFilterProfile[];
-    try {
-      marketFilterProfiles = loadMarketFilterProfiles(config.MARKET_FILTERS_DIR);
-      logger.info(
-        { profileCount: marketFilterProfiles.length, dir: config.MARKET_FILTERS_DIR },
-        "Market filter profiles loaded"
-      );
-    } catch (error) {
-      logger.error(
-        { error, dir: config.MARKET_FILTERS_DIR },
-        "Failed to load market filter profiles"
-      );
-      throw error;
-    }
-
-    const contentFetcherConfig = createContentFetcherConfig(process.env);
-    logger.info(
-      { enabled: contentFetcherConfig.enabled, timeoutMs: contentFetcherConfig.timeoutMs },
-      "Content fetcher configuration loaded"
-    );
-
-    const { adapters, unsupportedEnabledAdapters } = buildCollectorAdapters({
-      config,
-      checkpointStore,
-      logger,
-      contentFetcherConfig,
-      marketFilterProfiles,
-      onRssFeedError: ({ feed, feedUrl, errorType }) => {
-        incrementRssFeedError(healthContext, {
-          feed,
-          feedUrl,
-          errorType,
-        });
-      },
-    });
-
-    if (unsupportedEnabledAdapters.length > 0) {
-      logger.warn(
-        { unsupportedAdapters: unsupportedEnabledAdapters },
-        "Adapter flags enabled without implementation in this collector build"
-      );
-    }
-
-    for (const adapter of adapters) {
-      await adapter.initialize();
-      rollbackBuilder.register({
-        name: `adapter-${adapter.name}`,
-        run: async () => adapter.shutdown(),
-        errorMessage: `Adapter ${adapter.name} shutdown failed during initialization rollback`,
-      });
-      healthContext.sourceHealth.set(adapter.name, {
-        status: "healthy",
-      });
-      logger.info({ adapter: adapter.name }, "Adapter initialized");
-    }
-
-    return {
-      config,
-      logger,
-      kafkaContext,
-      healthContext,
-      healthServer,
-      checkpointStore,
-      allowlist,
-      marketFilterProfiles,
-      adapters,
-      shutdownRequested: false,
-      lastSeenCleanupAt: 0,
-    };
-  } catch (error) {
-    await rollbackBuilder.rollback(logger);
-    throw error;
-  }
+  return runtimeFactory.createRuntime(config, logger);
 }
 
 async function runAdapter(

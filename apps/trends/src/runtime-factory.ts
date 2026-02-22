@@ -4,8 +4,10 @@ import {
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
+  createFunctionDependencyFactory,
   closeServer,
-  createInitializationRollbackBuilder,
+  createInitializationResourceBuilder,
+  type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type { Redis } from "ioredis";
 import type pino from "pino";
@@ -62,7 +64,7 @@ export interface TrendsRuntimeFactory {
   createRuntime(config: Config, logger: pino.Logger): Promise<TrendsRuntimeContext>;
 }
 
-type DependencyOverrides = Partial<TrendsRuntimeFactoryDependencies>;
+type DependencyOverrides = FunctionDependencyOverrides<TrendsRuntimeFactoryDependencies>;
 
 const DEFAULT_DEPENDENCIES: TrendsRuntimeFactoryDependencies = {
   createHealthContext,
@@ -93,34 +95,35 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
   ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<TrendsRuntimeContext> {
-    const rollbackBuilder = createInitializationRollbackBuilder();
+    const resourceBuilder = createInitializationResourceBuilder();
 
     try {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = this.dependencies.startHealthServer(healthContext, logger);
-      rollbackBuilder.register({
+      const healthServer = await resourceBuilder.create({
         name: "health-server",
-        run: async () => this.dependencies.closeHealthServer(healthServer),
-        errorMessage: "Health server close failed during initialization rollback",
+        create: () => this.dependencies.startHealthServer(healthContext, logger),
+        rollback: async (server) => this.dependencies.closeHealthServer(server),
+        rollbackErrorMessage: "Health server close failed during initialization rollback",
       });
 
-      const prisma = await this.dependencies.createPrismaClient(config);
-      rollbackBuilder.register({
+      const prisma = await resourceBuilder.create({
         name: "postgres",
-        run: async () => this.dependencies.closePrismaClient(prisma),
-        errorMessage: "Postgres disconnect failed during initialization rollback",
+        create: async () => this.dependencies.createPrismaClient(config),
+        rollback: async (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
+        rollbackErrorMessage: "Postgres disconnect failed during initialization rollback",
       });
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await this.dependencies.createRedisClient(
-        config,
-        logger.child({ component: "redis" })
-      );
-      rollbackBuilder.register({
+      const redis = await resourceBuilder.create({
         name: "redis",
-        run: async () => this.dependencies.disconnectRedis(redis, logger),
-        errorMessage: "Redis disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createRedisClient(
+            config,
+            logger.child({ component: "redis" })
+          ),
+        rollback: async (redisClient) => this.dependencies.disconnectRedis(redisClient, logger),
+        rollbackErrorMessage: "Redis disconnect failed during initialization rollback",
       });
       healthContext.redisHealthy = true;
 
@@ -128,13 +131,15 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
       healthContext.allowlistHealthy = true;
       logger.info({ topicCount: allowlist.topics.length }, "Topics allowlist loaded");
 
-      const kafkaConsumerContext = await this.dependencies.createKafkaConsumer(
-        logger.child({ component: "kafka-consumer" })
-      );
-      rollbackBuilder.register({
+      const kafkaConsumerContext = await resourceBuilder.create({
         name: "kafka-consumer",
-        run: async () => this.dependencies.disconnectKafkaConsumer(kafkaConsumerContext.consumer, logger),
-        errorMessage: "Kafka consumer disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createKafkaConsumer(
+            logger.child({ component: "kafka-consumer" })
+          ),
+        rollback: async (consumerContext) =>
+          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
+        rollbackErrorMessage: "Kafka consumer disconnect failed during initialization rollback",
       });
       await kafkaConsumerContext.consumer.subscribe({
         topic: config.KAFKA_TOPIC_RAW_EVENTS,
@@ -145,13 +150,15 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
         fromBeginning: false,
       });
 
-      const kafkaProducerContext = await this.dependencies.createKafkaProducer(
-        logger.child({ component: "kafka-producer" })
-      );
-      rollbackBuilder.register({
+      const kafkaProducerContext = await resourceBuilder.create({
         name: "kafka-producer",
-        run: async () => this.dependencies.disconnectKafkaProducer(kafkaProducerContext.producer, logger),
-        errorMessage: "Kafka producer disconnect failed during initialization rollback",
+        create: async () =>
+          this.dependencies.createKafkaProducer(
+            logger.child({ component: "kafka-producer" })
+          ),
+        rollback: async (producerContext) =>
+          this.dependencies.disconnectKafkaProducer(producerContext.producer, logger),
+        rollbackErrorMessage: "Kafka producer disconnect failed during initialization rollback",
       });
       healthContext.kafkaHealthy = true;
 
@@ -180,7 +187,7 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
         snapshotInFlight: false,
       };
     } catch (error) {
-      await rollbackBuilder.rollback(logger);
+      await resourceBuilder.rollback(logger);
       throw error;
     }
   }
@@ -189,8 +196,12 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
 export function createTrendsRuntimeFactory(
   overrides: DependencyOverrides = {}
 ): TrendsRuntimeFactory {
-  return new DefaultTrendsRuntimeFactory({
-    ...DEFAULT_DEPENDENCIES,
-    ...overrides,
+  return createFunctionDependencyFactory({
+    targetName: "Trends runtime dependency",
+    defaults: DEFAULT_DEPENDENCIES,
+    overrides,
+    create(dependencies): TrendsRuntimeFactory {
+      return new DefaultTrendsRuntimeFactory(dependencies);
+    },
   });
 }

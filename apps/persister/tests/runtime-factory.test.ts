@@ -92,6 +92,21 @@ describe("createPersisterRuntimeFactory", () => {
     vi.clearAllMocks();
   });
 
+  it("uses default dependencies when an override is explicitly undefined", async () => {
+    const config = createConfig();
+    const logger = createLogger();
+    const setup = createDependencies();
+    const factory = createPersisterRuntimeFactory({
+      ...setup.dependencies,
+      createHealthContext: undefined,
+    });
+
+    const ctx = await factory.createRuntime(config, logger);
+
+    expect(ctx.healthContext).not.toBe(setup.healthContext);
+    expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
+  });
+
   it("creates a runtime context with healthy dependencies and typed constructor wiring", async () => {
     const config = createConfig({
       POSTGRES_CIRCUIT_FAILURE_THRESHOLD: 3,
@@ -172,5 +187,13 @@ describe("createPersisterRuntimeFactory", () => {
       "postgres",
       "health-server",
     ]);
+  });
+
+  it("fails fast when a dependency override is not a function", () => {
+    expect(() =>
+      createPersisterRuntimeFactory({
+        createKafkaConsumer: 123 as unknown as PersisterRuntimeFactoryDependencies["createKafkaConsumer"],
+      })
+    ).toThrow('Persister runtime dependency override "createKafkaConsumer" must be a function');
   });
 });

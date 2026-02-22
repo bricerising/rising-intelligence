@@ -1,4 +1,4 @@
-import { BriefStatus, Prisma, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
+import { BriefStatus, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import { serializeError } from "@rising-intelligence/shared";
@@ -23,34 +23,44 @@ import {
 } from "./health.js";
 import {
   createSummaryRequestGroundingFacade,
-  EVIDENCE_EXCERPT_MAX_LENGTH,
 } from "./grounding-facade.js";
 import { executeCodexCli } from "./llm/codex-cli.js";
+import {
+  classifyRetryableFailureCode,
+  LlmGenerationError,
+  NonRetryableProcessingError,
+  toGroundingError,
+} from "./processing-errors.js";
 import {
   createBriefResultPublisher,
   type BriefResultPublisher,
 } from "./publishing-facade.js";
+import { createQueryModeRequestResolver } from "./query-mode-request-facade.js";
 import {
   buildFailureBriefResultPayload,
-  parseBriefResultPayload,
   type BriefResultPayload,
 } from "./result-payload-adapter.js";
+import {
+  createBriefResultStore,
+  type BriefResultStore,
+  type StoredBriefResult,
+} from "./result-store-facade.js";
 import type {
   LlmProvider,
   ParsedSummaryEvidence,
   ParsedSummaryRequest,
   ParsedSummaryTopic,
 } from "./types.js";
-import { compileTopicGlobMatchers } from "./topic-glob.js";
 import {
   countTopicRelevanceTermMatches,
   getTopLevelTopicGroup,
-  isEventRelevantToTopic,
-  rankTopicsFromSnapshots,
-  selectEvidence,
-  selectTopLevelTopicGroups,
-  type QueryModeRawEvent,
 } from "./query-mode-selection.js";
+import {
+  buildInternalSuggestedAction,
+  buildInternalWhyItMatters,
+  detectSignalCategories,
+  type SignalCategory,
+} from "./internal-highlight-strategy.js";
 
 interface ProcessContext {
   config: Config;
@@ -60,11 +70,6 @@ interface ProcessContext {
   redis: Redis;
   producer: Producer;
 }
-
-const TREND_WINDOW_60M_PROTO = 2;
-const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
-const DEFAULT_QUERY_MAX_TOPICS = 10;
-const NO_COVERAGE_ERROR_CODE = "no_coverage";
 
 const LlmHighlightSchema = z.object({
   topic: z.string().min(1),
@@ -96,6 +101,7 @@ const LlmResponseSchema = z.object({
 type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
 type ParsedLlmResponse = z.infer<typeof LlmResponseSchema>;
 const groundingFacade = createSummaryRequestGroundingFacade();
+const queryModeRequestResolver = createQueryModeRequestResolver();
 
 interface SuccessResult {
   payload: {
@@ -126,45 +132,6 @@ interface SuccessResult {
   };
 }
 
-class LlmGenerationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "LlmGenerationError";
-  }
-}
-
-class NonRetryableProcessingError extends Error {
-  public readonly code: string;
-
-  constructor(message: string, code = "grounding_error") {
-    super(message);
-    this.name = "NonRetryableProcessingError";
-    this.code = code;
-  }
-}
-
-function toGroundingError(message: string): NonRetryableProcessingError {
-  return new NonRetryableProcessingError(message);
-}
-
-function toNoCoverageError(message: string): NonRetryableProcessingError {
-  return new NonRetryableProcessingError(message, NO_COVERAGE_ERROR_CODE);
-}
-
-function classifyRetryableFailureCode(error: LlmGenerationError): "llm_error" | "timeout" {
-  const message = error.message.toLowerCase();
-  if (
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("etimedout") ||
-    message.includes("abort")
-  ) {
-    return "timeout";
-  }
-
-  return "llm_error";
-}
-
 function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -176,302 +143,6 @@ function estimateTokenCount(text: string): number {
 function estimateRequestCostUsd(request: ParsedSummaryRequest): number {
   const evidenceCount = request.topics.reduce((sum, topic) => sum + topic.evidence.length, 0);
   return Number((0.01 + request.topics.length * 0.002 + evidenceCount * 0.0005).toFixed(4));
-}
-
-function isQueryModeRequest(request: ParsedSummaryRequest): boolean {
-  return request.topics.length === 0;
-}
-
-function resolveLookbackDays(config: Config, request: ParsedSummaryRequest): number {
-  const lookbackDays = request.query?.lookbackDays ?? config.BRIEF_DEFAULT_LOOKBACK_DAYS;
-  if (!Number.isInteger(lookbackDays) || lookbackDays <= 0) {
-    throw new NonRetryableProcessingError(
-      `Invalid query.lookback_days: ${lookbackDays}`,
-      "invalid_request"
-    );
-  }
-  if (lookbackDays > config.BRIEF_MAX_LOOKBACK_DAYS) {
-    throw new NonRetryableProcessingError(
-      `query.lookback_days must be <= ${config.BRIEF_MAX_LOOKBACK_DAYS}`,
-      "invalid_request"
-    );
-  }
-  return lookbackDays;
-}
-
-function resolveTopicGlobs(request: ParsedSummaryRequest): string[] {
-  const topicGlobs = request.query?.topicGlobs;
-  if (!topicGlobs || topicGlobs.length === 0) {
-    return DEFAULT_QUERY_TOPIC_GLOBS;
-  }
-  return topicGlobs;
-}
-
-function resolveMaxTopics(request: ParsedSummaryRequest): number {
-  const maxTopics = request.budget?.maxTopics ?? DEFAULT_QUERY_MAX_TOPICS;
-  if (!Number.isInteger(maxTopics) || maxTopics <= 0) {
-    throw new NonRetryableProcessingError(
-      `Invalid max_topics budget value: ${maxTopics}`,
-      "invalid_request"
-    );
-  }
-  return maxTopics;
-}
-
-function resolveMaxEventsPerTopic(config: Config, request: ParsedSummaryRequest): number {
-  const budgetCap = request.budget?.maxEvidencePerTopic;
-  const requested = request.query?.maxEventsPerTopic ?? budgetCap ?? config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC;
-  if (!Number.isInteger(requested) || requested <= 0) {
-    throw new NonRetryableProcessingError(
-      `Invalid query.max_events_per_topic: ${requested}`,
-      "invalid_request"
-    );
-  }
-
-  let resolved = requested;
-  if (budgetCap && Number.isInteger(budgetCap) && budgetCap > 0) {
-    resolved = Math.min(resolved, budgetCap);
-  }
-  resolved = Math.min(resolved, config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC);
-  return Math.max(1, resolved);
-}
-
-async function buildQueryModeRequest(
-  ctx: ProcessContext,
-  request: ParsedSummaryRequest,
-  logger: pino.Logger
-): Promise<ParsedSummaryRequest> {
-  const lookbackDays = resolveLookbackDays(ctx.config, request);
-  const topicGlobs = resolveTopicGlobs(request);
-  let topicMatchers: RegExp[];
-  try {
-    topicMatchers = compileTopicGlobMatchers(topicGlobs);
-  } catch (error) {
-    throw new NonRetryableProcessingError(
-      `Invalid topic glob filter: ${error instanceof Error ? error.message : "unknown error"}`,
-      "invalid_request"
-    );
-  }
-  const maxTopics = resolveMaxTopics(request);
-  const maxEventsPerTopic = resolveMaxEventsPerTopic(ctx.config, request);
-
-  const lookbackStart = new Date(request.requestedAt.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
-
-  let snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>;
-  try {
-    snapshots = await ctx.prisma.briefTrendSnapshot.findMany({
-      where: {
-        window: TrendWindow.WINDOW_60M,
-        generatedAt: {
-          gte: lookbackStart,
-          lte: request.requestedAt,
-        },
-      },
-      orderBy: {
-        generatedAt: "desc",
-      },
-      select: {
-        generatedAt: true,
-        snapshot: true,
-      },
-    });
-    ctx.healthContext.postgresHealthy = true;
-  } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
-    throw error;
-  }
-
-  const coverageWarnings: string[] = [];
-
-  if (snapshots.length === 0) {
-    logger.warn({ lookbackDays }, "No trend snapshots found in lookback window");
-    coverageWarnings.push("No trend data available for the requested lookback period.");
-  }
-
-  const rankedTopics = rankTopicsFromSnapshots(
-    snapshots,
-    request.requestedAt,
-    topicMatchers
-  );
-  const selectedTopLevelTopicGroups = selectTopLevelTopicGroups(rankedTopics, maxTopics);
-  const selectedRankedTopics = rankedTopics.filter((rankedTopic) =>
-    selectedTopLevelTopicGroups.has(getTopLevelTopicGroup(rankedTopic.topic))
-  );
-
-  if (selectedRankedTopics.length === 0) {
-    logger.warn(
-      { topicGlobCount: topicGlobs.length, lookbackDays },
-      "No topics matched query filters"
-    );
-    throw toNoCoverageError(
-      snapshots.length === 0
-        ? "No trend snapshots were found in the requested lookback window."
-        : "No topics matched query filters in the requested lookback window."
-    );
-  }
-
-  // Fetch all evidence in a single query
-  const evidenceStrategy = request.query?.evidenceStrategy ?? "diversity";
-  const rankedTopicKeys = new Set(selectedRankedTopics.map((topic) => topic.topic));
-  let allEvents: QueryModeRawEvent[];
-
-  try {
-    const fetchedEvents = await ctx.prisma.rawEvent.findMany({
-      where: {
-        topics: {
-          hasSome: [...rankedTopicKeys],
-        },
-        publishedAt: {
-          gte: lookbackStart,
-          lte: request.requestedAt,
-        },
-        url: {
-          not: null, // Only fetch events with URLs for grounding
-        },
-      },
-      orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }],
-      select: {
-        eventId: true,
-        source: true,
-        url: true,
-        title: true,
-        publishedAt: true,
-        fetchedAt: true,
-        text: true,
-        topics: true,
-        engagementScore: true,
-      },
-    });
-    allEvents = fetchedEvents.filter((event): event is (typeof fetchedEvents)[number] & { url: string } => {
-      return event.url !== null;
-    });
-    ctx.healthContext.postgresHealthy = true;
-  } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
-    throw error;
-  }
-
-  // Partition events by topic
-  const eventsByTopic = new Map<string, typeof allEvents>();
-  const relevanceFilteredByTopic = new Map<string, number>();
-  for (const event of allEvents) {
-    for (const topicKey of event.topics) {
-      if (!rankedTopicKeys.has(topicKey)) {
-        continue;
-      }
-      if (!isEventRelevantToTopic(event, topicKey)) {
-        relevanceFilteredByTopic.set(topicKey, (relevanceFilteredByTopic.get(topicKey) ?? 0) + 1);
-        continue;
-      }
-      const existing = eventsByTopic.get(topicKey);
-      if (existing) {
-        existing.push(event);
-      } else {
-        eventsByTopic.set(topicKey, [event]);
-      }
-    }
-  }
-
-  // Apply evidence selection strategy per topic
-  const hydratedTopics: ParsedSummaryTopic[] = selectedRankedTopics.map((rankedTopic) => {
-    const topicEvents = eventsByTopic.get(rankedTopic.topic) ?? [];
-    const selectedEvents = selectEvidence(topicEvents, evidenceStrategy, maxEventsPerTopic);
-
-    return {
-      topic: rankedTopic.topic,
-      metrics: [
-        {
-          topic: rankedTopic.topic,
-          window: TREND_WINDOW_60M_PROTO,
-          score: rankedTopic.score,
-          volume: rankedTopic.volume,
-          acceleration: rankedTopic.acceleration,
-        },
-      ],
-      evidence: selectedEvents.map((event) => ({
-        eventId: event.eventId,
-        source: event.source,
-        url: event.url ?? null,
-        title: event.title ?? null,
-        publishedAt: event.publishedAt,
-        fetchedAt: event.fetchedAt,
-        textExcerpt: event.text.slice(0, EVIDENCE_EXCERPT_MAX_LENGTH),
-      })),
-    };
-  });
-
-  const topicsWithEvidence = hydratedTopics.filter((topic) => topic.evidence.length > 0);
-
-  if (topicsWithEvidence.length === 0) {
-    logger.warn(
-      { rankedTopicCount: selectedRankedTopics.length, lookbackDays },
-      "No evidence found for any ranked topics"
-    );
-    throw toNoCoverageError("No recent activity was found for matched topics in the lookback window.");
-  }
-
-  if (selectedRankedTopics.length < rankedTopics.length) {
-    const excludedByTopLevelCap = rankedTopics.length - selectedRankedTopics.length;
-    coverageWarnings.push(
-      `${excludedByTopLevelCap} subtopic(s) were excluded by top-level topic cap (${maxTopics}).`
-    );
-  }
-
-  if (topicsWithEvidence.length < hydratedTopics.length) {
-    const missingTopicCount = hydratedTopics.length - topicsWithEvidence.length;
-    coverageWarnings.push(
-      `${missingTopicCount} ranked topic(s) were excluded due to missing grounded evidence.`
-    );
-  }
-
-  const relevanceFilteredCount = [...relevanceFilteredByTopic.values()].reduce(
-    (count, filtered) => count + filtered,
-    0
-  );
-  if (relevanceFilteredCount > 0) {
-    coverageWarnings.push(
-      `${relevanceFilteredCount} candidate event(s) were excluded by topic relevance checks.`
-    );
-  }
-
-  logger.info(
-    {
-      lookbackDays,
-      topicGlobCount: topicGlobs.length,
-      candidateTopicCount: rankedTopics.length,
-      rankedTopicCount: selectedRankedTopics.length,
-      selectedTopLevelTopicCount: selectedTopLevelTopicGroups.size,
-      selectedTopicCount: topicsWithEvidence.length,
-      maxEventsPerTopic,
-      coverageWarningCount: coverageWarnings.length,
-      relevanceFilteredCount,
-    },
-    "Resolved query-mode summary request using trend snapshots and raw events"
-  );
-
-  return {
-    ...request,
-    windows: [TREND_WINDOW_60M_PROTO],
-    query: {
-      lookbackDays,
-      topicGlobs,
-      maxEventsPerTopic,
-      evidenceStrategy,
-    },
-    topics: topicsWithEvidence,
-    coverageWarnings,
-  };
-}
-
-async function resolveRequestForGeneration(
-  ctx: ProcessContext,
-  request: ParsedSummaryRequest,
-  logger: pino.Logger
-): Promise<ParsedSummaryRequest> {
-  if (!isQueryModeRequest(request)) {
-    return request;
-  }
-  return buildQueryModeRequest(ctx, request, logger);
 }
 
 function normalizeUsd(value: number): number {
@@ -493,14 +164,6 @@ function normalizeUsdDelta(value: number): number {
   const rounded = Number(value.toFixed(6));
   return rounded === 0 ? 0 : rounded;
 }
-
-type SignalCategory =
-  | "security"
-  | "reliability"
-  | "lifecycle"
-  | "governance"
-  | "cost"
-  | "feature";
 
 interface EvidenceInsight {
   summary: string;
@@ -526,19 +189,6 @@ const GENERIC_EVIDENCE_SNIPPET_PATTERNS: RegExp[] = [
   /^table of contents/i,
   /^transcript$/i,
 ];
-
-const SIGNAL_CATEGORY_PATTERNS: Record<SignalCategory, RegExp> = {
-  security:
-    /\b(cve-|vulnerability|security|privilege escalation|exploit|patch|xss|rce|authn|authz|jwt|oidc|iam)\b/i,
-  reliability:
-    /\b(outage|incident|degradation|latency|error rates?|unavailable|downtime|fail(?:ed|ure)|partition|control plane)\b/i,
-  lifecycle:
-    /\b(deprecat(?:e|ed|ion)|sunset|end of support|eol|removed support|no longer supported|upgrade required)\b/i,
-  governance:
-    /\b(policy|organization policy|compliance|governance|trust policy|permission|identity provider)\b/i,
-  cost: /\b(pricing|cost|finops|optimi[sz]e|idle|throughput|latency reduction|ttlb|storage tier|ssd)\b/i,
-  feature: /\b(generally available|ga|public preview|preview|launched|now available|release update|added support)\b/i,
-};
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -639,19 +289,6 @@ function extractFirstMeaningfulSentence(value: string, maxChars: number): string
   return truncateText(candidates[0], maxChars);
 }
 
-function detectSignalCategories(value: string): Set<SignalCategory> {
-  const categories = new Set<SignalCategory>();
-  const normalized = normalizeWhitespace(value);
-  for (const [category, pattern] of Object.entries(SIGNAL_CATEGORY_PATTERNS) as Array<
-    [SignalCategory, RegExp]
-  >) {
-    if (pattern.test(normalized)) {
-      categories.add(category);
-    }
-  }
-  return categories;
-}
-
 function countTopicEvidenceTermMatches(topic: string, value: string): number {
   return countTopicRelevanceTermMatches(topic, value, 1);
 }
@@ -737,60 +374,6 @@ function collectTopEvidenceInsights(topic: ParsedSummaryTopic, limit: number): E
     });
 
   return insights.slice(0, limit);
-}
-
-function buildInternalWhyItMatters(topic: string, categories: Set<SignalCategory>): string {
-  const parts: string[] = [];
-  if (categories.has("security")) {
-    parts.push("Security-related changes may require immediate remediation to reduce exposure.");
-  }
-  if (categories.has("reliability")) {
-    parts.push("Reliability and incident signals can impact SLOs if dependency failure paths are untested.");
-  }
-  if (categories.has("lifecycle")) {
-    parts.push("Lifecycle/deprecation updates can break runtimes and automation if upgrades are delayed.");
-  }
-  if (categories.has("governance")) {
-    parts.push("Identity and policy shifts can block deploys unless controls and trust policies are updated.");
-  }
-  if (categories.has("cost")) {
-    parts.push("Cost and performance changes can materially alter spend and latency assumptions.");
-  }
-  if (categories.has("feature")) {
-    parts.push("New GA/preview capabilities may reduce custom platform work once validated.");
-  }
-
-  if (parts.length === 0) {
-    return `Recent ${topic} updates include concrete platform changes that may affect near-term delivery plans.`;
-  }
-  return parts.slice(0, 2).join(" ");
-}
-
-function buildInternalSuggestedAction(categories: Set<SignalCategory>): string {
-  const actions: string[] = [];
-  if (categories.has("security")) {
-    actions.push("Prioritize patch validation and configuration audits for affected services.");
-  }
-  if (categories.has("reliability")) {
-    actions.push("Run failover and alert drills for impacted dependency paths.");
-  }
-  if (categories.has("lifecycle")) {
-    actions.push("Inventory impacted runtimes/services and stage upgrades before enforcement dates.");
-  }
-  if (categories.has("governance")) {
-    actions.push("Review IAM/trust policy baselines and update policy-as-code checks.");
-  }
-  if (categories.has("cost")) {
-    actions.push("Benchmark cost/latency impact in non-production before broad rollout.");
-  }
-  if (categories.has("feature")) {
-    actions.push("Pilot new capabilities in non-production with clear rollback criteria.");
-  }
-
-  if (actions.length === 0) {
-    return "Review cited changes, assign owners, and schedule validation work this week.";
-  }
-  return actions.slice(0, 2).join(" ");
 }
 
 function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
@@ -1565,58 +1148,12 @@ async function buildSuccessResult(
   });
 }
 
-function isDuplicateKeyError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-}
-
-async function persistResult(
-  prisma: PrismaClient,
-  payload: BriefResultPayload,
-  status: BriefStatus
-): Promise<"created" | "duplicate"> {
-  try {
-    await prisma.briefResult.create({
-      data: {
-        requestId: payload.request_id,
-        producedAt: new Date(payload.produced_at),
-        status,
-        result: payload as Prisma.InputJsonValue,
-      },
-    });
-    return "created";
-  } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      return "duplicate";
-    }
-    throw error;
-  }
-}
-
-async function loadPersistedResult(
-  prisma: PrismaClient,
-  requestId: string
-): Promise<{ status: BriefStatus; payload: BriefResultPayload } | null> {
-  const existing = await prisma.briefResult.findUnique({
-    where: { requestId },
-    select: { status: true, result: true },
-  });
-  if (!existing) {
-    return null;
-  }
-
-  return {
-    status: existing.status,
-    payload: parseBriefResultPayload(existing.result),
-  };
-}
-
 async function republishPersistedResult(
-  ctx: ProcessContext,
+  resultStore: BriefResultStore,
   requestId: string,
   publisher: BriefResultPublisher<BriefResultPayload>
 ): Promise<BriefStatus | null> {
-  const existing = await loadPersistedResult(ctx.prisma, requestId);
-  ctx.healthContext.postgresHealthy = true;
+  const existing = await resultStore.load(requestId);
   if (!existing) {
     return null;
   }
@@ -1644,6 +1181,7 @@ async function rollbackBudgetReservation(
 
 async function emitFailureResult(
   ctx: ProcessContext,
+  resultStore: BriefResultStore,
   publisher: BriefResultPublisher<BriefResultPayload>,
   requestId: string,
   producedAt: Date,
@@ -1658,11 +1196,14 @@ async function emitFailureResult(
     message,
     retryable
   );
-  const persisted = await persistResult(ctx.prisma, failureResult, BriefStatus.failure);
-  ctx.healthContext.postgresHealthy = true;
+  const persisted = await resultStore.persist(failureResult, BriefStatus.failure);
   if (persisted === "duplicate") {
     incrementDuplicatesSkipped(ctx.healthContext);
-    const republishedStatus = await republishPersistedResult(ctx, requestId, publisher);
+    const republishedStatus = await republishPersistedResult(
+      resultStore,
+      requestId,
+      publisher
+    );
     if (!republishedStatus) {
       throw new Error(`Unable to republish existing failure result for request ${requestId}`);
     }
@@ -1670,6 +1211,52 @@ async function emitFailureResult(
   }
 
   await publisher.publishResult(requestId, failureResult);
+}
+
+function mapNonRetryableFailureMetric(
+  error: NonRetryableProcessingError
+): "grounding_error" | "generation_error" {
+  return error.code === "grounding_error" ? "grounding_error" : "generation_error";
+}
+
+interface HandleNonRetryableFailureInput {
+  ctx: ProcessContext;
+  resultStore: BriefResultStore;
+  publisher: BriefResultPublisher<BriefResultPayload>;
+  requestId: string;
+  producedAt: Date;
+  error: NonRetryableProcessingError;
+  logger: pino.Logger;
+  logMessage: string;
+}
+
+async function handleNonRetryableFailure(
+  input: HandleNonRetryableFailureInput
+): Promise<void> {
+  const {
+    ctx,
+    resultStore,
+    publisher,
+    requestId,
+    producedAt,
+    error,
+    logger,
+    logMessage,
+  } = input;
+
+  incrementError(ctx.healthContext, mapNonRetryableFailureMetric(error));
+  incrementGeneration(ctx.healthContext, "failure");
+  logger.warn({ error: serializeError(error) }, logMessage);
+  await emitFailureResult(
+    ctx,
+    resultStore,
+    publisher,
+    requestId,
+    producedAt,
+    error.code,
+    error.message,
+    false
+  );
 }
 
 export async function processSummaryRequest(
@@ -1687,14 +1274,13 @@ export async function processSummaryRequest(
     logger,
     topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
   });
+  const resultStore = createBriefResultStore(ctx.prisma, ctx.healthContext);
   const producedAt = new Date();
-  let existingResult: { status: BriefStatus; payload: BriefResultPayload } | null = null;
+  let existingResult: StoredBriefResult | null = null;
 
   try {
-    existingResult = await loadPersistedResult(ctx.prisma, request.requestId);
-    ctx.healthContext.postgresHealthy = true;
+    existingResult = await resultStore.load(request.requestId);
   } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
     incrementError(ctx.healthContext, "idempotency_error");
     logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
     throw error;
@@ -1719,24 +1305,19 @@ export async function processSummaryRequest(
 
   let requestForGeneration: ParsedSummaryRequest;
   try {
-    requestForGeneration = await resolveRequestForGeneration(ctx, request, logger);
+    requestForGeneration = await queryModeRequestResolver.resolve(ctx, request, logger);
   } catch (error) {
     if (error instanceof NonRetryableProcessingError) {
-      incrementError(
-        ctx.healthContext,
-        error.code === "grounding_error" ? "grounding_error" : "generation_error"
-      );
-      incrementGeneration(ctx.healthContext, "failure");
-      logger.warn({ error: serializeError(error) }, "Summary request failed non-retryable pre-processing");
-      await emitFailureResult(
+      await handleNonRetryableFailure({
         ctx,
+        resultStore,
         publisher,
-        request.requestId,
+        requestId: request.requestId,
         producedAt,
-        error.code,
-        error.message,
-        false
-      );
+        error,
+        logger,
+        logMessage: "Summary request failed non-retryable pre-processing",
+      });
       return;
     }
 
@@ -1775,6 +1356,7 @@ export async function processSummaryRequest(
     incrementGeneration(ctx.healthContext, "skipped");
     await emitFailureResult(
       ctx,
+      resultStore,
       publisher,
       request.requestId,
       producedAt,
@@ -1801,8 +1383,7 @@ export async function processSummaryRequest(
       producedAt,
       estimatedCostUsd
     );
-    const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
-    ctx.healthContext.postgresHealthy = true;
+    const persisted = await resultStore.persist(successResult.payload, BriefStatus.success);
     if (persisted === "duplicate") {
       await rollbackBudgetReservation(
         ctx,
@@ -1815,7 +1396,11 @@ export async function processSummaryRequest(
       budgetReserved = false;
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
-      const republishedStatus = await republishPersistedResult(ctx, request.requestId, publisher);
+      const republishedStatus = await republishPersistedResult(
+        resultStore,
+        request.requestId,
+        publisher
+      );
       if (!republishedStatus) {
         throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
       }
@@ -1888,21 +1473,16 @@ export async function processSummaryRequest(
     }
 
     if (error instanceof NonRetryableProcessingError) {
-      incrementError(
-        ctx.healthContext,
-        error.code === "grounding_error" ? "grounding_error" : "generation_error"
-      );
-      incrementGeneration(ctx.healthContext, "failure");
-      logger.warn({ error: serializeError(error) }, "Brief request failed non-retryable validation");
-      await emitFailureResult(
+      await handleNonRetryableFailure({
         ctx,
+        resultStore,
         publisher,
-        request.requestId,
+        requestId: request.requestId,
         producedAt,
-        error.code,
-        error.message,
-        false
-      );
+        error,
+        logger,
+        logMessage: "Brief request failed non-retryable validation",
+      });
       return;
     }
 
@@ -1925,6 +1505,7 @@ export async function processSummaryRequest(
       );
       await emitFailureResult(
         ctx,
+        resultStore,
         publisher,
         request.requestId,
         producedAt,

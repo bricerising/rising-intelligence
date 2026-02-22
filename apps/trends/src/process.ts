@@ -2,12 +2,8 @@ import type { EachBatchPayload } from "kafkajs";
 import type { Redis } from "ioredis";
 import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
 import {
-  createKafkaBatchLifecycle,
-  processKafkaBatchMessages,
-  runAsyncChain,
+  runKafkaMessageBatch,
   serializeError,
-  type AsyncChainStep,
-  type KafkaBatchLifecycle,
   type KafkaBatchMessageContext,
   type KafkaBatchMessageStrategy,
 } from "@rising-intelligence/shared";
@@ -54,126 +50,22 @@ export interface TrendsContext {
 }
 
 interface BatchProcessingMode<TMessage> {
-  name: string;
-  messageStrategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>;
+  strategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>;
   onCompletedBatch?(ctx: TrendsContext, payload: EachBatchPayload): Promise<void>;
 }
 
-interface BatchProcessingState {
-  batchLifecycle: KafkaBatchLifecycle;
-  completed: boolean;
-}
-
-interface BatchProcessingExecutionContext<TMessage> {
-  ctx: TrendsContext;
-  payload: EachBatchPayload;
-  mode: BatchProcessingMode<TMessage>;
-  state: BatchProcessingState;
-}
-
-type BatchProcessingStep<TMessage> = AsyncChainStep<
-  BatchProcessingExecutionContext<TMessage>,
-  void
->;
-
-function createBatchProcessingState(payload: EachBatchPayload): BatchProcessingState {
-  return {
-    batchLifecycle: createKafkaBatchLifecycle(
-      {
-        isRunning: payload.isRunning,
-        isStale: payload.isStale,
-        heartbeat: payload.heartbeat,
-      },
-      LOOP_HEARTBEAT_INTERVAL_MESSAGES
-    ),
-    completed: false,
-  };
-}
-
-function createBatchLifecycleGateStep<TMessage>(): BatchProcessingStep<TMessage> {
-  return {
-    name: "batch-lifecycle-gate",
-    async execute({ state }, next): Promise<void> {
-      if (!state.batchLifecycle.shouldContinue()) {
-        return;
-      }
-
-      await next();
-    },
-  };
-}
-
-function createProcessMessagesStep<TMessage>(): BatchProcessingStep<TMessage> {
-  return {
-    name: "process-messages",
-    async execute({ ctx, payload, mode, state }, next): Promise<void> {
-      const result = await processKafkaBatchMessages(
-        ctx,
-        payload,
-        state.batchLifecycle,
-        mode.messageStrategy,
-        { resolveOffsets: true }
-      );
-      state.completed = result.completed;
-      await next();
-    },
-  };
-}
-
-function createCommitAndHeartbeatStep<TMessage>(): BatchProcessingStep<TMessage> {
-  return {
-    name: "commit-and-heartbeat",
-    async execute({ payload, state }, next): Promise<void> {
-      await payload.commitOffsetsIfNecessary();
-      if (!state.completed) {
-        return;
-      }
-
-      await state.batchLifecycle.flushHeartbeat();
-      await next();
-    },
-  };
-}
-
-function createCompletedBatchHookStep<TMessage>(): BatchProcessingStep<TMessage> {
-  return {
-    name: "completed-batch-hook",
-    async execute({ ctx, payload, mode, state }, next): Promise<void> {
-      if (!state.completed) {
-        return;
-      }
-      if (!mode.onCompletedBatch) {
-        await next();
-        return;
-      }
-
-      await mode.onCompletedBatch(ctx, payload);
-      await next();
-    },
-  };
-}
-
-function createBatchProcessingSteps<TMessage>(): ReadonlyArray<BatchProcessingStep<TMessage>> {
-  return [
-    createBatchLifecycleGateStep(),
-    createProcessMessagesStep(),
-    createCommitAndHeartbeatStep(),
-    createCompletedBatchHookStep(),
-  ];
-}
-
-async function runBatchProcessingPipeline<TMessage>(
-  executionContext: BatchProcessingExecutionContext<TMessage>
+async function runBatchProcessingMode<TMessage>(
+  ctx: TrendsContext,
+  payload: EachBatchPayload,
+  mode: BatchProcessingMode<TMessage>
 ): Promise<void> {
-  await runAsyncChain(createBatchProcessingSteps<TMessage>(), executionContext, {
-    onEnd() {
-      return;
-    },
-    duplicateNextError(stepName) {
-      return new Error(
-        `Trends batch pipeline step "${stepName}" called next() multiple times`
-      );
-    },
+  await runKafkaMessageBatch({
+    ctx,
+    payload,
+    heartbeatIntervalMessages: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
+    strategy: mode.strategy,
+    resolveOffsets: true,
+    onCompletedBatch: mode.onCompletedBatch,
   });
 }
 
@@ -348,40 +240,24 @@ async function updateConsumerLag(
 }
 
 const RAW_EVENT_BATCH_MODE: BatchProcessingMode<ParsedRawEvent> = {
-  name: "raw-events",
-  messageStrategy: RAW_EVENT_BATCH_STRATEGY,
+  strategy: RAW_EVENT_BATCH_STRATEGY,
   onCompletedBatch: updateConsumerLag,
 };
 
 const COLLECTOR_HEARTBEAT_BATCH_MODE: BatchProcessingMode<CollectorHeartbeatState> = {
-  name: "collector-heartbeat",
-  messageStrategy: COLLECTOR_HEARTBEAT_BATCH_STRATEGY,
+  strategy: COLLECTOR_HEARTBEAT_BATCH_STRATEGY,
 };
 
 export async function processBatch(
   ctx: TrendsContext,
   payload: EachBatchPayload
 ): Promise<void> {
-  await runBatchProcessingPipeline(
-    {
-      ctx,
-      payload,
-      mode: RAW_EVENT_BATCH_MODE,
-      state: createBatchProcessingState(payload),
-    }
-  );
+  await runBatchProcessingMode(ctx, payload, RAW_EVENT_BATCH_MODE);
 }
 
 export async function processCollectorHeartbeatBatch(
   ctx: TrendsContext,
   payload: EachBatchPayload
 ): Promise<void> {
-  await runBatchProcessingPipeline(
-    {
-      ctx,
-      payload,
-      mode: COLLECTOR_HEARTBEAT_BATCH_MODE,
-      state: createBatchProcessingState(payload),
-    }
-  );
+  await runBatchProcessingMode(ctx, payload, COLLECTOR_HEARTBEAT_BATCH_MODE);
 }

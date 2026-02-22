@@ -1,9 +1,8 @@
 import type { EachBatchPayload } from "kafkajs";
-import { Prisma, TrendWindow } from "@rising-intelligence/db";
+import { Prisma } from "@rising-intelligence/db";
 import {
   createTopicBatchRouter,
-  processKafkaBatchMessages,
-  createKafkaBatchLifecycle,
+  runKafkaMessageBatch,
   type BatchTopicHandler,
   closeServer,
   serializeError,
@@ -11,7 +10,6 @@ import {
   runShutdownSteps,
   createServiceBootstrap,
 } from "@rising-intelligence/shared";
-import type pino from "pino";
 import { getConfig } from "./config.js";
 import {
   incrementGeneration,
@@ -28,33 +26,19 @@ import {
   type BriefRuntimeContext as RuntimeContext,
 } from "./runtime-factory.js";
 import type { ParsedTrendSnapshot } from "./types.js";
+import {
+  createTopicMessageHandlerMap,
+  mapTrendWindowToEnum,
+  runWithInFlightHeartbeats,
+  type TopicMessageCommand,
+  type TopicMessageHandler,
+} from "./topic-message-handlers.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createBriefRuntimeFactory();
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
-
-interface TopicMessageHandlerInput {
-  messageValue: Buffer;
-  messageLogger: pino.Logger;
-  heartbeat: () => Promise<void>;
-}
-
-type TopicMessageHandler = (input: TopicMessageHandlerInput) => Promise<void>;
-
-function mapTrendWindowToEnum(window: number): TrendWindow {
-  switch (window) {
-    case 1:
-      return TrendWindow.WINDOW_15M;
-    case 2:
-      return TrendWindow.WINDOW_60M;
-    case 3:
-      return TrendWindow.WINDOW_24H;
-    default:
-      throw new Error(`Unsupported trend window: ${window}`);
-  }
-}
 
 async function persistTrendSnapshot(
   ctx: RuntimeContext,
@@ -75,95 +59,80 @@ async function persistTrendSnapshot(
   }
 }
 
-async function runWithInFlightHeartbeats(
-  heartbeat: () => Promise<void>,
-  logger: pino.Logger,
-  work: () => Promise<void>
-): Promise<void> {
-  const interval = setInterval(() => {
-    void heartbeat().catch((error) => {
-      logger.warn(
-        { error: serializeError(error) },
-        "Background Kafka heartbeat failed while processing summary request"
-      );
-    });
-  }, IN_FLIGHT_HEARTBEAT_INTERVAL_MS);
-  interval.unref();
-
-  try {
-    await work();
-  } finally {
-    clearInterval(interval);
-  }
-}
-
 function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessageHandler> {
-  const trendSnapshotHandler: TopicMessageHandler = async ({ messageValue, messageLogger }) => {
-    try {
-      const snapshot = deserializeTrendSnapshot(messageValue);
-      await persistTrendSnapshot(ctx, snapshot);
-    } catch (error) {
-      messageLogger.warn(
-        {
-          error: serializeError(error),
-        },
-        "Failed to process trend snapshot"
-      );
-    }
-  };
+  const commands: readonly TopicMessageCommand[] = [
+    {
+      name: "trend-snapshot",
+      topic: ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS,
+      async execute({ messageValue, messageLogger }): Promise<void> {
+        try {
+          const snapshot = deserializeTrendSnapshot(messageValue);
+          await persistTrendSnapshot(ctx, snapshot);
+        } catch (error) {
+          messageLogger.warn(
+            {
+              error: serializeError(error),
+            },
+            "Failed to process trend snapshot"
+          );
+        }
+      },
+    },
+    {
+      name: "summary-request",
+      topic: ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS,
+      async execute({ messageValue, messageLogger, heartbeat }): Promise<void> {
+        let request: ReturnType<typeof deserializeSummaryRequest>;
+        try {
+          request = deserializeSummaryRequest(messageValue);
+        } catch (error) {
+          incrementError(ctx.healthContext, "parse_error");
+          incrementGeneration(ctx.healthContext, "failure");
+          messageLogger.warn(
+            {
+              error: serializeError(error),
+            },
+            "Failed to deserialize summary request"
+          );
+          return;
+        }
 
-  const summaryRequestHandler: TopicMessageHandler = async ({
-    messageValue,
-    messageLogger,
-    heartbeat,
-  }) => {
-    let request: ReturnType<typeof deserializeSummaryRequest>;
-    try {
-      request = deserializeSummaryRequest(messageValue);
-    } catch (error) {
-      incrementError(ctx.healthContext, "parse_error");
-      incrementGeneration(ctx.healthContext, "failure");
-      messageLogger.warn(
-        {
-          error: serializeError(error),
-        },
-        "Failed to deserialize summary request"
-      );
-      return;
-    }
+        const startTime = Date.now();
+        try {
+          await runWithInFlightHeartbeats(
+            heartbeat,
+            messageLogger,
+            async () => {
+              await processSummaryRequest(
+                {
+                  config: ctx.config,
+                  logger: messageLogger,
+                  healthContext: ctx.healthContext,
+                  prisma: ctx.prisma,
+                  redis: ctx.redis,
+                  producer: ctx.kafkaProducerContext.producer,
+                },
+                request
+              );
+            },
+            IN_FLIGHT_HEARTBEAT_INTERVAL_MS
+          );
+        } catch (error) {
+          messageLogger.warn(
+            {
+              error: serializeError(error),
+            },
+            "Failed to process summary request"
+          );
+          throw error;
+        } finally {
+          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
+        }
+      },
+    },
+  ];
 
-    const startTime = Date.now();
-    try {
-      await runWithInFlightHeartbeats(heartbeat, messageLogger, async () => {
-        await processSummaryRequest(
-          {
-            config: ctx.config,
-            logger: messageLogger,
-            healthContext: ctx.healthContext,
-            prisma: ctx.prisma,
-            redis: ctx.redis,
-            producer: ctx.kafkaProducerContext.producer,
-          },
-          request
-        );
-      });
-    } catch (error) {
-      messageLogger.warn(
-        {
-          error: serializeError(error),
-        },
-        "Failed to process summary request"
-      );
-      throw error;
-    } finally {
-      observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
-    }
-  };
-
-  return new Map<string, TopicMessageHandler>([
-    [ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS, trendSnapshotHandler],
-    [ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS, summaryRequestHandler],
-  ]);
+  return createTopicMessageHandlerMap(commands);
 }
 
 function createTopicBatchHandler(
@@ -171,20 +140,13 @@ function createTopicBatchHandler(
   topicHandler: TopicMessageHandler
 ): BatchTopicHandler {
   return async (payload: EachBatchPayload): Promise<void> => {
-    const { isRunning, isStale, heartbeat, commitOffsetsIfNecessary } = payload;
-    const batchLifecycle = createKafkaBatchLifecycle(
-      { isRunning, isStale, heartbeat },
-      LOOP_HEARTBEAT_INTERVAL_MESSAGES
-    );
-    if (!batchLifecycle.shouldContinue()) {
-      return;
-    }
+    const { heartbeat } = payload;
 
-    const { completed } = await processKafkaBatchMessages(
+    await runKafkaMessageBatch({
       ctx,
       payload,
-      batchLifecycle,
-      {
+      heartbeatIntervalMessages: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
+      strategy: {
         deserialize: (value) => value,
         onEmptyValue(_ctx, messageContext): void {
           ctx.logger.warn(messageContext, "Skipping message with empty value");
@@ -197,15 +159,8 @@ function createTopicBatchHandler(
           });
         },
       },
-      { resolveOffsets: true }
-    );
-
-    await commitOffsetsIfNecessary();
-    if (!completed) {
-      return;
-    }
-
-    await batchLifecycle.flushHeartbeat();
+      resolveOffsets: true,
+    });
   };
 }
 

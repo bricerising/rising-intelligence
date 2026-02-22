@@ -23,6 +23,7 @@ export * from "./runtime/circuit-breaker.js";
 export * from "./runtime/config.js";
 export * from "./runtime/env.js";
 export * from "./runtime/errors.js";
+export * from "./runtime/function-dependency-builder.js";
 export * from "./runtime/health.js";
 export * from "./runtime/http.js";
 export * from "./runtime/initialization-rollback.js";

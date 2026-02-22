@@ -11,16 +11,10 @@ import type { Source } from "./types.js";
  * - Seen cache: event IDs to prevent duplicate processing
  */
 export class CheckpointStore {
-  private db: Database.Database | null = null;
   private readonly path: string;
   private readonly logger: Logger;
 
-  // Prepared statements (cached for performance)
-  private stmtGetCheckpoint: Database.Statement | null = null;
-  private stmtSetCheckpoint: Database.Statement | null = null;
-  private stmtHasSeen: Database.Statement | null = null;
-  private stmtMarkSeen: Database.Statement | null = null;
-  private stmtCleanupSeen: Database.Statement | null = null;
+  private connection: CheckpointStoreConnection | null = null;
 
   constructor(path: string, logger: Logger) {
     this.path = path;
@@ -28,6 +22,10 @@ export class CheckpointStore {
   }
 
   async initialize(): Promise<void> {
+    if (this.connection) {
+      throw new Error("Checkpoint store already initialized");
+    }
+
     // Ensure directory exists
     const dir = dirname(this.path);
     if (!existsSync(dir)) {
@@ -36,12 +34,12 @@ export class CheckpointStore {
     }
 
     // Open database
-    this.db = new Database(this.path);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
+    const db = new Database(this.path);
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
 
     // Create tables
-    this.db.exec(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS checkpoints (
         source TEXT NOT NULL,
         checkpoint_key TEXT NOT NULL,
@@ -51,7 +49,7 @@ export class CheckpointStore {
       )
     `);
 
-    this.db.exec(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS seen_events (
         source TEXT NOT NULL,
         event_id TEXT NOT NULL,
@@ -60,51 +58,56 @@ export class CheckpointStore {
       )
     `);
 
-    this.db.exec(`
+    db.exec(`
       CREATE INDEX IF NOT EXISTS idx_seen_events_seen_at
       ON seen_events(seen_at)
     `);
 
-    // Prepare statements
-    this.stmtGetCheckpoint = this.db.prepare(`
-      SELECT checkpoint_value
-      FROM checkpoints
-      WHERE source = ? AND checkpoint_key = ?
-    `);
+    const statements: CheckpointStoreStatements = {
+      getCheckpoint: db.prepare(`
+        SELECT checkpoint_value
+        FROM checkpoints
+        WHERE source = ? AND checkpoint_key = ?
+      `),
+      setCheckpoint: db.prepare(`
+        INSERT OR REPLACE INTO checkpoints (source, checkpoint_key, checkpoint_value, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+      `),
+      hasSeen: db.prepare(`
+        SELECT 1 as present
+        FROM seen_events
+        WHERE source = ? AND event_id = ?
+      `),
+      markSeen: db.prepare(`
+        INSERT OR IGNORE INTO seen_events (source, event_id, seen_at)
+        VALUES (?, ?, datetime('now'))
+      `),
+      cleanupSeen: db.prepare(`
+        DELETE FROM seen_events
+        WHERE seen_at < datetime('now', ?)
+      `),
+    };
 
-    this.stmtSetCheckpoint = this.db.prepare(`
-      INSERT OR REPLACE INTO checkpoints (source, checkpoint_key, checkpoint_value, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
-    `);
-
-    this.stmtHasSeen = this.db.prepare(`
-      SELECT 1 as present
-      FROM seen_events
-      WHERE source = ? AND event_id = ?
-    `);
-
-    this.stmtMarkSeen = this.db.prepare(`
-      INSERT OR IGNORE INTO seen_events (source, event_id, seen_at)
-      VALUES (?, ?, datetime('now'))
-    `);
-
-    this.stmtCleanupSeen = this.db.prepare(`
-      DELETE FROM seen_events
-      WHERE seen_at < datetime('now', ?)
-    `);
+    this.connection = {
+      db,
+      statements,
+    };
 
     this.logger.info({ path: this.path }, "Checkpoint store initialized");
+  }
+
+  private getConnection(): CheckpointStoreConnection {
+    if (!this.connection) {
+      throw new Error("Checkpoint store not initialized");
+    }
+    return this.connection;
   }
 
   /**
    * Get a checkpoint value for a source/key.
    */
   getCheckpoint(source: string, checkpointKey: string): string | undefined {
-    if (!this.stmtGetCheckpoint) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    const row = this.stmtGetCheckpoint.get(source, checkpointKey) as
+    const row = this.getConnection().statements.getCheckpoint.get(source, checkpointKey) as
       | { checkpoint_value: string }
       | undefined;
     return row?.checkpoint_value;
@@ -118,11 +121,11 @@ export class CheckpointStore {
     checkpointKey: string,
     checkpointValue: string
   ): void {
-    if (!this.stmtSetCheckpoint) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    this.stmtSetCheckpoint.run(source, checkpointKey, checkpointValue);
+    this.getConnection().statements.setCheckpoint.run(
+      source,
+      checkpointKey,
+      checkpointValue
+    );
     this.logger.debug(
       { source, checkpointKey, checkpointValue },
       "Checkpoint updated"
@@ -135,11 +138,7 @@ export class CheckpointStore {
   listCheckpoints(
     sourcePrefix: string
   ): Record<string, Record<string, string>> {
-    if (!this.db) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    const rows = this.db
+    const rows = this.getConnection().db
       .prepare(
         `
         SELECT source, checkpoint_key, checkpoint_value
@@ -165,11 +164,7 @@ export class CheckpointStore {
    * Check if an event has been seen (dedup check).
    */
   hasSeen(source: Source, eventId: string): boolean {
-    if (!this.stmtHasSeen) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    const row = this.stmtHasSeen.get(source, eventId) as
+    const row = this.getConnection().statements.hasSeen.get(source, eventId) as
       | { present: number }
       | undefined;
     return row?.present === 1;
@@ -179,11 +174,7 @@ export class CheckpointStore {
    * Mark an event as seen (for dedup).
    */
   markSeen(source: Source, eventId: string): void {
-    if (!this.stmtMarkSeen) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    this.stmtMarkSeen.run(source, eventId);
+    this.getConnection().statements.markSeen.run(source, eventId);
   }
 
   /**
@@ -191,11 +182,7 @@ export class CheckpointStore {
    * @param olderThan SQLite interval string, e.g., "-7 days"
    */
   cleanupSeen(olderThan: string = "-7 days"): number {
-    if (!this.stmtCleanupSeen) {
-      throw new Error("Checkpoint store not initialized");
-    }
-
-    const result = this.stmtCleanupSeen.run(olderThan);
+    const result = this.getConnection().statements.cleanupSeen.run(olderThan);
     this.logger.info(
       { deleted: result.changes, olderThan },
       "Cleaned up old seen events"
@@ -207,10 +194,25 @@ export class CheckpointStore {
    * Close the database connection.
    */
   close(): void {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-      this.logger.info("Checkpoint store closed");
+    if (!this.connection) {
+      return;
     }
+
+    this.connection.db.close();
+    this.connection = null;
+    this.logger.info("Checkpoint store closed");
   }
+}
+
+interface CheckpointStoreStatements {
+  getCheckpoint: Database.Statement;
+  setCheckpoint: Database.Statement;
+  hasSeen: Database.Statement;
+  markSeen: Database.Statement;
+  cleanupSeen: Database.Statement;
+}
+
+interface CheckpointStoreConnection {
+  db: Database.Database;
+  statements: CheckpointStoreStatements;
 }

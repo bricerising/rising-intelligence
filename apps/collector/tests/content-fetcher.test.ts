@@ -90,6 +90,27 @@ describe("content fetcher URL safety", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("skips blocked parent domains", async () => {
+    const logger = createTestLogger();
+    const fetcher = createArticleContentFetcher(
+      {
+        ...contentFetcherConfig,
+        blockedDomains: new Set(["example.com"]),
+      },
+      logger
+    );
+
+    await expect(
+      fetcher.fetch("https://sub.example.com/article")
+    ).resolves.toBeNull();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      { url: "https://sub.example.com/article" },
+      "Skipping blocked domain"
+    );
+  });
+
   it("allows public https URLs and attempts fetch", async () => {
     const logger = createTestLogger();
     mockFetch.mockResolvedValue({
@@ -107,6 +128,112 @@ describe("content fetcher URL safety", () => {
     ).resolves.toBeNull();
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports dependency injection seams for safety, throttling, and transport", async () => {
+    const logger = createTestLogger();
+    const wait = vi.fn(async (_url: string) => undefined);
+    const createDomainRequestLimiter = vi.fn(() => ({ wait }));
+    const fetchHtml = vi.fn(async () => "<html />");
+    const extractContent = vi.fn(() => ({
+      success: true,
+      text: "x".repeat(250),
+      title: "t",
+      htmlLength: 7,
+    }));
+    const safetyFacade = {
+      isAllowedFetchUrl: vi.fn(() => true),
+    };
+    const fetcher = createArticleContentFetcher(contentFetcherConfig, logger, {
+      safetyFacade,
+      createDomainRequestLimiter,
+      fetchHtml,
+      extractContent,
+    });
+
+    const result = await fetcher.fetch("https://example.com/article");
+
+    expect(result).toEqual({
+      success: true,
+      text: "x".repeat(250),
+      title: "t",
+      htmlLength: 7,
+    });
+    expect(createDomainRequestLimiter).toHaveBeenCalledWith(0);
+    expect(wait).toHaveBeenCalledWith("https://example.com/article");
+    expect(safetyFacade.isAllowedFetchUrl).toHaveBeenCalledWith(
+      "https://example.com/article"
+    );
+    expect(fetchHtml).toHaveBeenCalledWith(
+      "https://example.com/article",
+      1_000,
+      "test-agent"
+    );
+    expect(extractContent).toHaveBeenCalledWith("<html />", "https://example.com/article");
+  });
+
+  it("serializes concurrent fetches for the same domain", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-11T00:00:00.000Z"));
+
+    try {
+      const logger = createTestLogger();
+      const callTimes: number[] = [];
+      const fetchHtml = vi.fn(async () => {
+        callTimes.push(Date.now());
+        return "<html />";
+      });
+      const extractContent = vi.fn(() => ({
+        success: true,
+        text: "x".repeat(250),
+        title: "t",
+        htmlLength: 7,
+      }));
+      const fetcher = createArticleContentFetcher(
+        {
+          ...contentFetcherConfig,
+          domainDelayMs: 100,
+        },
+        logger,
+        {
+          safetyFacade: {
+            isAllowedFetchUrl: () => true,
+          },
+          fetchHtml,
+          extractContent,
+        }
+      );
+
+      const firstFetch = fetcher.fetch("https://example.com/first");
+      const secondFetch = fetcher.fetch("https://example.com/second");
+
+      await Promise.resolve();
+      expect(fetchHtml).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(fetchHtml).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchHtml).toHaveBeenCalledTimes(2);
+
+      const [firstResult, secondResult] = await Promise.all([firstFetch, secondFetch]);
+      expect(firstResult).toEqual({
+        success: true,
+        text: "x".repeat(250),
+        title: "t",
+        htmlLength: 7,
+      });
+      expect(secondResult).toEqual({
+        success: true,
+        text: "x".repeat(250),
+        title: "t",
+        htmlLength: 7,
+      });
+      expect(callTimes).toHaveLength(2);
+      expect(callTimes[1] - callTimes[0]).toBeGreaterThanOrEqual(100);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a disabled fetcher when content fetching is off", async () => {

@@ -38,6 +38,28 @@ export interface ProcessKafkaBatchMessagesResult {
   completed: boolean;
 }
 
+export type KafkaMessageBatchPayload = Pick<
+  EachBatchPayload,
+  | "batch"
+  | "resolveOffset"
+  | "isRunning"
+  | "isStale"
+  | "heartbeat"
+  | "commitOffsetsIfNecessary"
+>;
+
+export interface RunKafkaMessageBatchInput<TContext, TMessage> {
+  ctx: TContext;
+  payload: KafkaMessageBatchPayload;
+  heartbeatIntervalMessages: number;
+  strategy: KafkaBatchMessageStrategy<TContext, TMessage>;
+  resolveOffsets?: boolean;
+  onCompletedBatch?(
+    ctx: TContext,
+    payload: KafkaMessageBatchPayload
+  ): Promise<void> | void;
+}
+
 /**
  * Proxy around KafkaJS batch lifecycle signals so consumers share consistent
  * heartbeat cadence and stale/running checks.
@@ -129,4 +151,47 @@ export async function processKafkaBatchMessages<TContext, TMessage>(
   }
 
   return { completed };
+}
+
+/**
+ * Template-method runner for common Kafka batch flow:
+ * gate by lifecycle -> process messages -> commit offsets -> flush heartbeat -> optional completion hook.
+ */
+export async function runKafkaMessageBatch<TContext, TMessage>(
+  input: RunKafkaMessageBatchInput<TContext, TMessage>
+): Promise<ProcessKafkaBatchMessagesResult> {
+  const { ctx, payload, heartbeatIntervalMessages, strategy } = input;
+  const batchLifecycle = createKafkaBatchLifecycle(
+    {
+      isRunning: payload.isRunning,
+      isStale: payload.isStale,
+      heartbeat: payload.heartbeat,
+    },
+    heartbeatIntervalMessages
+  );
+
+  if (!batchLifecycle.shouldContinue()) {
+    return { completed: false };
+  }
+
+  const result = await processKafkaBatchMessages(
+    ctx,
+    payload,
+    batchLifecycle,
+    strategy,
+    {
+      resolveOffsets: input.resolveOffsets ?? false,
+    }
+  );
+
+  await payload.commitOffsetsIfNecessary();
+
+  if (!result.completed) {
+    return result;
+  }
+
+  await batchLifecycle.flushHeartbeat();
+  await input.onCompletedBatch?.(ctx, payload);
+
+  return result;
 }

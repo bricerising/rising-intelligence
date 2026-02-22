@@ -44,11 +44,15 @@ export interface ArticleContentFetcher {
   fetch(url: string): Promise<ArticleContent | null>;
 }
 
+interface DomainRequestLimiter {
+  wait(url: string): Promise<void>;
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const urlSafetyFacade = createUrlSafetyFacade();
+const DEFAULT_URL_SAFETY_FACADE = createUrlSafetyFacade();
 
 /**
  * Extract domain from URL
@@ -82,10 +86,10 @@ function isDomainBlocked(url: string, blockedDomains: Set<string>): boolean {
   return false;
 }
 
-class InMemoryDomainRequestLimiter {
+class InMemoryDomainRequestLimiter implements DomainRequestLimiter {
   private static readonly MAX_TRACKED_DOMAINS = 10_000;
 
-  private readonly lastRequestByDomain = new Map<string, number>();
+  private readonly nextAllowedAtByDomain = new Map<string, number>();
 
   constructor(
     private readonly domainDelayMs: number,
@@ -102,31 +106,32 @@ class InMemoryDomainRequestLimiter {
       return;
     }
 
-    const lastRequest = this.lastRequestByDomain.get(domain);
-    if (lastRequest !== undefined) {
-      const elapsed = this.now() - lastRequest;
-      const delayMs = this.domainDelayMs - elapsed;
-      if (delayMs > 0) {
-        await wait(delayMs);
-      }
-    }
+    const now = this.now();
+    const nextAllowedAt = this.nextAllowedAtByDomain.get(domain) ?? now;
+    const scheduledAt = Math.max(now, nextAllowedAt);
+    const delayMs = scheduledAt - now;
 
-    this.rememberRequest(domain, this.now());
+    // Reserve the next slot before awaiting so concurrent callers queue correctly.
+    this.rememberRequest(domain, scheduledAt + this.domainDelayMs);
+
+    if (delayMs > 0) {
+      await wait(delayMs);
+    }
   }
 
-  private rememberRequest(domain: string, timestamp: number): void {
-    if (this.lastRequestByDomain.has(domain)) {
-      this.lastRequestByDomain.delete(domain);
+  private rememberRequest(domain: string, nextAllowedAt: number): void {
+    if (this.nextAllowedAtByDomain.has(domain)) {
+      this.nextAllowedAtByDomain.delete(domain);
     }
-    this.lastRequestByDomain.set(domain, timestamp);
+    this.nextAllowedAtByDomain.set(domain, nextAllowedAt);
 
-    if (this.lastRequestByDomain.size <= InMemoryDomainRequestLimiter.MAX_TRACKED_DOMAINS) {
+    if (this.nextAllowedAtByDomain.size <= InMemoryDomainRequestLimiter.MAX_TRACKED_DOMAINS) {
       return;
     }
 
-    const oldestDomain = this.lastRequestByDomain.keys().next().value;
+    const oldestDomain = this.nextAllowedAtByDomain.keys().next().value;
     if (typeof oldestDomain === "string") {
-      this.lastRequestByDomain.delete(oldestDomain);
+      this.nextAllowedAtByDomain.delete(oldestDomain);
     }
   }
 }
@@ -212,35 +217,26 @@ class DisabledArticleContentFetcher implements ArticleContentFetcher {
   }
 }
 
-class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
-  private readonly domainRequestLimiter: InMemoryDomainRequestLimiter;
+interface CoreContentFetcherDependencies {
+  fetchHtml(url: string, timeoutMs: number, userAgent: string): Promise<string>;
+  extractContent(html: string, url: string): ArticleContent;
+}
 
+class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
   constructor(
     private readonly config: ContentFetcherConfig,
     private readonly logger: Logger,
-    private readonly safetyFacade: UrlSafetyFacade = urlSafetyFacade
-  ) {
-    this.domainRequestLimiter = new InMemoryDomainRequestLimiter(
-      config.domainDelayMs
-    );
-  }
+    private readonly dependencies: CoreContentFetcherDependencies
+  ) {}
 
   async fetch(url: string): Promise<ArticleContent | null> {
-    if (!this.safetyFacade.isAllowedFetchUrl(url)) {
-      this.logger.debug({ url }, "Skipping disallowed fetch URL");
-      return null;
-    }
-
-    if (isDomainBlocked(url, this.config.blockedDomains)) {
-      this.logger.debug({ url }, "Skipping blocked domain");
-      return null;
-    }
-
-    await this.domainRequestLimiter.wait(url);
-
     try {
-      const html = await fetchHtml(url, this.config.timeoutMs, this.config.userAgent);
-      const content = extractContent(html, url);
+      const html = await this.dependencies.fetchHtml(
+        url,
+        this.config.timeoutMs,
+        this.config.userAgent
+      );
+      const content = this.dependencies.extractContent(html, url);
 
       if (!content.success || content.text.length < this.config.minContentLength) {
         this.logger.debug(
@@ -278,15 +274,128 @@ class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
   }
 }
 
+class UrlSafetyArticleContentFetcherProxy implements ArticleContentFetcher {
+  constructor(
+    private readonly delegate: ArticleContentFetcher,
+    private readonly logger: Logger,
+    private readonly safetyFacade: UrlSafetyFacade
+  ) {}
+
+  async fetch(url: string): Promise<ArticleContent | null> {
+    if (!this.safetyFacade.isAllowedFetchUrl(url)) {
+      this.logger.debug({ url }, "Skipping disallowed fetch URL");
+      return null;
+    }
+
+    return this.delegate.fetch(url);
+  }
+}
+
+class BlockedDomainArticleContentFetcherProxy implements ArticleContentFetcher {
+  constructor(
+    private readonly delegate: ArticleContentFetcher,
+    private readonly logger: Logger,
+    private readonly blockedDomains: Set<string>
+  ) {}
+
+  async fetch(url: string): Promise<ArticleContent | null> {
+    if (isDomainBlocked(url, this.blockedDomains)) {
+      this.logger.debug({ url }, "Skipping blocked domain");
+      return null;
+    }
+
+    return this.delegate.fetch(url);
+  }
+}
+
+class DomainRateLimitedArticleContentFetcherProxy implements ArticleContentFetcher {
+  constructor(
+    private readonly delegate: ArticleContentFetcher,
+    private readonly domainRequestLimiter: DomainRequestLimiter
+  ) {}
+
+  async fetch(url: string): Promise<ArticleContent | null> {
+    await this.domainRequestLimiter.wait(url);
+    return this.delegate.fetch(url);
+  }
+}
+
+type ArticleContentFetcherDecorator = (
+  delegate: ArticleContentFetcher
+) => ArticleContentFetcher;
+
+export interface CreateArticleContentFetcherDependencies {
+  safetyFacade?: UrlSafetyFacade;
+  fetchHtml?: (
+    url: string,
+    timeoutMs: number,
+    userAgent: string
+  ) => Promise<string>;
+  extractContent?: (html: string, url: string) => ArticleContent;
+  createDomainRequestLimiter?: (
+    domainDelayMs: number
+  ) => DomainRequestLimiter;
+}
+
+function createDefaultDomainRequestLimiter(domainDelayMs: number): DomainRequestLimiter {
+  return new InMemoryDomainRequestLimiter(domainDelayMs);
+}
+
+function composeArticleContentFetcher(
+  baseFetcher: ArticleContentFetcher,
+  decorators: readonly ArticleContentFetcherDecorator[]
+): ArticleContentFetcher {
+  return decorators.reduce(
+    (delegate, decorate) => decorate(delegate),
+    baseFetcher
+  );
+}
+
+function createReadabilityContentFetcher(
+  config: ContentFetcherConfig,
+  logger: Logger,
+  dependencies: CreateArticleContentFetcherDependencies
+): ArticleContentFetcher {
+  const coreFetcher = new ReadabilityArticleContentFetcher(config, logger, {
+    fetchHtml: dependencies.fetchHtml ?? fetchHtml,
+    extractContent: dependencies.extractContent ?? extractContent,
+  });
+  const domainRequestLimiter = (
+    dependencies.createDomainRequestLimiter ?? createDefaultDomainRequestLimiter
+  )(config.domainDelayMs);
+  const decorators: ArticleContentFetcherDecorator[] = [
+    (delegate) => new DomainRateLimitedArticleContentFetcherProxy(
+      delegate,
+      domainRequestLimiter
+    ),
+    (delegate) => new BlockedDomainArticleContentFetcherProxy(
+      delegate,
+      logger,
+      config.blockedDomains
+    ),
+    (delegate) => new UrlSafetyArticleContentFetcherProxy(
+      delegate,
+      logger,
+      dependencies.safetyFacade ?? DEFAULT_URL_SAFETY_FACADE
+    ),
+  ];
+
+  return composeArticleContentFetcher(
+    coreFetcher,
+    decorators
+  );
+}
+
 export function createArticleContentFetcher(
   config: ContentFetcherConfig,
-  logger: Logger
+  logger: Logger,
+  dependencies: CreateArticleContentFetcherDependencies = {}
 ): ArticleContentFetcher {
   if (!config.enabled) {
     return new DisabledArticleContentFetcher();
   }
 
-  return new ReadabilityArticleContentFetcher(config, logger);
+  return createReadabilityContentFetcher(config, logger, dependencies);
 }
 
 /**

@@ -95,28 +95,94 @@ function toEventId(storyId: number): string {
 }
 
 interface StorySelectionInput {
-  mode: HNMode;
   storyIds: readonly number[];
   maxItems: number;
   lastMaxId: number;
   hasSeenStory(storyId: number): boolean;
 }
 
-function selectStoryIdsForPolling(input: StorySelectionInput): number[] {
-  const dedupedStoryIds = dedupeStoryIds(input.storyIds);
-  if (input.mode === "new") {
-    // New stories are naturally append-only by ID, so process oldest unseen first.
-    return dedupedStoryIds
-      .filter((storyId) => storyId > input.lastMaxId)
-      .sort((a, b) => a - b)
-      .slice(0, input.maxItems);
-  }
+interface CheckpointProgressState {
+  cursor: number;
+  blocked: boolean;
+}
 
+interface PollModeBehavior {
+  readonly mode: HNMode;
+  selectStoryIds(input: StorySelectionInput): number[];
+  createCheckpointState(lastMaxId: number): CheckpointProgressState;
+  onStoryProcessed(state: CheckpointProgressState, storyId: number): void;
+  onStoryFetchFailure(state: CheckpointProgressState): void;
+}
+
+function selectStoryIdsForNewMode(input: StorySelectionInput): number[] {
+  // New stories are naturally append-only by ID, so process oldest unseen first.
+  return dedupeStoryIds(input.storyIds)
+    .filter((storyId) => storyId > input.lastMaxId)
+    .sort((a, b) => a - b)
+    .slice(0, input.maxItems);
+}
+
+function selectStoryIdsForRankedMode(input: StorySelectionInput): number[] {
+  const dedupedStoryIds = dedupeStoryIds(input.storyIds);
   // Ranked feeds can reorder; scan more than maxItems so previously skipped unseen IDs can recover.
   const scanWindow = dedupedStoryIds.slice(0, input.maxItems * HN_RANKED_SCAN_MULTIPLIER);
   return scanWindow
     .filter((storyId) => storyId > input.lastMaxId || !input.hasSeenStory(storyId))
     .slice(0, input.maxItems);
+}
+
+function createNewModeBehavior(): PollModeBehavior {
+  return {
+    mode: "new",
+    selectStoryIds: selectStoryIdsForNewMode,
+    createCheckpointState(lastMaxId: number): CheckpointProgressState {
+      return {
+        cursor: lastMaxId,
+        blocked: false,
+      };
+    },
+    onStoryProcessed(state: CheckpointProgressState, storyId: number): void {
+      if (!state.blocked) {
+        state.cursor = storyId;
+      }
+    },
+    onStoryFetchFailure(state: CheckpointProgressState): void {
+      state.blocked = true;
+    },
+  };
+}
+
+function createRankedModeBehavior(mode: Extract<HNMode, "top" | "best">): PollModeBehavior {
+  return {
+    mode,
+    selectStoryIds: selectStoryIdsForRankedMode,
+    createCheckpointState(lastMaxId: number): CheckpointProgressState {
+      return {
+        cursor: lastMaxId,
+        blocked: false,
+      };
+    },
+    onStoryProcessed(state: CheckpointProgressState, storyId: number): void {
+      state.cursor = Math.max(state.cursor, storyId);
+    },
+    onStoryFetchFailure(): void {
+      // Ranked mode keeps the checkpoint cursor unchanged for failed items so they can retry later.
+    },
+  };
+}
+
+const POLL_MODE_BEHAVIORS: Readonly<Record<HNMode, PollModeBehavior>> = {
+  top: createRankedModeBehavior("top"),
+  new: createNewModeBehavior(),
+  best: createRankedModeBehavior("best"),
+};
+
+function isHnMode(value: string): value is HNMode {
+  return value === "top" || value === "new" || value === "best";
+}
+
+function parseHnMode(value: string): HNMode {
+  return isHnMode(value) ? value : "top";
 }
 
 async function delayBetweenStoryRequests(): Promise<void> {
@@ -132,12 +198,13 @@ export class HackerNewsAdapter implements SourceAdapter {
   readonly source: Source = "hackernews";
   readonly pollIntervalMs: number;
 
-  private mode: HNMode;
-  private maxItems: number;
-  private checkpoints: CheckpointStore;
-  private logger: Logger;
-  private textEnrichmentStrategy: TextEnrichmentStrategy;
-  private api: HackerNewsApi;
+  private readonly mode: HNMode;
+  private readonly maxItems: number;
+  private readonly checkpoints: CheckpointStore;
+  private readonly logger: Logger;
+  private readonly textEnrichmentStrategy: TextEnrichmentStrategy;
+  private readonly api: HackerNewsApi;
+  private readonly pollModeBehavior: PollModeBehavior;
 
   constructor(
     mode: HNMode,
@@ -154,6 +221,7 @@ export class HackerNewsAdapter implements SourceAdapter {
     this.checkpoints = checkpoints;
     this.logger = logger;
     this.api = api;
+    this.pollModeBehavior = POLL_MODE_BEHAVIORS[mode];
     this.textEnrichmentStrategy = createTextEnrichmentStrategy(
       contentFetcherConfig,
       logger,
@@ -184,16 +252,12 @@ export class HackerNewsAdapter implements SourceAdapter {
       throw error;
     }
 
-    const candidateStoryIds = selectStoryIdsForPolling(
-      {
-        mode: this.mode,
-        storyIds,
-        maxItems: this.maxItems,
-        lastMaxId,
-        hasSeenStory: (storyId) =>
-          this.checkpoints.hasSeen(this.source, toEventId(storyId)),
-      }
-    );
+    const candidateStoryIds = this.pollModeBehavior.selectStoryIds({
+      storyIds,
+      maxItems: this.maxItems,
+      lastMaxId,
+      hasSeenStory: (storyId) => this.checkpoints.hasSeen(this.source, toEventId(storyId)),
+    });
 
     if (candidateStoryIds.length === 0) {
       this.logger.debug("No new HN stories");
@@ -209,34 +273,25 @@ export class HackerNewsAdapter implements SourceAdapter {
       "Processing HN stories"
     );
 
-    let checkpointCursor = lastMaxId;
-    let checkpointBlocked = false;
+    const checkpointState = this.pollModeBehavior.createCheckpointState(lastMaxId);
 
     for (const storyId of candidateStoryIds) {
       try {
         const item = await this.api.fetchItem(storyId);
 
         if (!item || item.type !== "story") {
-          if (this.mode === "new" && !checkpointBlocked) {
-            checkpointCursor = storyId;
-          } else if (this.mode !== "new") {
-            checkpointCursor = Math.max(checkpointCursor, storyId);
-          }
+          this.pollModeBehavior.onStoryProcessed(checkpointState, storyId);
           continue;
         }
 
         const event = await this.itemToRawEvent(item);
-        if (this.mode === "new" && !checkpointBlocked) {
-          checkpointCursor = storyId;
-        } else if (this.mode !== "new") {
-          checkpointCursor = Math.max(checkpointCursor, storyId);
-        }
+        this.pollModeBehavior.onStoryProcessed(checkpointState, storyId);
 
         if (event !== null) {
           yield {
             event,
             checkpointKey,
-            checkpointValue: checkpointCursor.toString(),
+            checkpointValue: checkpointState.cursor.toString(),
           };
         }
       } catch (error) {
@@ -244,9 +299,7 @@ export class HackerNewsAdapter implements SourceAdapter {
           { storyId, error },
           "Failed to fetch HN story"
         );
-        if (this.mode === "new") {
-          checkpointBlocked = true;
-        }
+        this.pollModeBehavior.onStoryFetchFailure(checkpointState);
       }
 
       await delayBetweenStoryRequests();
@@ -328,12 +381,8 @@ export interface CreateHackerNewsAdapterInput {
 export function createHackerNewsAdapter(
   input: CreateHackerNewsAdapterInput
 ): SourceAdapter {
-  const validMode = (["top", "new", "best"].includes(input.mode)
-    ? input.mode
-    : "top") as HNMode;
-
   return new HackerNewsAdapter(
-    validMode,
+    parseHnMode(input.mode),
     input.pollIntervalMs,
     input.maxItems,
     input.checkpoints,

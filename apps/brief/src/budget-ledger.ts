@@ -175,37 +175,64 @@ class PostgresBudgetLedger implements BriefBudgetLedger {
   }
 
   async release(input: ReleaseBudgetInput): Promise<number> {
-    return this.updateSpentUsd(input.dateKey, (current) => current - input.amountUsd);
+    return this.updateSpentUsd(input.dateKey, -input.amountUsd);
   }
 
   async settle(input: SettleBudgetInput): Promise<number> {
-    return this.updateSpentUsd(input.dateKey, (current) => current + input.deltaUsd);
+    return this.updateSpentUsd(input.dateKey, input.deltaUsd);
   }
 
   private async updateSpentUsd(
     dateKey: string,
-    update: (currentSpentUsd: number) => number
+    deltaUsd: number
   ): Promise<number> {
     const budgetDate = toBudgetDate(dateKey);
-    const record = await this.prisma.briefBudgetTracking.findUnique({
+    if (!Number.isFinite(deltaUsd) || deltaUsd === 0) {
+      const existing = await this.prisma.briefBudgetTracking.findUnique({
+        where: { date: budgetDate },
+        select: { spentUsd: true },
+      });
+      const spentUsd = Number(existing?.spentUsd ?? 0);
+      await syncBudgetCacheBestEffort(this.redis, dateKey, spentUsd, this.logger);
+      return spentUsd;
+    }
+
+    if (deltaUsd > 0) {
+      const incrementResult = await this.prisma.briefBudgetTracking.updateMany({
+        where: { date: budgetDate },
+        data: { spentUsd: { increment: deltaUsd } },
+      });
+      if (incrementResult.count === 0) {
+        return 0;
+      }
+    } else {
+      const decrementAmount = Math.abs(deltaUsd);
+      const decrementResult = await this.prisma.briefBudgetTracking.updateMany({
+        where: {
+          date: budgetDate,
+          spentUsd: { gte: decrementAmount },
+        },
+        data: { spentUsd: { decrement: decrementAmount } },
+      });
+
+      if (decrementResult.count === 0) {
+        const clampResult = await this.prisma.briefBudgetTracking.updateMany({
+          where: { date: budgetDate },
+          data: { spentUsd: 0 },
+        });
+        if (clampResult.count === 0) {
+          return 0;
+        }
+      }
+    }
+
+    const latest = await this.prisma.briefBudgetTracking.findUnique({
       where: { date: budgetDate },
       select: { spentUsd: true },
     });
-
-    if (!record) {
-      return 0;
-    }
-
-    const currentSpent = Number(record.spentUsd);
-    const nextSpent = Math.max(0, update(currentSpent));
-
-    await this.prisma.briefBudgetTracking.update({
-      where: { date: budgetDate },
-      data: { spentUsd: nextSpent },
-    });
-
-    await syncBudgetCacheBestEffort(this.redis, dateKey, nextSpent, this.logger);
-    return nextSpent;
+    const spentUsd = Number(latest?.spentUsd ?? 0);
+    await syncBudgetCacheBestEffort(this.redis, dateKey, spentUsd, this.logger);
+    return spentUsd;
   }
 }
 

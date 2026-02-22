@@ -59,11 +59,12 @@ function mergeTags(existingTags: string[] | undefined, extractedTopics: string[]
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const tag of merged) {
-    if (!tag || seen.has(tag)) {
+    const normalizedTag = tag.trim();
+    if (normalizedTag.length === 0 || seen.has(normalizedTag)) {
       continue;
     }
-    seen.add(tag);
-    deduped.push(tag);
+    seen.add(normalizedTag);
+    deduped.push(normalizedTag);
   }
   return deduped;
 }
@@ -83,6 +84,7 @@ interface RuntimeContext {
     event: { title?: string; text: string; url?: string | null },
     allowlist: CompiledAllowlist
   ) => string[];
+  validationFailureStrategy: ValidationFailureStrategy;
 }
 
 interface ProcessingContext {
@@ -91,6 +93,16 @@ interface ProcessingContext {
 }
 
 type ProcessingStep = AsyncChainStep<ProcessingContext, CollectorEventProcessResult>;
+
+interface ValidationFailureStrategyContext {
+  runtime: RuntimeContext;
+  event: RawEvent;
+}
+
+interface ValidationFailureStrategy {
+  readonly name: string;
+  handle(input: ValidationFailureStrategyContext): void;
+}
 
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
@@ -122,6 +134,52 @@ function parseRssFeedMetadata(sourceMeta: RawEvent["source_meta"]): RssFeedMetad
   return {
     feed,
     feedUrl,
+  };
+}
+
+const RECORD_PARSE_ERROR_STRATEGY: ValidationFailureStrategy = {
+  name: "record-parse-error",
+  handle({ runtime }): void {
+    incrementEventsFailed(runtime.healthContext, runtime.adapterSource, "parse_error");
+  },
+};
+
+const RECORD_RSS_FEED_ERROR_STRATEGY: ValidationFailureStrategy = {
+  name: "record-rss-feed-error",
+  handle({ runtime, event }): void {
+    const feedMetadata = parseRssFeedMetadata(event.source_meta);
+    if (!feedMetadata) {
+      return;
+    }
+
+    incrementRssFeedError(
+      runtime.healthContext,
+      {
+        feed: feedMetadata.feed,
+        feedUrl: feedMetadata.feedUrl,
+        errorType: "parse_error",
+      }
+    );
+  },
+};
+
+const SOURCE_VALIDATION_FAILURE_STRATEGIES: Readonly<
+  Partial<Record<Source, readonly ValidationFailureStrategy[]>>
+> = {
+  rss: [RECORD_RSS_FEED_ERROR_STRATEGY],
+};
+
+function createValidationFailureStrategy(adapterSource: Source): ValidationFailureStrategy {
+  const sourceStrategies = SOURCE_VALIDATION_FAILURE_STRATEGIES[adapterSource] ?? [];
+  const strategies = [RECORD_PARSE_ERROR_STRATEGY, ...sourceStrategies];
+
+  return {
+    name: `validation-failure:${adapterSource}`,
+    handle(input): void {
+      for (const strategy of strategies) {
+        strategy.handle(input);
+      }
+    },
   };
 }
 
@@ -160,20 +218,10 @@ function createValidationStep(): ProcessingStep {
       };
 
       await runtime.publishDeadLetterEvent(dlqEvent);
-      incrementEventsFailed(runtime.healthContext, runtime.adapterSource, "parse_error");
-      if (runtime.adapterSource === "rss") {
-        const feedMetadata = parseRssFeedMetadata(state.event.source_meta);
-        if (feedMetadata) {
-          incrementRssFeedError(
-            runtime.healthContext,
-            {
-              feed: feedMetadata.feed,
-              feedUrl: feedMetadata.feedUrl,
-              errorType: "parse_error",
-            }
-          );
-        }
-      }
+      runtime.validationFailureStrategy.handle({
+        runtime,
+        event: state.event,
+      });
 
       return {
         status: "invalid",
@@ -228,6 +276,7 @@ export function createCollectorEventProcessor(
     now: input.now ?? (() => new Date()),
     generateDlqId: input.generateDlqId ?? defaultGenerateDlqId,
     topicExtractor: input.topicExtractor ?? defaultTopicExtractor,
+    validationFailureStrategy: createValidationFailureStrategy(input.adapterSource),
   };
 
   const steps: ReadonlyArray<ProcessingStep> = [
