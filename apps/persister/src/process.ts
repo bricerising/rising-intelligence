@@ -6,7 +6,9 @@ import type { PrismaClient } from "@rising-intelligence/db";
 import {
   createKafkaBatchLifecycle,
   processKafkaBatchMessages,
+  runAsyncChain,
   serializeError,
+  type AsyncChainStep,
   type KafkaBatchLifecycle,
   type KafkaBatchMessageContext,
   type KafkaBatchMessageStrategy,
@@ -262,70 +264,206 @@ export async function updateLag(
   return true;
 }
 
-export async function processBatch(ctx: PersisterContext, payload: EachBatchPayload): Promise<void> {
-  const { batch, isRunning, isStale, resolveOffset, commitOffsetsIfNecessary, heartbeat } = payload;
-  const batchLifecycle = createKafkaBatchLifecycle(
-    { isRunning, isStale, heartbeat },
-    LOOP_HEARTBEAT_INTERVAL_MESSAGES
-  );
+interface ProcessBatchState {
+  batchLifecycle: KafkaBatchLifecycle;
+  events: ParsedRawEvent[] | null;
+}
 
-  if (!batchLifecycle.shouldContinue()) {
-    return;
-  }
+interface ProcessBatchExecutionContext {
+  ctx: PersisterContext;
+  payload: EachBatchPayload;
+  state: ProcessBatchState;
+}
 
-  if (await pausePartitionWhenCircuitOpen(ctx, payload)) {
-    return;
-  }
+type ProcessBatchStep = AsyncChainStep<ProcessBatchExecutionContext, void>;
 
-  observeBatchSize(ctx.healthContext, batch.messages.length);
+function createProcessBatchState(payload: EachBatchPayload): ProcessBatchState {
+  return {
+    batchLifecycle: createKafkaBatchLifecycle(
+      {
+        isRunning: payload.isRunning,
+        isStale: payload.isStale,
+        heartbeat: payload.heartbeat,
+      },
+      LOOP_HEARTBEAT_INTERVAL_MESSAGES
+    ),
+    events: null,
+  };
+}
 
-  const events = await collectMessagesWithStrategy(
+function createBatchLifecycleGateStep(): ProcessBatchStep {
+  return {
+    name: "batch-lifecycle-gate",
+    async execute({ state }, next): Promise<void> {
+      if (!state.batchLifecycle.shouldContinue()) {
+        return;
+      }
+
+      await next();
+    },
+  };
+}
+
+function createCircuitPauseStep(): ProcessBatchStep {
+  return {
+    name: "circuit-breaker-pause",
+    async execute({ ctx, payload }, next): Promise<void> {
+      if (await pausePartitionWhenCircuitOpen(ctx, payload)) {
+        return;
+      }
+
+      await next();
+    },
+  };
+}
+
+function createObserveBatchSizeStep(): ProcessBatchStep {
+  return {
+    name: "observe-batch-size",
+    async execute({ ctx, payload }, next): Promise<void> {
+      observeBatchSize(ctx.healthContext, payload.batch.messages.length);
+      await next();
+    },
+  };
+}
+
+function createCollectMessagesStep(): ProcessBatchStep {
+  return {
+    name: "collect-messages",
+    async execute({ ctx, payload, state }, next): Promise<void> {
+      const events = await collectMessagesWithStrategy(
+        ctx,
+        payload,
+        state.batchLifecycle,
+        RAW_EVENT_BATCH_STRATEGY
+      );
+      if (!events) {
+        return;
+      }
+
+      state.events = events;
+      await next();
+    },
+  };
+}
+
+function createPersistEventsStep(): ProcessBatchStep {
+  return {
+    name: "persist-events",
+    async execute({ ctx, payload, state }, next): Promise<void> {
+      if (state.events === null) {
+        throw new Error("Persister process pipeline reached persistence without collected events");
+      }
+
+      await persistEventsWithCircuitHandling(ctx, payload, state.events);
+      await next();
+    },
+  };
+}
+
+function createResolveOffsetsStep(): ProcessBatchStep {
+  return {
+    name: "resolve-offsets",
+    async execute({ payload }, next): Promise<void> {
+      for (const message of payload.batch.messages) {
+        payload.resolveOffset(message.offset);
+      }
+      await next();
+    },
+  };
+}
+
+function createCommitAndHeartbeatStep(): ProcessBatchStep {
+  return {
+    name: "commit-and-heartbeat",
+    async execute({ payload, state }, next): Promise<void> {
+      await payload.commitOffsetsIfNecessary();
+      if (!state.batchLifecycle.shouldContinue()) {
+        return;
+      }
+
+      await state.batchLifecycle.flushHeartbeat();
+      await next();
+    },
+  };
+}
+
+function createLagUpdateStep(): ProcessBatchStep {
+  return {
+    name: "update-consumer-lag",
+    async execute({ ctx, payload }, next): Promise<void> {
+      const lastMessage = payload.batch.messages.at(-1);
+      if (!lastMessage) {
+        await next();
+        return;
+      }
+
+      const currentOffset = toBigInt(lastMessage.offset, 0n) + 1n;
+      const latestOffset = toBigInt(payload.batch.highWatermark, currentOffset);
+      const lag = latestOffset > currentOffset ? latestOffset - currentOffset : 0n;
+
+      try {
+        const wroteLag = await updateLag(
+          ctx,
+          payload,
+          currentOffset,
+          latestOffset,
+          lag
+        );
+        if (wroteLag) {
+          ctx.healthContext.postgresHealthy = true;
+        }
+      } catch (error) {
+        incrementError(ctx.healthContext, "postgres_error");
+        ctx.healthContext.postgresHealthy = false;
+        ctx.logger.warn(
+          {
+            kafkaTopic: payload.batch.topic,
+            partition: payload.batch.partition,
+            error: serializeError(error),
+          },
+          "Failed to update consumer lag"
+        );
+      }
+
+      await next();
+    },
+  };
+}
+
+const PROCESS_BATCH_STEPS: ReadonlyArray<ProcessBatchStep> = [
+  createBatchLifecycleGateStep(),
+  createCircuitPauseStep(),
+  createObserveBatchSizeStep(),
+  createCollectMessagesStep(),
+  createPersistEventsStep(),
+  createResolveOffsetsStep(),
+  createCommitAndHeartbeatStep(),
+  createLagUpdateStep(),
+];
+
+async function runProcessBatchPipeline(
+  executionContext: ProcessBatchExecutionContext
+): Promise<void> {
+  await runAsyncChain(PROCESS_BATCH_STEPS, executionContext, {
+    onEnd() {
+      return;
+    },
+    duplicateNextError(stepName) {
+      return new Error(
+        `Persister process pipeline step "${stepName}" called next() multiple times`
+      );
+    },
+  });
+}
+
+export async function processBatch(
+  ctx: PersisterContext,
+  payload: EachBatchPayload
+): Promise<void> {
+  await runProcessBatchPipeline({
     ctx,
     payload,
-    batchLifecycle,
-    RAW_EVENT_BATCH_STRATEGY
-  );
-  if (!events) {
-    return;
-  }
-
-  await persistEventsWithCircuitHandling(ctx, payload, events);
-
-  for (const message of batch.messages) {
-    resolveOffset(message.offset);
-  }
-
-  await commitOffsetsIfNecessary();
-  if (!batchLifecycle.shouldContinue()) {
-    return;
-  }
-
-  await batchLifecycle.flushHeartbeat();
-
-  const lastMessage = batch.messages.at(-1);
-  if (!lastMessage) {
-    return;
-  }
-
-  const currentOffset = toBigInt(lastMessage.offset, 0n) + 1n;
-  const latestOffset = toBigInt(batch.highWatermark, currentOffset);
-  const lag = latestOffset > currentOffset ? latestOffset - currentOffset : 0n;
-
-  try {
-    const wroteLag = await updateLag(ctx, payload, currentOffset, latestOffset, lag);
-    if (wroteLag) {
-      ctx.healthContext.postgresHealthy = true;
-    }
-  } catch (error) {
-    incrementError(ctx.healthContext, "postgres_error");
-    ctx.healthContext.postgresHealthy = false;
-    ctx.logger.warn(
-      {
-        kafkaTopic: batch.topic,
-        partition: batch.partition,
-        error: serializeError(error),
-      },
-      "Failed to update consumer lag"
-    );
-  }
+    state: createProcessBatchState(payload),
+  });
 }

@@ -3,9 +3,11 @@ import type { Redis } from "ioredis";
 import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
 import {
   createKafkaBatchLifecycle,
-  parseCanonicalSource,
   processKafkaBatchMessages,
+  runAsyncChain,
   serializeError,
+  type AsyncChainStep,
+  type KafkaBatchLifecycle,
   type KafkaBatchMessageContext,
   type KafkaBatchMessageStrategy,
 } from "@rising-intelligence/shared";
@@ -13,9 +15,12 @@ import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
 import { filterTrackedTags } from "./allowlist.js";
+import { deserializeCollectorHeartbeat } from "./collector-heartbeat-adapter.js";
+import { recordCollectorHeartbeat } from "./collector-heartbeat-store.js";
 import { deserializeRawEvent } from "./deserialize.js";
 import type { ParsedRawEvent } from "./types.js";
 import {
+  type CollectorHeartbeatState,
   incrementDuplicatesSkipped,
   incrementError,
   incrementEventsProcessed,
@@ -25,19 +30,6 @@ import {
 import { applyEventToWindows } from "./redis.js";
 
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 50;
-const COLLECTOR_STATUS_BY_NUMBER = {
-  1: "healthy",
-  2: "degraded",
-  3: "error",
-} as const;
-const COLLECTOR_STATUS_BY_STRING = {
-  healthy: "healthy",
-  collector_status_healthy: "healthy",
-  degraded: "degraded",
-  collector_status_degraded: "degraded",
-  error: "error",
-  collector_status_error: "error",
-} as const;
 
 function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   if (!value) {
@@ -51,109 +43,6 @@ function toBigInt(value: string | null | undefined, fallback = 0n): bigint {
   }
 }
 
-function parseIsoDate(value: unknown, field: string): Date {
-  if (typeof value !== "string") {
-    throw new Error(`collector heartbeat ${field} must be a string`);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`collector heartbeat ${field} is invalid: ${value}`);
-  }
-  return parsed;
-}
-
-function parseCollectorStatus(value: unknown): "healthy" | "degraded" | "error" {
-  if (typeof value === "number") {
-    const status = COLLECTOR_STATUS_BY_NUMBER[value as keyof typeof COLLECTOR_STATUS_BY_NUMBER];
-    if (status) {
-      return status;
-    }
-  }
-
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    const statusByName = COLLECTOR_STATUS_BY_STRING[normalized as keyof typeof COLLECTOR_STATUS_BY_STRING];
-    if (statusByName) {
-      return statusByName;
-    }
-
-    const asNumber = Number.parseInt(normalized, 10);
-    if (`${asNumber}` === normalized) {
-      const statusByNumber = COLLECTOR_STATUS_BY_NUMBER[asNumber as keyof typeof COLLECTOR_STATUS_BY_NUMBER];
-      if (statusByNumber) {
-        return statusByNumber;
-      }
-    }
-  }
-
-  throw new Error(`Unsupported collector heartbeat status: ${String(value)}`);
-}
-
-function parseNonNegativeInteger(value: unknown, fallback = 0): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.floor(value));
-  }
-
-  if (typeof value === "string") {
-    const normalized = value.trim();
-    if (/^\d+$/.test(normalized)) {
-      return Number.parseInt(normalized, 10);
-    }
-  }
-
-  return fallback;
-}
-
-function parseCollectorSource(value: unknown): string {
-  if (typeof value !== "number" && typeof value !== "string") {
-    throw new Error("collector heartbeat source must be a string or number");
-  }
-
-  return parseCanonicalSource(value);
-}
-
-function deserializeCollectorHeartbeat(
-  messageValue: Buffer
-): {
-  source: string;
-  status: "healthy" | "degraded" | "error";
-  timestamp: Date;
-  lastFetchAt: Date;
-  itemsFetched: number;
-  errorMessage?: string;
-} {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(messageValue.toString("utf-8"));
-  } catch (error) {
-    throw new Error(`Invalid collector heartbeat JSON: ${(error as Error).message}`);
-  }
-
-  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-    throw new Error("Collector heartbeat payload must be an object");
-  }
-
-  const heartbeat = decoded as Record<string, unknown>;
-  const source = parseCollectorSource(heartbeat.source);
-  const status = parseCollectorStatus(heartbeat.status);
-  const timestamp = parseIsoDate(heartbeat.timestamp, "timestamp");
-  const lastFetchAt = parseIsoDate(heartbeat.last_fetch_at, "last_fetch_at");
-  const itemsFetched = parseNonNegativeInteger(heartbeat.items_fetched, 0);
-  const errorMessage =
-    typeof heartbeat.error_message === "string" && heartbeat.error_message.trim().length > 0
-      ? heartbeat.error_message
-      : undefined;
-
-  return {
-    source,
-    status,
-    timestamp,
-    lastFetchAt,
-    itemsFetched,
-    errorMessage,
-  };
-}
-
 export interface TrendsContext {
   config: Config;
   logger: pino.Logger;
@@ -164,36 +53,128 @@ export interface TrendsContext {
   lagWriteTimestamps: Map<string, number>;
 }
 
-async function processBatchWithStrategy<TMessage>(
-  ctx: TrendsContext,
-  payload: EachBatchPayload,
-  strategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>
-): Promise<boolean> {
-  const { isRunning, isStale, commitOffsetsIfNecessary, heartbeat } = payload;
-  const batchLifecycle = createKafkaBatchLifecycle(
-    { isRunning, isStale, heartbeat },
-    LOOP_HEARTBEAT_INTERVAL_MESSAGES
-  );
+interface BatchProcessingMode<TMessage> {
+  name: string;
+  messageStrategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>;
+  onCompletedBatch?(ctx: TrendsContext, payload: EachBatchPayload): Promise<void>;
+}
 
-  if (!batchLifecycle.shouldContinue()) {
-    return false;
-  }
+interface BatchProcessingState {
+  batchLifecycle: KafkaBatchLifecycle;
+  completed: boolean;
+}
 
-  const { completed } = await processKafkaBatchMessages(
-    ctx,
-    payload,
-    batchLifecycle,
-    strategy,
-    { resolveOffsets: true }
-  );
+interface BatchProcessingExecutionContext<TMessage> {
+  ctx: TrendsContext;
+  payload: EachBatchPayload;
+  mode: BatchProcessingMode<TMessage>;
+  state: BatchProcessingState;
+}
 
-  await commitOffsetsIfNecessary();
-  if (!completed) {
-    return false;
-  }
+type BatchProcessingStep<TMessage> = AsyncChainStep<
+  BatchProcessingExecutionContext<TMessage>,
+  void
+>;
 
-  await batchLifecycle.flushHeartbeat();
-  return true;
+function createBatchProcessingState(payload: EachBatchPayload): BatchProcessingState {
+  return {
+    batchLifecycle: createKafkaBatchLifecycle(
+      {
+        isRunning: payload.isRunning,
+        isStale: payload.isStale,
+        heartbeat: payload.heartbeat,
+      },
+      LOOP_HEARTBEAT_INTERVAL_MESSAGES
+    ),
+    completed: false,
+  };
+}
+
+function createBatchLifecycleGateStep<TMessage>(): BatchProcessingStep<TMessage> {
+  return {
+    name: "batch-lifecycle-gate",
+    async execute({ state }, next): Promise<void> {
+      if (!state.batchLifecycle.shouldContinue()) {
+        return;
+      }
+
+      await next();
+    },
+  };
+}
+
+function createProcessMessagesStep<TMessage>(): BatchProcessingStep<TMessage> {
+  return {
+    name: "process-messages",
+    async execute({ ctx, payload, mode, state }, next): Promise<void> {
+      const result = await processKafkaBatchMessages(
+        ctx,
+        payload,
+        state.batchLifecycle,
+        mode.messageStrategy,
+        { resolveOffsets: true }
+      );
+      state.completed = result.completed;
+      await next();
+    },
+  };
+}
+
+function createCommitAndHeartbeatStep<TMessage>(): BatchProcessingStep<TMessage> {
+  return {
+    name: "commit-and-heartbeat",
+    async execute({ payload, state }, next): Promise<void> {
+      await payload.commitOffsetsIfNecessary();
+      if (!state.completed) {
+        return;
+      }
+
+      await state.batchLifecycle.flushHeartbeat();
+      await next();
+    },
+  };
+}
+
+function createCompletedBatchHookStep<TMessage>(): BatchProcessingStep<TMessage> {
+  return {
+    name: "completed-batch-hook",
+    async execute({ ctx, payload, mode, state }, next): Promise<void> {
+      if (!state.completed) {
+        return;
+      }
+      if (!mode.onCompletedBatch) {
+        await next();
+        return;
+      }
+
+      await mode.onCompletedBatch(ctx, payload);
+      await next();
+    },
+  };
+}
+
+function createBatchProcessingSteps<TMessage>(): ReadonlyArray<BatchProcessingStep<TMessage>> {
+  return [
+    createBatchLifecycleGateStep(),
+    createProcessMessagesStep(),
+    createCommitAndHeartbeatStep(),
+    createCompletedBatchHookStep(),
+  ];
+}
+
+async function runBatchProcessingPipeline<TMessage>(
+  executionContext: BatchProcessingExecutionContext<TMessage>
+): Promise<void> {
+  await runAsyncChain(createBatchProcessingSteps<TMessage>(), executionContext, {
+    onEnd() {
+      return;
+    },
+    duplicateNextError(stepName) {
+      return new Error(
+        `Trends batch pipeline step "${stepName}" called next() multiple times`
+      );
+    },
+  });
 }
 
 function onEmptyBatchValue(
@@ -272,8 +253,6 @@ const RAW_EVENT_BATCH_STRATEGY: KafkaBatchMessageStrategy<TrendsContext, ParsedR
   },
 };
 
-type CollectorHeartbeatState = ReturnType<typeof deserializeCollectorHeartbeat>;
-
 const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: KafkaBatchMessageStrategy<
   TrendsContext,
   CollectorHeartbeatState
@@ -294,8 +273,24 @@ const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: KafkaBatchMessageStrategy<
       "Failed to deserialize collector heartbeat"
     );
   },
-  async onMessage(ctx, _messageContext, collectorHeartbeat): Promise<void> {
-    ctx.healthContext.collectorHeartbeats.set(collectorHeartbeat.source, collectorHeartbeat);
+  async onMessage(ctx, messageContext, collectorHeartbeat): Promise<void> {
+    const result = recordCollectorHeartbeat(
+      ctx.healthContext.collectorHeartbeats,
+      collectorHeartbeat
+    );
+    if (result === "ignored_stale") {
+      ctx.logger.debug(
+        {
+          ...messageContext,
+          source: collectorHeartbeat.source,
+          incomingTimestamp: collectorHeartbeat.timestamp.toISOString(),
+          currentTimestamp: ctx.healthContext.collectorHeartbeats
+            .get(collectorHeartbeat.source)
+            ?.timestamp.toISOString(),
+        },
+        "Ignoring stale collector heartbeat update"
+      );
+    }
   },
 };
 
@@ -352,25 +347,41 @@ async function updateConsumerLag(
   }
 }
 
+const RAW_EVENT_BATCH_MODE: BatchProcessingMode<ParsedRawEvent> = {
+  name: "raw-events",
+  messageStrategy: RAW_EVENT_BATCH_STRATEGY,
+  onCompletedBatch: updateConsumerLag,
+};
+
+const COLLECTOR_HEARTBEAT_BATCH_MODE: BatchProcessingMode<CollectorHeartbeatState> = {
+  name: "collector-heartbeat",
+  messageStrategy: COLLECTOR_HEARTBEAT_BATCH_STRATEGY,
+};
+
 export async function processBatch(
   ctx: TrendsContext,
   payload: EachBatchPayload
 ): Promise<void> {
-  const processed = await processBatchWithStrategy(
-    ctx,
-    payload,
-    RAW_EVENT_BATCH_STRATEGY
+  await runBatchProcessingPipeline(
+    {
+      ctx,
+      payload,
+      mode: RAW_EVENT_BATCH_MODE,
+      state: createBatchProcessingState(payload),
+    }
   );
-  if (!processed) {
-    return;
-  }
-
-  await updateConsumerLag(ctx, payload);
 }
 
 export async function processCollectorHeartbeatBatch(
   ctx: TrendsContext,
   payload: EachBatchPayload
 ): Promise<void> {
-  await processBatchWithStrategy(ctx, payload, COLLECTOR_HEARTBEAT_BATCH_STRATEGY);
+  await runBatchProcessingPipeline(
+    {
+      ctx,
+      payload,
+      mode: COLLECTOR_HEARTBEAT_BATCH_MODE,
+      state: createBatchProcessingState(payload),
+    }
+  );
 }

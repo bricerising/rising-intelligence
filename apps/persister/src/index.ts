@@ -1,69 +1,24 @@
-import { PrismaClient } from "@rising-intelligence/db";
 import {
   closeServer,
   runService,
   runShutdownSteps,
   createServiceBootstrap,
 } from "@rising-intelligence/shared";
-import type pino from "pino";
 import { getConfig } from "./config.js";
-import {
-  createKafkaConsumer,
-  disconnectKafkaConsumer,
-} from "./kafka/consumer.js";
-import {
-  createHealthContext,
-  startHealthServer,
-} from "./health.js";
-import { createRedisClient, disconnectRedis } from "./redis.js";
-import { PostgresCircuitBreaker } from "./circuit-breaker.js";
+import { disconnectKafkaConsumer } from "./kafka/consumer.js";
+import { disconnectRedis } from "./redis.js";
 import { processBatch, type PersisterContext } from "./process.js";
+import { createPersisterRuntimeFactory } from "./runtime-factory.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
+const runtimeFactory = createPersisterRuntimeFactory();
 
 async function initializePersister(): Promise<PersisterContext> {
   const config = bootstrap.getConfig();
   const logger = bootstrap.getLogger();
 
   logger.info({ service: config.SERVICE_NAME }, "Starting persister service");
-
-  const healthContext = createHealthContext();
-  const healthServer = startHealthServer(healthContext, logger);
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: config.DATABASE_URL } },
-    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
-  });
-
-  await prisma.$connect();
-  healthContext.postgresHealthy = true;
-  logger.info("Postgres connected");
-
-  const redis = await createRedisClient(config, logger.child({ component: "redis" }));
-  healthContext.redisHealthy = true;
-
-  const kafkaContext = await createKafkaConsumer(logger.child({ component: "kafka" }));
-  await kafkaContext.consumer.subscribe({
-    topic: config.KAFKA_TOPIC_RAW_EVENTS,
-    fromBeginning: false,
-  });
-  healthContext.kafkaHealthy = true;
-  logger.info({ topic: config.KAFKA_TOPIC_RAW_EVENTS }, "Kafka consumer subscribed");
-
-  return {
-    config,
-    logger,
-    healthContext,
-    healthServer,
-    prisma,
-    redis,
-    kafkaContext,
-    circuitBreaker: new PostgresCircuitBreaker(
-      config.POSTGRES_CIRCUIT_FAILURE_THRESHOLD,
-      config.POSTGRES_CIRCUIT_OPEN_MS
-    ),
-    lagWriteTimestamps: new Map(),
-  };
+  return runtimeFactory.createRuntime(config, logger);
 }
 
 async function runConsumer(ctx: PersisterContext): Promise<void> {

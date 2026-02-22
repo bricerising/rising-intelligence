@@ -1,7 +1,7 @@
 import type { Kafka, Producer } from "kafkajs";
 import {
   createKafkaProducerFactory,
-  createKafkaProducerProxy,
+  publishKafkaTopicMessage,
 } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
@@ -31,13 +31,7 @@ export async function publishBriefResult(
   value: Buffer,
   logger: Logger
 ): Promise<void> {
-  await createKafkaProducerProxy({
-    producer,
-    logger,
-  }).publishMessage({
-    topic,
-    key,
-    value,
+  await publishKafkaTopicMessage(producer, topic, key, value, logger, {
     logMessage: "Brief result published",
   });
 }

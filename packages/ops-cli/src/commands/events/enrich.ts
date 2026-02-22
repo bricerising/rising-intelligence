@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { existsSync } from "node:fs";
 import {
-  PrismaClient,
+  createPrismaClient,
   Source,
   Prisma,
 } from "@rising-intelligence/db";
@@ -408,12 +408,8 @@ export async function eventsEnrich(flags: CliFlags): Promise<void> {
   const context: EnrichContext = { allowlist };
   const where = buildWhereClause(missingOnly, source);
 
-  const prisma = new PrismaClient({
-    datasources: {
-      db: {
-        url: databaseUrl,
-      },
-    },
+  const prisma = createPrismaClient({
+    databaseUrl,
   });
 
   const stats = createStats();

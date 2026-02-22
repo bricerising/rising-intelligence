@@ -1,4 +1,4 @@
-import { PrismaClient } from "@rising-intelligence/db";
+import { createPrismaClient } from "@rising-intelligence/db";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import {
@@ -17,12 +17,8 @@ export async function topicsList(flags: CliFlags): Promise<void> {
     ? parseNonNegativeIntegerStrict(minCountRaw, "--min-count")
     : 0;
 
-  const prisma = new PrismaClient({
-    datasources: {
-      db: {
-        url: databaseUrl,
-      },
-    },
+  const prisma = createPrismaClient({
+    databaseUrl,
   });
 
   try {

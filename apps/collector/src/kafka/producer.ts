@@ -1,7 +1,8 @@
 import type { Kafka, Producer } from "kafkajs";
 import {
   createKafkaProducerFactory,
-  createKafkaProducerProxy,
+  publishKafkaTopicBatch,
+  publishKafkaTopicMessage,
 } from "@rising-intelligence/shared";
 import type { Logger } from "pino";
 import { getConfig } from "../config.js";
@@ -38,13 +39,7 @@ export async function publishEvent(
   value: Buffer,
   logger: Logger
 ): Promise<void> {
-  await createKafkaProducerProxy({
-    producer,
-    logger,
-  }).publishMessage({
-    topic,
-    key,
-    value,
+  await publishKafkaTopicMessage(producer, topic, key, value, logger, {
     logMessage: "Event published to Kafka",
   });
 }
@@ -55,12 +50,7 @@ export async function publishBatch(
   messages: Array<{ key: string; value: Buffer }>,
   logger: Logger
 ): Promise<void> {
-  await createKafkaProducerProxy({
-    producer,
-    logger,
-  }).publishBatch({
-    topic,
-    messages,
+  await publishKafkaTopicBatch(producer, topic, messages, logger, {
     logMessage: "Batch published to Kafka",
   });
 }

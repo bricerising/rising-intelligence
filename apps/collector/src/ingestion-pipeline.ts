@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import { runAsyncChain, type AsyncChainStep } from "@rising-intelligence/shared";
 import type { CheckpointStore } from "./checkpoint.js";
 import {
   incrementEventsFailed,
@@ -89,15 +90,7 @@ interface ProcessingContext {
   state: ProcessingState;
 }
 
-interface ProcessingStep {
-  readonly name: string;
-  execute(
-    ctx: ProcessingContext,
-    next: () => Promise<CollectorEventProcessResult>
-  ): Promise<CollectorEventProcessResult>;
-}
-
-type CollectorNext = () => Promise<CollectorEventProcessResult>;
+type ProcessingStep = AsyncChainStep<ProcessingContext, CollectorEventProcessResult>;
 
 function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
@@ -227,33 +220,6 @@ function createPublishStep(): ProcessingStep {
   };
 }
 
-function runChain(
-  steps: readonly ProcessingStep[],
-  ctx: ProcessingContext
-): Promise<CollectorEventProcessResult> {
-  const dispatch = async (index: number): Promise<CollectorEventProcessResult> => {
-    const step = steps[index];
-    if (!step) {
-      throw new Error("Collector event pipeline terminated unexpectedly");
-    }
-
-    let nextCalled = false;
-    const next: CollectorNext = async () => {
-      if (nextCalled) {
-        throw new Error(
-          `Collector event pipeline step "${step.name}" called next() multiple times`
-        );
-      }
-      nextCalled = true;
-      return dispatch(index + 1);
-    };
-
-    return step.execute(ctx, next);
-  };
-
-  return dispatch(0);
-}
-
 export function createCollectorEventProcessor(
   input: CollectorEventProcessorInput
 ): CollectorEventProcessor {
@@ -273,10 +239,23 @@ export function createCollectorEventProcessor(
 
   return {
     async process(event: RawEvent): Promise<CollectorEventProcessResult> {
-      return runChain(steps, {
-        runtime,
-        state: { event, topics: [] },
-      });
+      return runAsyncChain(
+        steps,
+        {
+          runtime,
+          state: { event, topics: [] },
+        },
+        {
+          onEnd() {
+            throw new Error("Collector event pipeline terminated unexpectedly");
+          },
+          duplicateNextError(stepName) {
+            return new Error(
+              `Collector event pipeline step "${stepName}" called next() multiple times`
+            );
+          },
+        }
+      );
     },
   };
 }

@@ -135,6 +135,10 @@ export interface KafkaTopicPublisher<TPayload> {
   publish(key: string, payload: TPayload): Promise<void>;
 }
 
+export interface KeyedKafkaTopicPublisher<TPayload> {
+  publish(payload: TPayload): Promise<void>;
+}
+
 export interface CreateKafkaTopicPublisherInput<
   TPayload,
   TLogger extends KafkaLogger = KafkaLogger
@@ -146,6 +150,13 @@ export interface CreateKafkaTopicPublisherInput<
   serialize?: (payload: TPayload) => Buffer;
 }
 
+export interface CreateKeyedKafkaTopicPublisherInput<
+  TPayload,
+  TLogger extends KafkaLogger = KafkaLogger
+> extends CreateKafkaTopicPublisherInput<TPayload, TLogger> {
+  getKey(payload: TPayload): string;
+}
+
 export interface KafkaProducerProxy {
   publishMessage(input: PublishKafkaMessageInput): Promise<void>;
   publishBatch(input: PublishKafkaBatchInput): Promise<boolean>;
@@ -155,6 +166,16 @@ export interface CreateKafkaProducerProxyInput {
   producer: Producer;
   logger: KafkaLogger;
   compressionType?: CompressionTypes;
+}
+
+export interface PublishKafkaTopicMessageOptions {
+  logMessage: string;
+  logContext?: Record<string, unknown>;
+}
+
+export interface PublishKafkaTopicBatchOptions {
+  logMessage: string;
+  logContext?: Record<string, unknown>;
 }
 
 function serializeJsonPayload(payload: unknown): Buffer {
@@ -182,6 +203,31 @@ export function createKafkaTopicPublisher<
         serialize(payload),
         input.logger
       );
+    },
+  };
+}
+
+/**
+ * Adapter around KafkaTopicPublisher for payloads that already contain their key.
+ * Callers publish one payload while the adapter derives and applies the topic key.
+ */
+export function createKeyedKafkaTopicPublisher<
+  TPayload,
+  TLogger extends KafkaLogger = KafkaLogger
+>(
+  input: CreateKeyedKafkaTopicPublisherInput<TPayload, TLogger>
+): KeyedKafkaTopicPublisher<TPayload> {
+  const topicPublisher = createKafkaTopicPublisher<TPayload, TLogger>({
+    producer: input.producer,
+    logger: input.logger,
+    topic: input.topic,
+    publish: input.publish,
+    serialize: input.serialize,
+  });
+
+  return {
+    async publish(payload: TPayload): Promise<void> {
+      await topicPublisher.publish(input.getKey(payload), payload);
     },
   };
 }
@@ -232,6 +278,73 @@ export function createKafkaProducerProxy(
       return true;
     },
   };
+}
+
+const PRODUCER_PROXY_CACHE = new WeakMap<Producer, WeakMap<KafkaLogger, KafkaProducerProxy>>();
+
+function getCachedKafkaProducerProxy(
+  producer: Producer,
+  logger: KafkaLogger
+): KafkaProducerProxy {
+  let loggerCache = PRODUCER_PROXY_CACHE.get(producer);
+  if (!loggerCache) {
+    loggerCache = new WeakMap<KafkaLogger, KafkaProducerProxy>();
+    PRODUCER_PROXY_CACHE.set(producer, loggerCache);
+  }
+
+  const cachedProxy = loggerCache.get(logger);
+  if (cachedProxy) {
+    return cachedProxy;
+  }
+
+  const createdProxy = createKafkaProducerProxy({
+    producer,
+    logger,
+  });
+  loggerCache.set(logger, createdProxy);
+  return createdProxy;
+}
+
+/**
+ * Shared publish helper that reuses a cached Kafka producer proxy per
+ * producer+logger pair so callers avoid rebuilding proxy wrappers on every send.
+ */
+export async function publishKafkaTopicMessage(
+  producer: Producer,
+  topic: string,
+  key: string,
+  value: Buffer,
+  logger: KafkaLogger,
+  options: PublishKafkaTopicMessageOptions
+): Promise<void> {
+  const proxy = getCachedKafkaProducerProxy(producer, logger);
+  await proxy.publishMessage({
+    topic,
+    key,
+    value,
+    logMessage: options.logMessage,
+    logContext: options.logContext,
+  });
+}
+
+/**
+ * Shared batch publish helper that reuses the cached Kafka producer proxy.
+ * Returns false when the batch is empty and no send is performed.
+ */
+export async function publishKafkaTopicBatch(
+  producer: Producer,
+  topic: string,
+  messages: Array<{ key: string; value: Buffer }>,
+  logger: KafkaLogger,
+  options: PublishKafkaTopicBatchOptions
+): Promise<boolean> {
+  const proxy = getCachedKafkaProducerProxy(producer, logger);
+  return proxy.publishBatch({
+    topic,
+    messages,
+    logMessage: options.logMessage,
+    logContext: options.logContext,
+  });
 }
 
 export interface ConnectKafkaConsumerOptions {

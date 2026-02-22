@@ -9,6 +9,9 @@ import {
 } from "./text-enrichment-strategy.js";
 
 const HN_API_BASE = "https://hacker-news.firebaseio.com/v0";
+const HN_REQUEST_TIMEOUT_MS = 30_000;
+const HN_REQUEST_DELAY_MS = 100;
+const HN_RANKED_SCAN_MULTIPLIER = 4;
 const MIN_HN_TEXT_LENGTH = 1;
 
 type HNMode = "top" | "new" | "best";
@@ -25,12 +28,19 @@ interface HNItem {
   descendants?: number;
 }
 
+type FetchJsonFn = <T>(url: string) => Promise<T>;
+
+interface HackerNewsApi {
+  fetchStoryIds(mode: HNMode): Promise<number[]>;
+  fetchItem(storyId: number): Promise<HNItem | null>;
+}
+
 /**
- * Fetch JSON from HN API with timeout
+ * Proxy around HN HTTP calls so adapter logic stays focused on event normalization.
  */
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJsonWithTimeout<T>(url: string): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), HN_REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {
@@ -50,6 +60,69 @@ async function fetchJson<T>(url: string): Promise<T> {
   }
 }
 
+function createHackerNewsApi(fetchJson: FetchJsonFn = fetchJsonWithTimeout): HackerNewsApi {
+  return {
+    async fetchStoryIds(mode: HNMode): Promise<number[]> {
+      return fetchJson<number[]>(`${HN_API_BASE}/${mode}stories.json`);
+    },
+    async fetchItem(storyId: number): Promise<HNItem | null> {
+      return fetchJson<HNItem | null>(`${HN_API_BASE}/item/${storyId}.json`);
+    },
+  };
+}
+
+function getCheckpointKey(mode: HNMode): string {
+  return `last_max_id_${mode}`;
+}
+
+function parseCheckpointValue(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function dedupeStoryIds(storyIds: readonly number[]): number[] {
+  return [...new Set(storyIds)];
+}
+
+function toEventId(storyId: number): string {
+  return `hn:${storyId}`;
+}
+
+interface StorySelectionInput {
+  mode: HNMode;
+  storyIds: readonly number[];
+  maxItems: number;
+  lastMaxId: number;
+  hasSeenStory(storyId: number): boolean;
+}
+
+function selectStoryIdsForPolling(input: StorySelectionInput): number[] {
+  const dedupedStoryIds = dedupeStoryIds(input.storyIds);
+  if (input.mode === "new") {
+    // New stories are naturally append-only by ID, so process oldest unseen first.
+    return dedupedStoryIds
+      .filter((storyId) => storyId > input.lastMaxId)
+      .sort((a, b) => a - b)
+      .slice(0, input.maxItems);
+  }
+
+  // Ranked feeds can reorder; scan more than maxItems so previously skipped unseen IDs can recover.
+  const scanWindow = dedupedStoryIds.slice(0, input.maxItems * HN_RANKED_SCAN_MULTIPLIER);
+  return scanWindow
+    .filter((storyId) => storyId > input.lastMaxId || !input.hasSeenStory(storyId))
+    .slice(0, input.maxItems);
+}
+
+async function delayBetweenStoryRequests(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, HN_REQUEST_DELAY_MS));
+}
+
 /**
  * Hacker News adapter.
  * Polls HN Firebase API for top/new/best stories.
@@ -64,6 +137,7 @@ export class HackerNewsAdapter implements SourceAdapter {
   private checkpoints: CheckpointStore;
   private logger: Logger;
   private textEnrichmentStrategy: TextEnrichmentStrategy;
+  private api: HackerNewsApi;
 
   constructor(
     mode: HNMode,
@@ -71,13 +145,15 @@ export class HackerNewsAdapter implements SourceAdapter {
     maxItems: number,
     checkpoints: CheckpointStore,
     logger: Logger,
-    contentFetcherConfig?: ContentFetcherConfig
+    contentFetcherConfig?: ContentFetcherConfig,
+    api: HackerNewsApi = createHackerNewsApi()
   ) {
     this.mode = mode;
     this.pollIntervalMs = pollIntervalMs;
     this.maxItems = maxItems;
     this.checkpoints = checkpoints;
     this.logger = logger;
+    this.api = api;
     this.textEnrichmentStrategy = createTextEnrichmentStrategy(
       contentFetcherConfig,
       logger,
@@ -93,58 +169,74 @@ export class HackerNewsAdapter implements SourceAdapter {
   }
 
   async *fetch(): AsyncIterable<FetchResult> {
-    const checkpointKey = `last_max_id_${this.mode}`;
-    const lastMaxIdStr = this.checkpoints.getCheckpoint(this.name, checkpointKey);
-    const lastMaxId = lastMaxIdStr ? parseInt(lastMaxIdStr, 10) : 0;
+    const checkpointKey = getCheckpointKey(this.mode);
+    const lastMaxId = parseCheckpointValue(
+      this.checkpoints.getCheckpoint(this.name, checkpointKey)
+    );
 
-    // Get story IDs based on mode
-    const endpoint = `${HN_API_BASE}/${this.mode}stories.json`;
-    this.logger.debug({ endpoint, lastMaxId }, "Fetching HN story IDs");
+    this.logger.debug({ mode: this.mode, lastMaxId }, "Fetching HN story IDs");
 
     let storyIds: number[];
     try {
-      storyIds = await fetchJson<number[]>(endpoint);
+      storyIds = await this.api.fetchStoryIds(this.mode);
     } catch (error) {
       this.logger.error({ error }, "Failed to fetch HN story IDs");
       throw error;
     }
 
-    // Take top N stories that are newer than checkpoint
-    const newStoryIds = storyIds
-      .filter((id) => id > lastMaxId)
-      .slice(0, this.maxItems);
+    const candidateStoryIds = selectStoryIdsForPolling(
+      {
+        mode: this.mode,
+        storyIds,
+        maxItems: this.maxItems,
+        lastMaxId,
+        hasSeenStory: (storyId) =>
+          this.checkpoints.hasSeen(this.source, toEventId(storyId)),
+      }
+    );
 
-    if (newStoryIds.length === 0) {
+    if (candidateStoryIds.length === 0) {
       this.logger.debug("No new HN stories");
       return;
     }
 
     this.logger.debug(
-      { totalStories: storyIds.length, newStories: newStoryIds.length },
-      "Processing new HN stories"
+      {
+        mode: this.mode,
+        totalStories: storyIds.length,
+        candidateStories: candidateStoryIds.length,
+      },
+      "Processing HN stories"
     );
 
-    // Fetch each story (could parallelize but respecting rate limits)
-    let maxProcessedId = lastMaxId;
+    let checkpointCursor = lastMaxId;
+    let checkpointBlocked = false;
 
-    for (const storyId of newStoryIds) {
+    for (const storyId of candidateStoryIds) {
       try {
-        const item = await fetchJson<HNItem | null>(
-          `${HN_API_BASE}/item/${storyId}.json`
-        );
+        const item = await this.api.fetchItem(storyId);
 
         if (!item || item.type !== "story") {
-          maxProcessedId = Math.max(maxProcessedId, storyId);
+          if (this.mode === "new" && !checkpointBlocked) {
+            checkpointCursor = storyId;
+          } else if (this.mode !== "new") {
+            checkpointCursor = Math.max(checkpointCursor, storyId);
+          }
           continue;
         }
 
         const event = await this.itemToRawEvent(item);
-        if (event) {
-          maxProcessedId = Math.max(maxProcessedId, storyId);
+        if (this.mode === "new" && !checkpointBlocked) {
+          checkpointCursor = storyId;
+        } else if (this.mode !== "new") {
+          checkpointCursor = Math.max(checkpointCursor, storyId);
+        }
+
+        if (event !== null) {
           yield {
             event,
             checkpointKey,
-            checkpointValue: maxProcessedId.toString(),
+            checkpointValue: checkpointCursor.toString(),
           };
         }
       } catch (error) {
@@ -152,11 +244,12 @@ export class HackerNewsAdapter implements SourceAdapter {
           { storyId, error },
           "Failed to fetch HN story"
         );
-        // Continue with other stories
+        if (this.mode === "new") {
+          checkpointBlocked = true;
+        }
       }
 
-      // Small delay between requests to be nice to the API
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await delayBetweenStoryRequests();
     }
   }
 
@@ -229,6 +322,7 @@ export interface CreateHackerNewsAdapterInput {
   checkpoints: CheckpointStore;
   logger: Logger;
   contentFetcherConfig?: ContentFetcherConfig;
+  api?: HackerNewsApi;
 }
 
 export function createHackerNewsAdapter(
@@ -244,6 +338,7 @@ export function createHackerNewsAdapter(
     input.maxItems,
     input.checkpoints,
     input.logger,
-    input.contentFetcherConfig
+    input.contentFetcherConfig,
+    input.api
   );
 }

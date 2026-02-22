@@ -87,9 +87,18 @@ export async function createRedisClient(redisUrl: string, logger: Logger): Promi
     lazyConnect: true,
   });
 
-  await redis.connect();
-  logger.info({ redisUrl: redactUrlPassword(redisUrl, "<invalid-redis-url>") }, "Redis connected");
-  return redis;
+  try {
+    await redis.connect();
+    logger.info(
+      { redisUrl: redactUrlPassword(redisUrl, "<invalid-redis-url>") },
+      "Redis connected"
+    );
+    return redis;
+  } catch (error) {
+    logger.error({ error }, "Failed to connect to Redis");
+    redis.disconnect();
+    throw error;
+  }
 }
 
 export async function disconnectRedis(redis: Redis | null, logger: Logger): Promise<void> {

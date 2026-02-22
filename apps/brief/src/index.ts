@@ -1,7 +1,5 @@
-import type { Server } from "node:http";
-import type { Redis } from "ioredis";
 import type { EachBatchPayload } from "kafkajs";
-import { PrismaClient, Prisma, TrendWindow } from "@rising-intelligence/db";
+import { Prisma, TrendWindow } from "@rising-intelligence/db";
 import {
   createTopicBatchRouter,
   processKafkaBatchMessages,
@@ -16,41 +14,23 @@ import {
 import type pino from "pino";
 import { getConfig } from "./config.js";
 import {
-  createHealthContext,
   incrementGeneration,
   observeGenerationDuration,
   incrementError,
-  setBudgetRemainingUsd,
-  startHealthServer,
-  type HealthContext,
 } from "./health.js";
-import {
-  createKafkaConsumer,
-  disconnectKafkaConsumer,
-  type KafkaConsumerContext,
-} from "./kafka/consumer.js";
-import {
-  createKafkaProducer,
-  disconnectKafkaProducer,
-  type KafkaProducerContext,
-} from "./kafka/producer.js";
+import { disconnectKafkaConsumer } from "./kafka/consumer.js";
+import { disconnectKafkaProducer } from "./kafka/producer.js";
 import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deserialize.js";
-import { createRedisClient, disconnectRedis } from "./redis.js";
+import { disconnectRedis } from "./redis.js";
 import { processSummaryRequest } from "./process.js";
+import {
+  createBriefRuntimeFactory,
+  type BriefRuntimeContext as RuntimeContext,
+} from "./runtime-factory.js";
 import type { ParsedTrendSnapshot } from "./types.js";
 
-interface RuntimeContext {
-  config: ReturnType<typeof getConfig>;
-  logger: pino.Logger;
-  healthContext: HealthContext;
-  healthServer: Server;
-  kafkaConsumerContext: KafkaConsumerContext;
-  kafkaProducerContext: KafkaProducerContext;
-  prisma: PrismaClient;
-  redis: Redis;
-}
-
 const bootstrap = createServiceBootstrap(getConfig);
+const runtimeFactory = createBriefRuntimeFactory();
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
@@ -241,57 +221,11 @@ function createBatchTopicHandlers(
   );
 }
 
-async function initialize(): Promise<RuntimeContext> {
+async function createRuntime(): Promise<RuntimeContext> {
   const config = bootstrap.getConfig();
   const logger = bootstrap.getLogger();
   logger.info({ service: config.SERVICE_NAME }, "Starting brief service");
-
-  const healthContext = createHealthContext(config.LLM_DAILY_BUDGET_USD);
-  const healthServer = startHealthServer(healthContext, logger);
-  setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: config.DATABASE_URL } },
-    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
-  });
-  await prisma.$connect();
-  healthContext.postgresHealthy = true;
-  logger.info("Postgres connected");
-
-  const redis = await createRedisClient(
-    config.REDIS_URL,
-    logger.child({ component: "redis" })
-  );
-  healthContext.redisHealthy = true;
-
-  const kafkaConsumerContext = await createKafkaConsumer(logger);
-  await kafkaConsumerContext.consumer.subscribe({
-    topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
-    fromBeginning: false,
-  });
-  const kafkaProducerContext = await createKafkaProducer(
-    logger.child({ component: "kafka-producer" })
-  );
-  healthContext.kafkaHealthy = true;
-
-  logger.info(
-    {
-      consumeTopics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
-      publishTopic: config.KAFKA_TOPIC_SUMMARY_RESULTS,
-    },
-    "Kafka subscriptions initialized"
-  );
-
-  return {
-    config,
-    logger,
-    healthContext,
-    healthServer,
-    kafkaConsumerContext,
-    kafkaProducerContext,
-    prisma,
-    redis,
-  };
+  return runtimeFactory.createRuntime(config, logger);
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
@@ -355,7 +289,7 @@ runService<RuntimeContext>({
     return bootstrap.getLogger();
   },
   async initialize() {
-    const ctx = await initialize();
+    const ctx = await createRuntime();
     bootstrap.setRuntimeLogger(ctx.logger);
     return ctx;
   },

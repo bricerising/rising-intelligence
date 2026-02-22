@@ -13,6 +13,15 @@ function formatCommandInput(command: string[]): string {
   return command.join(" ");
 }
 
+function buildCommandErrorMessage(command: string[]): string {
+  const input = formatCommandInput(command);
+  if (command.length > 2) {
+    return `Expected command format: <group> <command> or <group:command>. Received: ${input}`;
+  }
+
+  return `Unknown command: ${input}`;
+}
+
 async function main() {
   loadDotEnv();
 
@@ -31,23 +40,13 @@ async function main() {
     return;
   }
 
-  if (command.length !== 2) {
-    printHelp(
-      commandRegistry,
-      `Expected command format: <group> <command>. Received: ${formatCommandInput(command)}`
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  const [group, subcommand] = command;
-  const resolvedCommand = commandRegistry.resolve(group, subcommand);
+  const resolvedCommand = commandRegistry.resolveInput(command);
   if (resolvedCommand) {
     await resolvedCommand.run(flags);
     return;
   }
 
-  printHelp(commandRegistry, `Unknown command: ${command.join(" ")}`);
+  printHelp(commandRegistry, buildCommandErrorMessage(command));
   process.exitCode = 1;
 }
 
@@ -56,4 +55,3 @@ main().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });
-

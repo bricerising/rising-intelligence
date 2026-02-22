@@ -1,19 +1,8 @@
 import { Redis } from "ioredis";
+import { redactUrlPassword } from "@rising-intelligence/shared";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { ParsedRawEvent } from "./types.js";
-
-function redactRedisUrl(redisUrl: string): string {
-  try {
-    const parsed = new URL(redisUrl);
-    if (parsed.password) {
-      parsed.password = "***";
-    }
-    return parsed.toString();
-  } catch {
-    return "<invalid-redis-url>";
-  }
-}
 
 export async function createRedisClient(
   config: Config,
@@ -25,7 +14,10 @@ export async function createRedisClient(
 
   try {
     await redis.ping();
-    logger.info({ redisUrl: redactRedisUrl(config.REDIS_URL) }, "Redis connected");
+    logger.info(
+      { redisUrl: redactUrlPassword(config.REDIS_URL, "<invalid-redis-url>") },
+      "Redis connected"
+    );
     return redis;
   } catch (error) {
     logger.error({ error }, "Failed to connect to Redis");

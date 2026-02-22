@@ -135,13 +135,17 @@ export class LobstersAdapter implements SourceAdapter {
       const guid = item.guid ?? item.link;
       if (!guid) continue;
 
-      const event = await this.itemToRawEvent(item, guid);
-      if (event) {
-        yield {
-          event,
-          checkpointKey,
-          checkpointValue: guid,
-        };
+      try {
+        const event = await this.itemToRawEvent(item, guid);
+        if (event) {
+          yield {
+            event,
+            checkpointKey,
+            checkpointValue: guid,
+          };
+        }
+      } catch (error) {
+        this.logger.warn({ guid, error }, "Failed to normalize Lobsters item");
       }
     }
   }

@@ -1,6 +1,4 @@
-import type { Server } from "node:http";
 import type { EachBatchPayload } from "kafkajs";
-import { PrismaClient } from "@rising-intelligence/db";
 import {
   createTopicBatchRouter,
   type BatchTopicHandler,
@@ -10,124 +8,29 @@ import {
   runShutdownSteps,
   createServiceBootstrap,
 } from "@rising-intelligence/shared";
-import type pino from "pino";
 import { getConfig } from "./config.js";
-import { loadAllowlist, type CompiledAllowlist } from "./allowlist.js";
+import { incrementError } from "./health.js";
+import { disconnectKafkaConsumer } from "./kafka/consumer.js";
+import { disconnectKafkaProducer } from "./kafka/producer.js";
+import { disconnectRedis } from "./redis.js";
+import { processBatch, processCollectorHeartbeatBatch } from "./process.js";
 import {
-  createHealthContext,
-  incrementError,
-  startHealthServer,
-  type HealthContext,
-} from "./health.js";
-import {
-  createKafkaConsumer,
-  disconnectKafkaConsumer,
-  type KafkaConsumerContext,
-} from "./kafka/consumer.js";
-import {
-  createKafkaProducer,
-  disconnectKafkaProducer,
-  type KafkaProducerContext,
-} from "./kafka/producer.js";
-import { createRedisClient, disconnectRedis } from "./redis.js";
-import {
-  processBatch,
-  processCollectorHeartbeatBatch,
-  type TrendsContext,
-} from "./process.js";
+  createTrendsRuntimeFactory,
+  type TrendsRuntimeContext,
+} from "./runtime-factory.js";
 import { publishSnapshots } from "./snapshot.js";
 
-interface RuntimeContext extends TrendsContext {
-  healthServer: Server;
-  kafkaConsumerContext: KafkaConsumerContext;
-  kafkaProducerContext: KafkaProducerContext;
-  snapshotTimer: NodeJS.Timeout | null;
-  snapshotInFlight: boolean;
-}
-
 const bootstrap = createServiceBootstrap(getConfig);
+const runtimeFactory = createTrendsRuntimeFactory();
 
-async function initializeAllowlist(
-  allowlistPath: string,
-  logger: pino.Logger,
-  healthContext: HealthContext
-): Promise<CompiledAllowlist> {
-  const allowlist = loadAllowlist(allowlistPath);
-  healthContext.allowlistHealthy = true;
-  logger.info({ topicCount: allowlist.topics.length }, "Topics allowlist loaded");
-  return allowlist;
-}
-
-async function initializeTrends(): Promise<RuntimeContext> {
+async function initializeTrends(): Promise<TrendsRuntimeContext> {
   const config = bootstrap.getConfig();
   const logger = bootstrap.getLogger();
-
   logger.info({ service: config.SERVICE_NAME }, "Starting trends service");
-
-  const healthContext = createHealthContext();
-  const healthServer = startHealthServer(healthContext, logger);
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: config.DATABASE_URL } },
-    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
-  });
-
-  await prisma.$connect();
-  healthContext.postgresHealthy = true;
-  logger.info("Postgres connected");
-
-  const redis = await createRedisClient(
-    config.REDIS_URL,
-    logger.child({ component: "redis" })
-  );
-  healthContext.redisHealthy = true;
-
-  const allowlist = await initializeAllowlist(config.TOPICS_ALLOWLIST_PATH, logger, healthContext);
-
-  const kafkaConsumerContext = await createKafkaConsumer(
-    logger.child({ component: "kafka-consumer" })
-  );
-  await kafkaConsumerContext.consumer.subscribe({
-    topic: config.KAFKA_TOPIC_RAW_EVENTS,
-    fromBeginning: false,
-  });
-  await kafkaConsumerContext.consumer.subscribe({
-    topic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-    fromBeginning: false,
-  });
-
-  const kafkaProducerContext = await createKafkaProducer(
-    logger.child({ component: "kafka-producer" })
-  );
-  healthContext.kafkaHealthy = true;
-
-  logger.info(
-    {
-      consumeTopic: config.KAFKA_TOPIC_RAW_EVENTS,
-      heartbeatTopic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-      publishTopic: config.KAFKA_TOPIC_TRENDS_SNAPSHOTS,
-      windows: config.WINDOWS,
-    },
-    "Kafka subscriptions initialized"
-  );
-
-  return {
-    config,
-    logger,
-    healthContext,
-    prisma,
-    redis,
-    allowlist,
-    lagWriteTimestamps: new Map(),
-    healthServer,
-    kafkaConsumerContext,
-    kafkaProducerContext,
-    snapshotTimer: null,
-    snapshotInFlight: false,
-  };
+  return runtimeFactory.createRuntime(config, logger);
 }
 
-async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
+async function runSnapshotLoop(ctx: TrendsRuntimeContext): Promise<void> {
   const run = async () => {
     if (ctx.snapshotInFlight) {
       return;
@@ -162,7 +65,7 @@ async function runSnapshotLoop(ctx: RuntimeContext): Promise<void> {
   ctx.snapshotTimer.unref();
 }
 
-function createBatchTopicHandlers(ctx: RuntimeContext): Map<string, BatchTopicHandler> {
+function createBatchTopicHandlers(ctx: TrendsRuntimeContext): Map<string, BatchTopicHandler> {
   return new Map<string, BatchTopicHandler>([
     [ctx.config.KAFKA_TOPIC_RAW_EVENTS, async (payload) => processBatch(ctx, payload)],
     [
@@ -172,7 +75,7 @@ function createBatchTopicHandlers(ctx: RuntimeContext): Map<string, BatchTopicHa
   ]);
 }
 
-async function runConsumer(ctx: RuntimeContext): Promise<void> {
+async function runConsumer(ctx: TrendsRuntimeContext): Promise<void> {
   const topicBatchRouter = createTopicBatchRouter({
     logger: ctx.logger,
     handlers: createBatchTopicHandlers(ctx),
@@ -187,7 +90,7 @@ async function runConsumer(ctx: RuntimeContext): Promise<void> {
   });
 }
 
-async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
+async function gracefulShutdown(ctx: TrendsRuntimeContext): Promise<void> {
   const logger = ctx.logger;
 
   if (ctx.snapshotTimer) {
@@ -233,7 +136,7 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   ]);
 }
 
-runService<RuntimeContext>({
+runService<TrendsRuntimeContext>({
   name: bootstrap.getServiceName(),
   shutdownTimeoutMs: bootstrap.getShutdownTimeoutMs(),
   getLogger() {

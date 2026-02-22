@@ -1,5 +1,12 @@
 // Re-export Prisma client and types
-export { prisma, PrismaClient } from "./client.js";
+export {
+  prisma,
+  PrismaClient,
+  createPrismaClient,
+  createConnectedPrismaClient,
+  withPrismaClient,
+  type PrismaClientFactoryInput,
+} from "./client.js";
 export { upsertConsumerLag, type ConsumerLagUpdate } from "./consumer-lag.js";
 
 // Re-export generated types for convenience

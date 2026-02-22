@@ -201,4 +201,36 @@ describe("collector adapter factory", () => {
       })
     );
   });
+
+  it("deduplicates EDGAR allowlist forms before building RSS adapter input", () => {
+    const logger = createLogger();
+    const checkpointStore = {} as any;
+    const config = createAdapterConfig({
+      HN_ENABLED: false,
+      EDGAR_FORMS_ALLOWLIST: "8-K, 8-K,10-Q, ,10-Q",
+    });
+    const factory = createCollectorAdapterFactory(constructorMocks);
+
+    factory.build({
+      config,
+      checkpointStore,
+      logger,
+      contentFetcherConfig,
+      marketFilterProfiles,
+    });
+
+    expect(constructorMocks.createRSSAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        edgarFormsAllowlist: ["8-K", "10-Q"],
+      })
+    );
+  });
+
+  it("fails fast when a constructor override is not a function", () => {
+    expect(() =>
+      createCollectorAdapterFactory({
+        createRSSAdapter: 123 as unknown as typeof constructorMocks.createRSSAdapter,
+      })
+    ).toThrow('Collector adapter constructor override "createRSSAdapter" must be a function');
+  });
 });

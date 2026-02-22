@@ -60,6 +60,6 @@ export function compileTopicGlobMatchers(globs: string[] | undefined): RegExp[] 
   return resolvedGlobs.map((glob) => compileTopicGlob(glob));
 }
 
-export function matchesAnyTopicGlob(topic: string, matchers: RegExp[]): boolean {
+export function matchesAnyTopicGlob(topic: string, matchers: readonly RegExp[]): boolean {
   return matchers.some((matcher) => matcher.test(topic));
 }

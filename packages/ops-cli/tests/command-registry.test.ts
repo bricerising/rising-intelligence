@@ -26,6 +26,26 @@ describe("CommandRegistry", () => {
     expect(canonical).toBe(alias);
   });
 
+  it("resolves single-token canonical and alias keys", () => {
+    const run = vi.fn(async () => {});
+    const registry = new CommandRegistry([
+      {
+        group: "kafka",
+        command: "topics",
+        aliases: ["kafka:list"],
+        summary: "List Kafka topics",
+        run,
+      },
+    ]);
+
+    const canonical = registry.resolveInput(["kafka:topics"]);
+    const alias = registry.resolveInput(["kafka:list"]);
+
+    expect(canonical).not.toBeNull();
+    expect(alias).not.toBeNull();
+    expect(canonical).toBe(alias);
+  });
+
   it("returns null when a command is not registered", () => {
     const registry = new CommandRegistry([
       {
@@ -37,6 +57,8 @@ describe("CommandRegistry", () => {
     ]);
 
     expect(registry.resolve("kafka", "missing")).toBeNull();
+    expect(registry.resolveInput(["kafka:missing"])).toBeNull();
+    expect(registry.resolveInput(["kafka", "topics", "extra"])).toBeNull();
   });
 
   it("throws when duplicate aliases are configured", () => {
@@ -151,5 +173,14 @@ describe("CommandRegistry", () => {
 
     expect(command).not.toBeNull();
     expect(alias).toBe(command);
+  });
+
+  it("resolves default commands from single-token keys", () => {
+    const registry = createDefaultCommandRegistry();
+    const canonical = registry.resolveInput(["topics:retag"]);
+    const alias = registry.resolveInput(["topics:reclassify"]);
+
+    expect(canonical).not.toBeNull();
+    expect(alias).toBe(canonical);
   });
 });

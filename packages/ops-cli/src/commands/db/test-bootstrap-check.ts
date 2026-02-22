@@ -1,6 +1,9 @@
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { PrismaClient } from "@rising-intelligence/db";
+import {
+  createPrismaClient,
+  type PrismaClient,
+} from "@rising-intelligence/db";
 import { REPO_ROOT } from "@rising-intelligence/shared";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
@@ -77,16 +80,6 @@ async function listExpectedMigrations(config: TestBootstrapCheckConfig): Promise
     .sort((left, right) => left.localeCompare(right));
 }
 
-function createPrisma(databaseUrl: string): PrismaClient {
-  return new PrismaClient({
-    datasources: {
-      db: {
-        url: databaseUrl,
-      },
-    },
-  });
-}
-
 async function checkTables(prisma: PrismaClient, requiredTables: string[]): Promise<string[]> {
   const rows = await prisma.$queryRawUnsafe<Array<{ table_name: string }>>(
     "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
@@ -104,7 +97,9 @@ async function checkMigrations(prisma: PrismaClient, expected: string[]): Promis
 }
 
 async function runBootstrapCheck(config: TestBootstrapCheckConfig): Promise<BootstrapCheckResult> {
-  const prisma = createPrisma(config.databaseUrl);
+  const prisma = createPrismaClient({
+    databaseUrl: config.databaseUrl,
+  });
   const result: BootstrapCheckResult = {
     missingTables: [],
     missingMigrations: [],

@@ -1,9 +1,13 @@
-import { BriefStatus, Prisma, Source, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
+import { BriefStatus, Prisma, TrendWindow, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
 import { serializeError } from "@rising-intelligence/shared";
 import type pino from "pino";
 import { z } from "zod";
+import {
+  createBriefBudgetLedger,
+  type BriefBudgetLedger,
+} from "./budget-ledger.js";
 import type { Config } from "./config.js";
 import {
   incrementBudgetExceeded,
@@ -32,13 +36,21 @@ import {
   type BriefResultPayload,
 } from "./result-payload-adapter.js";
 import type {
-  EvidenceStrategy,
   LlmProvider,
   ParsedSummaryEvidence,
   ParsedSummaryRequest,
   ParsedSummaryTopic,
 } from "./types.js";
-import { compileTopicGlobMatchers, matchesAnyTopicGlob } from "./topic-glob.js";
+import { compileTopicGlobMatchers } from "./topic-glob.js";
+import {
+  countTopicRelevanceTermMatches,
+  getTopLevelTopicGroup,
+  isEventRelevantToTopic,
+  rankTopicsFromSnapshots,
+  selectEvidence,
+  selectTopLevelTopicGroups,
+  type QueryModeRawEvent,
+} from "./query-mode-selection.js";
 
 interface ProcessContext {
   config: Config;
@@ -49,27 +61,10 @@ interface ProcessContext {
   producer: Producer;
 }
 
-const BUDGET_KEY_PREFIX = "brief:budget";
-const BUDGET_KEY_TTL_SECONDS = 48 * 60 * 60;
 const TREND_WINDOW_60M_PROTO = 2;
 const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
 const DEFAULT_QUERY_MAX_TOPICS = 10;
 const NO_COVERAGE_ERROR_CODE = "no_coverage";
-const BUDGET_RESERVATION_SCRIPT = `
-local key = KEYS[1]
-local max_budget = tonumber(ARGV[1])
-local amount = tonumber(ARGV[2])
-local ttl_seconds = tonumber(ARGV[3])
-
-local current = tonumber(redis.call("GET", key) or "0")
-if (current + amount) > max_budget then
-  return {0, tostring(current)}
-end
-
-local next = redis.call("INCRBYFLOAT", key, amount)
-redis.call("EXPIRE", key, ttl_seconds)
-return {1, tostring(next)}
-`;
 
 const LlmHighlightSchema = z.object({
   topic: z.string().min(1),
@@ -96,17 +91,6 @@ const LlmResponseSchema = z.object({
       estimated_cost_usd: z.number().nonnegative().optional(),
     })
     .optional(),
-});
-
-const TrendSnapshotTopicSchema = z.object({
-  topic: z.string().min(1),
-  score: z.coerce.number().default(0),
-  volume: z.coerce.number().default(0),
-  acceleration: z.coerce.number().default(0),
-});
-
-const TrendSnapshotPayloadSchema = z.object({
-  topics: z.array(TrendSnapshotTopicSchema).default([]),
 });
 
 type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
@@ -185,10 +169,6 @@ function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function getBudgetKey(dateKey: string): string {
-  return `${BUDGET_KEY_PREFIX}:${dateKey}`;
-}
-
 function estimateTokenCount(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
@@ -254,352 +234,6 @@ function resolveMaxEventsPerTopic(config: Config, request: ParsedSummaryRequest)
   }
   resolved = Math.min(resolved, config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC);
   return Math.max(1, resolved);
-}
-
-const CURATED_SOURCES = new Set<Source>([Source.rss, Source.news, Source.github]);
-const DISCUSSION_SOURCES = new Set<Source>([
-  Source.reddit,
-  Source.hackernews,
-  Source.bluesky,
-  Source.mastodon,
-]);
-
-interface RawEventForSelection {
-  eventId: string;
-  source: Source;
-  publishedAt: Date | null;
-  fetchedAt: Date;
-  engagementScore: number | null;
-}
-
-interface QueryModeRawEvent extends RawEventForSelection {
-  url: string;
-  title: string | null;
-  publishedAt: Date | null;
-  text: string;
-  topics: string[];
-}
-
-interface EvidenceSelectionStrategy {
-  readonly name: EvidenceStrategy;
-  select<T extends RawEventForSelection>(events: T[], maxCount: number): T[];
-}
-
-const GENERIC_TOPIC_SEGMENTS = new Set([
-  "ai",
-  "cloud",
-  "data",
-  "devtools",
-  "framework",
-  "infra",
-  "language",
-  "ml",
-  "observability",
-  "platform",
-  "security",
-  "web",
-]);
-
-const TOPIC_RELEVANCE_ALIASES: Record<string, readonly string[]> = {
-  "data.kafka": ["kafka", "redpanda"],
-  "observability.opentelemetry": ["opentelemetry", "otel"],
-} as const;
-
-const TOPIC_RELEVANCE_MIN_BODY_MATCHES = 2;
-
-interface TopicRelevanceMatcher {
-  exactTermRegexes: RegExp[];
-}
-
-const topicRelevanceMatcherCache = new Map<string, TopicRelevanceMatcher | null>();
-
-function escapeRegexLiteral(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function deriveTopicRelevanceTerms(topicKey: string): string[] {
-  const segments = topicKey
-    .split(/[._-]/)
-    .map((segment) => segment.trim().toLowerCase())
-    .filter((segment) => segment.length >= 3)
-    .filter((segment) => !GENERIC_TOPIC_SEGMENTS.has(segment));
-  const aliases = (TOPIC_RELEVANCE_ALIASES[topicKey] ?? []).map((term) => term.toLowerCase());
-  return [...new Set([...segments, ...aliases])];
-}
-
-function buildTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | null {
-  const terms = deriveTopicRelevanceTerms(topicKey);
-  if (terms.length === 0) {
-    return null;
-  }
-  return {
-    exactTermRegexes: terms.map((term) => new RegExp(`\\b${escapeRegexLiteral(term)}\\b`, "i")),
-  };
-}
-
-function getTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | null {
-  if (topicRelevanceMatcherCache.has(topicKey)) {
-    return topicRelevanceMatcherCache.get(topicKey) ?? null;
-  }
-  const matcher = buildTopicRelevanceMatcher(topicKey);
-  topicRelevanceMatcherCache.set(topicKey, matcher);
-  return matcher;
-}
-
-function countRegexMatches(content: string, regex: RegExp): number {
-  if (!content) {
-    return 0;
-  }
-  const globalRegex = new RegExp(regex.source, "gi");
-  const matches = content.match(globalRegex);
-  return matches ? matches.length : 0;
-}
-
-function isEventRelevantToTopic(event: QueryModeRawEvent, topicKey: string): boolean {
-  const matcher = getTopicRelevanceMatcher(topicKey);
-  if (!matcher) {
-    return true;
-  }
-
-  const titleAndUrl = `${event.title ?? ""} ${event.url}`.trim();
-  const titleOrUrlMatch = matcher.exactTermRegexes.some((regex) => regex.test(titleAndUrl));
-  if (titleOrUrlMatch) {
-    return true;
-  }
-
-  const bodyMatchCount = matcher.exactTermRegexes.reduce(
-    (count, regex) => count + countRegexMatches(event.text, regex),
-    0
-  );
-  return bodyMatchCount >= TOPIC_RELEVANCE_MIN_BODY_MATCHES;
-}
-
-function getEventRecencyTime(event: RawEventForSelection): number {
-  return (event.publishedAt ?? event.fetchedAt).getTime();
-}
-
-function sortByEngagementThenRecency<T extends RawEventForSelection>(events: T[]): T[] {
-  return [...events].sort((left, right) => {
-    const leftScore = left.engagementScore ?? 0;
-    const rightScore = right.engagementScore ?? 0;
-    if (rightScore !== leftScore) {
-      return rightScore - leftScore;
-    }
-    return getEventRecencyTime(right) - getEventRecencyTime(left);
-  });
-}
-
-function selectEvidenceByRecency<T extends RawEventForSelection>(events: T[], maxCount: number): T[] {
-  // Upstream query orders by publishedAt DESC then fetchedAt DESC.
-  return events.slice(0, maxCount);
-}
-
-function selectEvidenceByEngagement<T extends RawEventForSelection>(events: T[], maxCount: number): T[] {
-  return sortByEngagementThenRecency(events).slice(0, maxCount);
-}
-
-function selectEvidenceByDiversity<T extends RawEventForSelection>(events: T[], maxCount: number): T[] {
-  const curated: T[] = [];
-  const discussion: T[] = [];
-  const other: T[] = [];
-
-  for (const event of events) {
-    if (CURATED_SOURCES.has(event.source)) {
-      curated.push(event);
-      continue;
-    }
-    if (DISCUSSION_SOURCES.has(event.source)) {
-      discussion.push(event);
-      continue;
-    }
-    other.push(event);
-  }
-
-  const selected: T[] = [];
-  if (curated.length > 0) {
-    selected.push(curated[0]);
-  }
-  if (discussion.length > 0 && selected.length < maxCount) {
-    selected.push(discussion[0]);
-  }
-
-  const curatedStartIndex = curated.length > 0 && selected[0] === curated[0] ? 1 : 0;
-  const discussionStartIndex = discussion.length > 0 && selected.includes(discussion[0]) ? 1 : 0;
-  const remaining = [
-    ...curated.slice(curatedStartIndex),
-    ...discussion.slice(discussionStartIndex),
-    ...other,
-  ];
-
-  selected.push(...sortByEngagementThenRecency(remaining).slice(0, maxCount - selected.length));
-  return selected;
-}
-
-const RECENCY_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
-  name: "recency",
-  select: selectEvidenceByRecency,
-};
-
-const ENGAGEMENT_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
-  name: "engagement",
-  select: selectEvidenceByEngagement,
-};
-
-const DIVERSITY_EVIDENCE_SELECTION_STRATEGY: EvidenceSelectionStrategy = {
-  name: "diversity",
-  select: selectEvidenceByDiversity,
-};
-
-const EVIDENCE_SELECTION_STRATEGIES: Record<EvidenceStrategy, EvidenceSelectionStrategy> = {
-  recency: RECENCY_EVIDENCE_SELECTION_STRATEGY,
-  engagement: ENGAGEMENT_EVIDENCE_SELECTION_STRATEGY,
-  diversity: DIVERSITY_EVIDENCE_SELECTION_STRATEGY,
-};
-
-function selectEvidence<T extends RawEventForSelection>(
-  events: T[],
-  strategy: EvidenceStrategy,
-  maxCount: number
-): T[] {
-  if (events.length === 0 || maxCount <= 0) {
-    return [];
-  }
-
-  const selectionStrategy = EVIDENCE_SELECTION_STRATEGIES[strategy];
-  return selectionStrategy.select(events, maxCount);
-}
-
-function computeRecentWeight(snapshotGeneratedAt: Date, requestedAt: Date): number {
-  const ageMs = Math.max(0, requestedAt.getTime() - snapshotGeneratedAt.getTime());
-  const ageHours = ageMs / (60 * 60 * 1000);
-  return 1 / (1 + ageHours);
-}
-
-interface RankedTopicAccumulator {
-  weightedScore: number;
-  weightedVolume: number;
-  weightedAcceleration: number;
-  weightSum: number;
-  latestGeneratedAtMs: number;
-}
-
-interface RankedTopicScore {
-  topic: string;
-  score: number;
-  volume: number;
-  acceleration: number;
-  latestGeneratedAtMs: number;
-}
-
-function getTopLevelTopicGroup(topicKey: string): string {
-  const normalized = topicKey.trim().toLowerCase();
-  if (!normalized) {
-    return "";
-  }
-
-  const separatorIndex = normalized.indexOf(".");
-  if (separatorIndex === -1) {
-    return normalized;
-  }
-  return normalized.slice(0, separatorIndex);
-}
-
-function selectTopLevelTopicGroups(
-  rankedTopics: RankedTopicScore[],
-  maxTopicGroups: number
-): Set<string> {
-  const groupedScores = new Map<string, { score: number; latestGeneratedAtMs: number }>();
-
-  for (const rankedTopic of rankedTopics) {
-    const group = getTopLevelTopicGroup(rankedTopic.topic);
-    if (!group) {
-      continue;
-    }
-
-    const existing = groupedScores.get(group) ?? {
-      score: 0,
-      latestGeneratedAtMs: rankedTopic.latestGeneratedAtMs,
-    };
-    existing.score += rankedTopic.score;
-    existing.latestGeneratedAtMs = Math.max(existing.latestGeneratedAtMs, rankedTopic.latestGeneratedAtMs);
-    groupedScores.set(group, existing);
-  }
-
-  return new Set(
-    [...groupedScores.entries()]
-      .sort((left, right) => {
-        if (right[1].score !== left[1].score) {
-          return right[1].score - left[1].score;
-        }
-        if (right[1].latestGeneratedAtMs !== left[1].latestGeneratedAtMs) {
-          return right[1].latestGeneratedAtMs - left[1].latestGeneratedAtMs;
-        }
-        return left[0].localeCompare(right[0]);
-      })
-      .slice(0, maxTopicGroups)
-      .map(([group]) => group)
-  );
-}
-
-function rankTopicsFromSnapshots(
-  snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>,
-  requestedAt: Date,
-  topicMatchers: RegExp[]
-): RankedTopicScore[] {
-  const byTopic = new Map<string, RankedTopicAccumulator>();
-
-  for (const row of snapshots) {
-    const parsedSnapshot = TrendSnapshotPayloadSchema.safeParse(row.snapshot);
-    if (!parsedSnapshot.success) {
-      continue;
-    }
-
-    const weight = computeRecentWeight(row.generatedAt, requestedAt);
-    const generatedAtMs = row.generatedAt.getTime();
-    for (const metric of parsedSnapshot.data.topics) {
-      const topic = metric.topic.trim();
-      if (!topic || !matchesAnyTopicGlob(topic, topicMatchers)) {
-        continue;
-      }
-
-      const existing = byTopic.get(topic) ?? {
-        weightedScore: 0,
-        weightedVolume: 0,
-        weightedAcceleration: 0,
-        weightSum: 0,
-        latestGeneratedAtMs: generatedAtMs,
-      };
-      existing.weightedScore += metric.score * weight;
-      existing.weightedVolume += metric.volume * weight;
-      existing.weightedAcceleration += metric.acceleration * weight;
-      existing.weightSum += weight;
-      existing.latestGeneratedAtMs = Math.max(existing.latestGeneratedAtMs, generatedAtMs);
-      byTopic.set(topic, existing);
-    }
-  }
-
-  const rankedTopics = [...byTopic.entries()]
-    .map(([topic, accumulator]) => {
-      const denominator = accumulator.weightSum <= 0 ? 1 : accumulator.weightSum;
-      return {
-        topic,
-        score: accumulator.weightedScore / denominator,
-        volume: accumulator.weightedVolume / denominator,
-        acceleration: accumulator.weightedAcceleration / denominator,
-        latestGeneratedAtMs: accumulator.latestGeneratedAtMs,
-      };
-    })
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      if (right.latestGeneratedAtMs !== left.latestGeneratedAtMs) {
-        return right.latestGeneratedAtMs - left.latestGeneratedAtMs;
-      }
-      return left.topic.localeCompare(right.topic);
-    });
-
-  return rankedTopics;
 }
 
 async function buildQueryModeRequest(
@@ -1019,14 +653,7 @@ function detectSignalCategories(value: string): Set<SignalCategory> {
 }
 
 function countTopicEvidenceTermMatches(topic: string, value: string): number {
-  const matcher = getTopicRelevanceMatcher(topic);
-  if (!matcher) {
-    return 1;
-  }
-  return matcher.exactTermRegexes.reduce(
-    (count, regex) => count + countRegexMatches(value, regex),
-    0
-  );
+  return countTopicRelevanceTermMatches(topic, value, 1);
 }
 
 function buildEvidenceInsight(topic: ParsedSummaryTopic, evidence: ParsedSummaryEvidence): EvidenceInsight | null {
@@ -1965,330 +1592,6 @@ async function persistResult(
   }
 }
 
-function toNumeric(value: unknown): number {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : 0;
-  }
-  if (typeof value === "string") {
-    const parsed = Number.parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
-}
-
-function parseBudgetReservationResult(result: unknown): { reserved: boolean; spentUsd: number } {
-  if (!Array.isArray(result) || result.length < 2) {
-    throw new Error("Unexpected Redis budget reservation response");
-  }
-
-  const reserved = toNumeric(result[0]) === 1;
-  const spentUsd = toNumeric(result[1]);
-  return { reserved, spentUsd };
-}
-
-function toBudgetDate(dateKey: string): Date {
-  return new Date(`${dateKey}T00:00:00Z`);
-}
-
-async function syncBudgetCacheBestEffort(
-  redis: Redis,
-  dateKey: string,
-  spentUsd: number,
-  logger: pino.Logger
-): Promise<void> {
-  try {
-    await redis.set(
-      getBudgetKey(dateKey),
-      spentUsd.toString(),
-      "EX",
-      BUDGET_KEY_TTL_SECONDS
-    );
-  } catch (error) {
-    logger.warn(
-      {
-        dateKey,
-        spentUsd,
-        error: serializeError(error),
-      },
-      "Failed to sync brief budget cache; continuing with Postgres source of truth"
-    );
-  }
-}
-
-interface BudgetReservationInput {
-  prisma: PrismaClient;
-  redis: Redis;
-  logger: pino.Logger;
-  dateKey: string;
-  dailyBudgetUsd: number;
-  amountUsd: number;
-}
-
-interface BudgetReservationResult {
-  reserved: boolean;
-  spentUsd: number;
-}
-
-type BudgetReservationPassReason =
-  | "cache_unavailable"
-  | "requires_source_of_truth";
-
-type BudgetReservationDecision =
-  | { kind: "handled"; result: BudgetReservationResult }
-  | { kind: "pass"; reason: BudgetReservationPassReason };
-
-interface BudgetReservationHandler {
-  setNext(next: BudgetReservationHandler): BudgetReservationHandler;
-  reserve(input: BudgetReservationInput): Promise<BudgetReservationResult>;
-}
-
-abstract class AbstractBudgetReservationHandler implements BudgetReservationHandler {
-  private nextHandler: BudgetReservationHandler | null = null;
-
-  setNext(next: BudgetReservationHandler): BudgetReservationHandler {
-    this.nextHandler = next;
-    return next;
-  }
-
-  async reserve(input: BudgetReservationInput): Promise<BudgetReservationResult> {
-    const decision = await this.tryReserve(input);
-    if (decision.kind === "handled") {
-      return decision.result;
-    }
-
-    if (!this.nextHandler) {
-      throw new Error(
-        `Budget reservation chain terminated without a handler for reason: ${decision.reason}`
-      );
-    }
-
-    return this.nextHandler.reserve(input);
-  }
-
-  protected abstract tryReserve(
-    input: BudgetReservationInput
-  ): Promise<BudgetReservationDecision>;
-}
-
-class RedisBudgetReservationHandler extends AbstractBudgetReservationHandler {
-  protected async tryReserve(
-    input: BudgetReservationInput
-  ): Promise<BudgetReservationDecision> {
-    const {
-      prisma,
-      redis,
-      logger,
-      dateKey,
-      dailyBudgetUsd,
-      amountUsd,
-    } = input;
-
-    try {
-      const result = await redis.eval(
-        BUDGET_RESERVATION_SCRIPT,
-        1,
-        getBudgetKey(dateKey),
-        dailyBudgetUsd.toString(),
-        amountUsd.toString(),
-        BUDGET_KEY_TTL_SECONDS.toString()
-      );
-      const cached = parseBudgetReservationResult(result);
-      if (!cached.reserved) {
-        return { kind: "pass", reason: "requires_source_of_truth" };
-      }
-
-      const budgetDate = toBudgetDate(dateKey);
-      void prisma.briefBudgetTracking.upsert({
-        where: { date: budgetDate },
-        create: {
-          date: budgetDate,
-          spentUsd: cached.spentUsd,
-          budgetUsd: dailyBudgetUsd,
-          requestCount: 1,
-        },
-        update: {
-          spentUsd: { increment: amountUsd },
-          requestCount: { increment: 1 },
-        },
-      }).catch((error) => {
-        logger.warn(
-          { dateKey, error: serializeError(error) },
-          "Failed to asynchronously mirror reserved budget to Postgres"
-        );
-      });
-
-      return {
-        kind: "handled",
-        result: cached,
-      };
-    } catch (error) {
-      logger.warn(
-        {
-          dateKey,
-          amountUsd,
-          error: serializeError(error),
-        },
-        "Redis budget reservation unavailable; falling back to Postgres"
-      );
-      return { kind: "pass", reason: "cache_unavailable" };
-    }
-  }
-}
-
-class PostgresBudgetReservationHandler extends AbstractBudgetReservationHandler {
-  protected async tryReserve(
-    input: BudgetReservationInput
-  ): Promise<BudgetReservationDecision> {
-    const {
-      prisma,
-      redis,
-      logger,
-      dateKey,
-      dailyBudgetUsd,
-      amountUsd,
-    } = input;
-
-    const budgetDate = toBudgetDate(dateKey);
-    const record = await prisma.briefBudgetTracking.upsert({
-      where: { date: budgetDate },
-      create: {
-        date: budgetDate,
-        spentUsd: 0,
-        budgetUsd: dailyBudgetUsd,
-        requestCount: 0,
-      },
-      update: {},
-      select: { spentUsd: true },
-    });
-
-    const maxSpendBeforeReservation = Math.max(0, dailyBudgetUsd - amountUsd);
-    const whereClause = Number.isFinite(maxSpendBeforeReservation)
-      ? { date: budgetDate, spentUsd: { lte: maxSpendBeforeReservation } }
-      : { date: budgetDate };
-
-    const updateResult = await prisma.briefBudgetTracking.updateMany({
-      // Ensure concurrent workers cannot oversubscribe budget.
-      where: whereClause,
-      data: {
-        spentUsd: { increment: amountUsd },
-        requestCount: { increment: 1 },
-      },
-    });
-
-    if (updateResult.count === 0) {
-      const latest = await prisma.briefBudgetTracking.findUnique({
-        where: { date: budgetDate },
-        select: { spentUsd: true },
-      });
-      const spentUsd = Number(latest?.spentUsd ?? record.spentUsd);
-      await syncBudgetCacheBestEffort(redis, dateKey, spentUsd, logger);
-      return {
-        kind: "handled",
-        result: { reserved: false, spentUsd },
-      };
-    }
-
-    const latest = await prisma.briefBudgetTracking.findUnique({
-      where: { date: budgetDate },
-      select: { spentUsd: true },
-    });
-    const newSpent = Number(latest?.spentUsd ?? Number(record.spentUsd) + amountUsd);
-    await syncBudgetCacheBestEffort(redis, dateKey, newSpent, logger);
-    return {
-      kind: "handled",
-      result: { reserved: true, spentUsd: newSpent },
-    };
-  }
-}
-
-function createBudgetReservationHandlerChain(): BudgetReservationHandler {
-  const redisHandler = new RedisBudgetReservationHandler();
-  redisHandler.setNext(new PostgresBudgetReservationHandler());
-  return redisHandler;
-}
-
-const BUDGET_RESERVATION_HANDLER_CHAIN = createBudgetReservationHandlerChain();
-
-async function reserveBudgetSpendUsd(
-  prisma: PrismaClient,
-  redis: Redis,
-  logger: pino.Logger,
-  dateKey: string,
-  dailyBudgetUsd: number,
-  amountUsd: number
-): Promise<BudgetReservationResult> {
-  const input: BudgetReservationInput = {
-    prisma,
-    redis,
-    logger,
-    dateKey,
-    dailyBudgetUsd,
-    amountUsd,
-  };
-
-  return BUDGET_RESERVATION_HANDLER_CHAIN.reserve(input);
-}
-
-async function releaseBudgetReservationUsd(
-  prisma: PrismaClient,
-  redis: Redis,
-  logger: pino.Logger,
-  dateKey: string,
-  amountUsd: number
-): Promise<number> {
-  // Update Postgres first (source of truth)
-  const budgetDate = toBudgetDate(dateKey);
-  const record = await prisma.briefBudgetTracking.findUnique({
-    where: { date: budgetDate },
-    select: { spentUsd: true },
-  });
-
-  if (!record) {
-    return 0;
-  }
-
-  const currentSpent = Number(record.spentUsd);
-  const newSpent = Math.max(0, currentSpent - amountUsd);
-
-  await prisma.briefBudgetTracking.update({
-    where: { date: budgetDate },
-    data: { spentUsd: newSpent },
-  });
-
-  await syncBudgetCacheBestEffort(redis, dateKey, newSpent, logger);
-  return newSpent;
-}
-
-async function settleBudgetSpendUsd(
-  prisma: PrismaClient,
-  redis: Redis,
-  logger: pino.Logger,
-  dateKey: string,
-  deltaUsd: number
-): Promise<number> {
-  // Update Postgres first (source of truth)
-  const budgetDate = toBudgetDate(dateKey);
-  const record = await prisma.briefBudgetTracking.findUnique({
-    where: { date: budgetDate },
-    select: { spentUsd: true },
-  });
-
-  if (!record) {
-    return 0;
-  }
-
-  const currentSpent = Number(record.spentUsd);
-  const newSpent = Math.max(0, currentSpent + deltaUsd);
-
-  await prisma.briefBudgetTracking.update({
-    where: { date: budgetDate },
-    data: { spentUsd: newSpent },
-  });
-
-  await syncBudgetCacheBestEffort(redis, dateKey, newSpent, logger);
-  return newSpent;
-}
-
 async function loadPersistedResult(
   prisma: PrismaClient,
   requestId: string
@@ -2324,18 +1627,16 @@ async function republishPersistedResult(
 
 async function rollbackBudgetReservation(
   ctx: ProcessContext,
+  budgetLedger: BriefBudgetLedger,
   logger: pino.Logger,
   dateKey: string,
   reservedAmountUsd: number,
   dailyBudgetUsd: number
 ): Promise<void> {
-  const spentBudgetUsd = await releaseBudgetReservationUsd(
-    ctx.prisma,
-    ctx.redis,
-    logger,
+  const spentBudgetUsd = await budgetLedger.release({
     dateKey,
-    reservedAmountUsd
-  );
+    amountUsd: reservedAmountUsd,
+  });
   ctx.healthContext.redisHealthy = true;
   setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
   logger.info({ spentBudgetUsd }, "Rolled back brief budget reservation");
@@ -2376,6 +1677,11 @@ export async function processSummaryRequest(
   request: ParsedSummaryRequest
 ): Promise<void> {
   const logger = ctx.logger.child({ requestId: request.requestId });
+  const budgetLedger = createBriefBudgetLedger({
+    prisma: ctx.prisma,
+    redis: ctx.redis,
+    logger,
+  });
   const publisher = createBriefResultPublisher<BriefResultPayload>({
     producer: ctx.producer,
     logger,
@@ -2448,14 +1754,11 @@ export async function processSummaryRequest(
   let reservedCostUsd = estimatedCostUsd;
 
   try {
-    const reservation = await reserveBudgetSpendUsd(
-      ctx.prisma,
-      ctx.redis,
-      logger,
+    const reservation = await budgetLedger.reserve({
       dateKey,
       dailyBudgetUsd,
-      reservedCostUsd
-    );
+      amountUsd: reservedCostUsd,
+    });
     budgetReserved = reservation.reserved;
     spentBudgetUsd = reservation.spentUsd;
     ctx.healthContext.redisHealthy = true;
@@ -2501,7 +1804,14 @@ export async function processSummaryRequest(
     const persisted = await persistResult(ctx.prisma, successResult.payload, BriefStatus.success);
     ctx.healthContext.postgresHealthy = true;
     if (persisted === "duplicate") {
-      await rollbackBudgetReservation(ctx, logger, dateKey, reservedCostUsd, dailyBudgetUsd);
+      await rollbackBudgetReservation(
+        ctx,
+        budgetLedger,
+        logger,
+        dateKey,
+        reservedCostUsd,
+        dailyBudgetUsd
+      );
       budgetReserved = false;
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
@@ -2517,13 +1827,10 @@ export async function processSummaryRequest(
     const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
     if (costDeltaUsd !== 0) {
       try {
-        spentBudgetUsd = await settleBudgetSpendUsd(
-          ctx.prisma,
-          ctx.redis,
-          logger,
+        spentBudgetUsd = await budgetLedger.settle({
           dateKey,
-          costDeltaUsd
-        );
+          deltaUsd: costDeltaUsd,
+        });
         reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
         ctx.healthContext.redisHealthy = true;
       } catch (error) {
@@ -2560,7 +1867,14 @@ export async function processSummaryRequest(
   } catch (error) {
     if (budgetReserved && !persistedCreated) {
       try {
-        await rollbackBudgetReservation(ctx, logger, dateKey, reservedCostUsd, dailyBudgetUsd);
+        await rollbackBudgetReservation(
+          ctx,
+          budgetLedger,
+          logger,
+          dateKey,
+          reservedCostUsd,
+          dailyBudgetUsd
+        );
         budgetReserved = false;
       } catch (rollbackError) {
         ctx.healthContext.redisHealthy = false;

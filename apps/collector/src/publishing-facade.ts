@@ -1,6 +1,6 @@
 import type { Producer } from "kafkajs";
 import type { Logger } from "pino";
-import { createKafkaTopicPublisher } from "@rising-intelligence/shared";
+import { createKeyedKafkaTopicPublisher } from "@rising-intelligence/shared";
 import { publishEvent, TOPICS } from "./kafka/producer.js";
 import {
   serializeDeadLetterEvent,
@@ -32,37 +32,46 @@ export function createCollectorPublisher(
 ): CollectorPublisher {
   const publish = input.publish ?? publishEvent;
   const { producer, logger } = input;
-  const rawEventPublisher = createKafkaTopicPublisher<RawEvent, Logger>({
+  const rawEventPublisher = createKeyedKafkaTopicPublisher<RawEvent, Logger>({
     producer,
     logger,
     topic: TOPICS.RAW_EVENTS,
     publish,
     serialize: serializeRawEvent,
+    getKey(event) {
+      return event.event_id;
+    },
   });
-  const deadLetterPublisher = createKafkaTopicPublisher<DeadLetterEvent, Logger>({
+  const deadLetterPublisher = createKeyedKafkaTopicPublisher<DeadLetterEvent, Logger>({
     producer,
     logger,
     topic: TOPICS.DLQ,
     publish,
     serialize: serializeDeadLetterEvent,
+    getKey(event) {
+      return event.dlq_id;
+    },
   });
-  const heartbeatPublisher = createKafkaTopicPublisher<CollectorHeartbeat, Logger>({
+  const heartbeatPublisher = createKeyedKafkaTopicPublisher<CollectorHeartbeat, Logger>({
     producer,
     logger,
     topic: TOPICS.HEARTBEAT,
     publish,
     serialize: serializeHeartbeat,
+    getKey(event) {
+      return event.source;
+    },
   });
 
   return {
     async publishRawEvent(event: RawEvent): Promise<void> {
-      await rawEventPublisher.publish(event.event_id, event);
+      await rawEventPublisher.publish(event);
     },
     async publishDeadLetterEvent(event: DeadLetterEvent): Promise<void> {
-      await deadLetterPublisher.publish(event.dlq_id, event);
+      await deadLetterPublisher.publish(event);
     },
     async publishHeartbeat(event: CollectorHeartbeat): Promise<void> {
-      await heartbeatPublisher.publish(event.source, event);
+      await heartbeatPublisher.publish(event);
     },
   };
 }

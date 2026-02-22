@@ -93,6 +93,11 @@ function makeContext(overrides: Record<string, unknown> = {}) {
   const create = vi.fn().mockResolvedValue(undefined);
   const budgetState = { spentUsd: 0.02 };
   const briefBudgetTracking = {
+    create: vi.fn().mockImplementation(async (args: any) => {
+      const createSpent = Number(args?.data?.spentUsd ?? 0);
+      budgetState.spentUsd = createSpent;
+      return { spentUsd: budgetState.spentUsd };
+    }),
     upsert: vi.fn().mockImplementation(async (args: any) => {
       const createSpent = Number(args?.create?.spentUsd ?? 0);
       const incrementSpent = Number(args?.update?.spentUsd?.increment ?? 0);
@@ -595,9 +600,9 @@ describe("processSummaryRequest", () => {
           create: vi.fn().mockResolvedValue(undefined),
         },
         briefBudgetTracking: {
-          upsert: vi.fn().mockRejectedValue(new Error("postgres unavailable")),
+          create: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
           findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
-          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockRejectedValue(new Error("postgres unavailable")),
         },
       },
       redis: {
@@ -618,7 +623,7 @@ describe("processSummaryRequest", () => {
   });
 
   it("uses Redis cumulative spend when mirroring a missing Postgres budget row", async () => {
-    const budgetUpsert = vi.fn().mockResolvedValue(undefined);
+    const budgetCreate = vi.fn().mockResolvedValue({ spentUsd: 0.4 });
     const ctx = makeContext({
       prisma: {
         briefResult: {
@@ -626,8 +631,8 @@ describe("processSummaryRequest", () => {
           create: vi.fn().mockResolvedValue(undefined),
         },
         briefBudgetTracking: {
-          upsert: budgetUpsert,
-          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.4 }),
+          create: budgetCreate,
+          findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValue({ spentUsd: 0.4 }),
           update: vi.fn().mockResolvedValue({ spentUsd: 0.4 }),
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
@@ -650,9 +655,9 @@ describe("processSummaryRequest", () => {
     await processSummaryRequest(ctx, makeRequest());
     await Promise.resolve();
 
-    expect(budgetUpsert).toHaveBeenCalledWith(
+    expect(budgetCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           spentUsd: 0.4,
         }),
       })

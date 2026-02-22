@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { PrismaClient, Source, type Prisma } from "@rising-intelligence/db";
+import { createPrismaClient, Source, type Prisma } from "@rising-intelligence/db";
 import { REPO_ROOT, extractTopics, loadAllowlist } from "@rising-intelligence/shared";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
@@ -191,12 +191,8 @@ export async function topicsRetag(flags: CliFlags): Promise<void> {
   const allowlist = loadAllowlist(allowlistPath);
   const where = buildWhereClause(retagAll, source);
 
-  const prisma = new PrismaClient({
-    datasources: {
-      db: {
-        url: databaseUrl,
-      },
-    },
+  const prisma = createPrismaClient({
+    databaseUrl,
   });
 
   const stats = createRetagStats();

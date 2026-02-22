@@ -235,6 +235,45 @@ describe("LobstersAdapter", () => {
       expect(logger.error).toHaveBeenCalled();
     });
 
+    it("continues processing when one item normalization fails", async () => {
+      const mockParser = {
+        parseURL: vi.fn().mockResolvedValue({
+          items: [
+            {
+              guid: "guid-2",
+              title: "Second item",
+              contentSnippet: "Second content",
+            },
+            {
+              guid: "guid-1",
+              title: "First item",
+              contentSnippet: "First content",
+            },
+          ],
+        }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const logger = createTestLogger();
+      const adapter = new LobstersAdapter(600000, 25, createMockCheckpoints(), logger);
+      vi.spyOn(adapter as any, "itemToRawEvent").mockImplementationOnce(async () => {
+        throw new Error("bad item");
+      });
+
+      const results: any[] = [];
+      for await (const result of adapter.fetch()) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(1);
+      expect(results[0].event.title).toBe("Second item");
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ guid: "guid-1" }),
+        "Failed to normalize Lobsters item"
+      );
+    });
+
     it("fetches from correct Lobsters RSS URL", async () => {
       const mockParseURL = vi.fn().mockResolvedValue({ items: [] });
       const mockParser = { parseURL: mockParseURL };

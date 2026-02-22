@@ -21,6 +21,48 @@ export function toCommandKey(group: string, command: string): string {
 
 type LazyCommandModule = Record<string, unknown>;
 
+interface CommandTokenResolver {
+  readonly name: string;
+  resolve(
+    commandTokens: readonly string[],
+    commandsByKey: ReadonlyMap<string, CliCommand>
+  ): CliCommand | null;
+}
+
+const TWO_TOKEN_COMMAND_RESOLVER: CommandTokenResolver = {
+  name: "two-token",
+  resolve(commandTokens, commandsByKey): CliCommand | null {
+    if (commandTokens.length !== 2) {
+      return null;
+    }
+
+    const [group, command] = commandTokens;
+    return commandsByKey.get(toCommandKey(group, command)) ?? null;
+  },
+};
+
+const SINGLE_TOKEN_KEY_RESOLVER: CommandTokenResolver = {
+  name: "single-token-key",
+  resolve(commandTokens, commandsByKey): CliCommand | null {
+    if (commandTokens.length !== 1) {
+      return null;
+    }
+
+    const [rawKey] = commandTokens;
+    const commandKey = rawKey.trim();
+    if (!commandKey) {
+      return null;
+    }
+
+    return commandsByKey.get(commandKey) ?? null;
+  },
+};
+
+const DEFAULT_COMMAND_TOKEN_RESOLVERS: readonly CommandTokenResolver[] = [
+  TWO_TOKEN_COMMAND_RESOLVER,
+  SINGLE_TOKEN_KEY_RESOLVER,
+];
+
 export interface CreateLazyCommandDefinitionInput {
   readonly group: string;
   readonly command: string;
@@ -65,8 +107,13 @@ export function createLazyCommandDefinition(
 export class CommandRegistry {
   private readonly commands: readonly CliCommand[];
   private readonly byKey = new Map<string, CliCommand>();
+  private readonly commandTokenResolvers: readonly CommandTokenResolver[];
 
-  constructor(definitions: readonly CliCommandDefinition[]) {
+  constructor(
+    definitions: readonly CliCommandDefinition[],
+    commandTokenResolvers: readonly CommandTokenResolver[] = DEFAULT_COMMAND_TOKEN_RESOLVERS
+  ) {
+    this.commandTokenResolvers = commandTokenResolvers;
     this.commands = definitions.map((definition) => {
       const key = toCommandKey(definition.group, definition.command);
       const aliases = [key, ...(definition.aliases ?? [])];
@@ -91,8 +138,19 @@ export class CommandRegistry {
     return this.commands;
   }
 
+  resolveInput(commandTokens: readonly string[]): CliCommand | null {
+    for (const resolver of this.commandTokenResolvers) {
+      const resolved = resolver.resolve(commandTokens, this.byKey);
+      if (resolved) {
+        return resolved;
+      }
+    }
+
+    return null;
+  }
+
   resolve(group: string, command: string): CliCommand | null {
-    return this.byKey.get(toCommandKey(group, command)) ?? null;
+    return this.resolveInput([group, command]);
   }
 }
 

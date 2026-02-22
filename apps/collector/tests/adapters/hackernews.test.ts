@@ -141,7 +141,7 @@ describe("HackerNewsAdapter", () => {
       expect(results[2].event.url).toBe("https://news.ycombinator.com/item?id=101");
     });
 
-    it("respects checkpoint and only fetches newer stories", async () => {
+    it("respects checkpoint and only fetches newer stories in new mode", async () => {
       const checkpoints = createMockCheckpoints();
       checkpoints.getCheckpoint = vi.fn().mockReturnValue("100"); // Already seen up to 100
 
@@ -178,7 +178,7 @@ describe("HackerNewsAdapter", () => {
           })
         );
 
-      const adapter = new HackerNewsAdapter("top", 300000, 30, checkpoints, createTestLogger());
+      const adapter = new HackerNewsAdapter("new", 300000, 30, checkpoints, createTestLogger());
 
       const results: any[] = [];
       const fetchPromise = (async () => {
@@ -194,8 +194,102 @@ describe("HackerNewsAdapter", () => {
       expect(results).toHaveLength(3);
 
       // Checkpoint should be updated to max ID
-      expect(results[2].checkpointKey).toBe("last_max_id_top");
+      expect(results[2].checkpointKey).toBe("last_max_id_new");
       expect(results[2].checkpointValue).toBe("103");
+    });
+
+    it("reprocesses unseen ranked stories when checkpoint is ahead", async () => {
+      const checkpoints = createMockCheckpoints();
+      checkpoints.getCheckpoint = vi.fn().mockReturnValue("203");
+      checkpoints.hasSeen = vi.fn(
+        (_source: string, eventId: string) => eventId === "hn:203"
+      );
+
+      mockFetch
+        .mockImplementationOnce(() => mockFetchResponse([203, 202, 201]))
+        .mockImplementationOnce(() =>
+          mockFetchResponse({
+            id: 202,
+            type: "story",
+            title: "Recovered Story 202",
+            by: "user2",
+            time: 1705310000,
+            score: 30,
+          })
+        )
+        .mockImplementationOnce(() =>
+          mockFetchResponse({
+            id: 201,
+            type: "story",
+            title: "Recovered Story 201",
+            by: "user3",
+            time: 1705300000,
+            score: 20,
+          })
+        );
+
+      const adapter = new HackerNewsAdapter("top", 300000, 30, checkpoints, createTestLogger());
+
+      const results: any[] = [];
+      const fetchPromise = (async () => {
+        for await (const result of adapter.fetch()) {
+          results.push(result);
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(500);
+      await fetchPromise;
+
+      expect(results).toHaveLength(2);
+      expect(results.map((result) => result.event.event_id)).toEqual([
+        "hn:202",
+        "hn:201",
+      ]);
+    });
+
+    it("does not advance the new-mode checkpoint past fetch failures", async () => {
+      const checkpoints = createMockCheckpoints();
+      checkpoints.getCheckpoint = vi.fn().mockReturnValue("100");
+
+      mockFetch
+        .mockImplementationOnce(() => mockFetchResponse([101, 102, 103]))
+        .mockImplementationOnce(() =>
+          mockFetchResponse({
+            id: 101,
+            type: "story",
+            title: "Story 101",
+            by: "user1",
+            time: 1705310000,
+            score: 30,
+          })
+        )
+        .mockImplementationOnce(() => Promise.reject(new Error("Network error")))
+        .mockImplementationOnce(() =>
+          mockFetchResponse({
+            id: 103,
+            type: "story",
+            title: "Story 103",
+            by: "user3",
+            time: 1705320000,
+            score: 50,
+          })
+        );
+
+      const adapter = new HackerNewsAdapter("new", 300000, 30, checkpoints, createTestLogger());
+
+      const results: any[] = [];
+      const fetchPromise = (async () => {
+        for await (const result of adapter.fetch()) {
+          results.push(result);
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(500);
+      await fetchPromise;
+
+      expect(results).toHaveLength(2);
+      expect(results[0].checkpointValue).toBe("101");
+      expect(results[1].checkpointValue).toBe("101");
     });
 
     it("limits items per poll to maxItems", async () => {
@@ -366,7 +460,7 @@ describe("HackerNewsAdapter", () => {
 
       mockFetch.mockImplementationOnce(() => mockFetchResponse([100, 99, 98]));
 
-      const adapter = new HackerNewsAdapter("top", 300000, 30, checkpoints, createTestLogger());
+      const adapter = new HackerNewsAdapter("new", 300000, 30, checkpoints, createTestLogger());
 
       const results: any[] = [];
       for await (const result of adapter.fetch()) {

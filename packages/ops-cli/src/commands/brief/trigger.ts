@@ -1,5 +1,5 @@
 import { Kafka } from "kafkajs";
-import { PrismaClient } from "@rising-intelligence/db";
+import { createPrismaClient } from "@rising-intelligence/db";
 import { getEnvString, parseCanonicalSource } from "@rising-intelligence/shared";
 import {
   deriveTopicGlobsFromFeedConfigs,
@@ -484,7 +484,7 @@ async function checkDataFreshness(flags: Flags): Promise<FreshnessIssue[]> {
   const issues: FreshnessIssue[] = [];
   const databaseUrl = resolveTopicsDatabaseUrl(flags);
 
-  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const prisma = createPrismaClient({ databaseUrl });
 
   try {
     await prisma.$connect();

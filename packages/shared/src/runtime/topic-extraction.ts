@@ -201,14 +201,21 @@ function isOpenTelemetryTopicRelevant(context: MatcherEvaluationContext): boolea
   return hasAnyPattern(content, OTEL_TECHNICAL_PATTERNS);
 }
 
+type TopicRelevanceStrategy = (context: MatcherEvaluationContext) => boolean;
+
+const ALWAYS_RELEVANT_TOPIC_STRATEGY: TopicRelevanceStrategy = () => true;
+
+const TOPIC_RELEVANCE_STRATEGIES: Readonly<Record<string, TopicRelevanceStrategy>> = {
+  "data.kafka": isKafkaTopicRelevant,
+  "observability.opentelemetry": isOpenTelemetryTopicRelevant,
+};
+
+function resolveTopicRelevanceStrategy(topicKey: string): TopicRelevanceStrategy {
+  return TOPIC_RELEVANCE_STRATEGIES[topicKey] ?? ALWAYS_RELEVANT_TOPIC_STRATEGY;
+}
+
 function passesTopicRelevanceFilter(topicKey: string, context: MatcherEvaluationContext): boolean {
-  if (topicKey === "data.kafka") {
-    return isKafkaTopicRelevant(context);
-  }
-  if (topicKey === "observability.opentelemetry") {
-    return isOpenTelemetryTopicRelevant(context);
-  }
-  return true;
+  return resolveTopicRelevanceStrategy(topicKey)(context);
 }
 
 function isMatcherType(value: string): value is MatcherType {

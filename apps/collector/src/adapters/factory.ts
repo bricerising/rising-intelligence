@@ -69,11 +69,45 @@ interface AdapterConstructors {
 
 type AdapterConstructorOverrides = Partial<AdapterConstructors>;
 
+type AdapterConstructorName = keyof AdapterConstructors;
+
 const DEFAULT_ADAPTER_CONSTRUCTORS: AdapterConstructors = {
   createRSSAdapter,
   createHackerNewsAdapter,
   createLobstersAdapter,
 };
+
+class AdapterConstructorBuilder {
+  private readonly constructors: AdapterConstructors = {
+    ...DEFAULT_ADAPTER_CONSTRUCTORS,
+  };
+
+  private setOverride<Name extends AdapterConstructorName>(
+    name: Name,
+    override: AdapterConstructorOverrides[Name]
+  ): void {
+    if (override === undefined) {
+      return;
+    }
+    if (typeof override !== "function") {
+      throw new Error(
+        `Collector adapter constructor override "${name}" must be a function`
+      );
+    }
+    this.constructors[name] = override;
+  }
+
+  withOverrides(overrides: AdapterConstructorOverrides): this {
+    this.setOverride("createRSSAdapter", overrides.createRSSAdapter);
+    this.setOverride("createHackerNewsAdapter", overrides.createHackerNewsAdapter);
+    this.setOverride("createLobstersAdapter", overrides.createLobstersAdapter);
+    return this;
+  }
+
+  build(): AdapterConstructors {
+    return { ...this.constructors };
+  }
+}
 
 interface AdapterDefinition<Name extends AdapterName> {
   readonly kind: "implemented" | "unsupported";
@@ -100,10 +134,14 @@ type AdapterDefinitionItem =
   | UnsupportedAdapterDefinition;
 
 function parseCsvValues(value: string): string[] {
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+  const values = new Set<string>();
+  for (const entry of value.split(",")) {
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) {
+      values.add(trimmed);
+    }
+  }
+  return [...values];
 }
 
 function createImplementedAdapterDefinition(
@@ -209,7 +247,9 @@ export class CollectorAdapterFactory {
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
   constructor(constructors: AdapterConstructorOverrides = {}) {
-    this.constructors = { ...DEFAULT_ADAPTER_CONSTRUCTORS, ...constructors };
+    this.constructors = new AdapterConstructorBuilder()
+      .withOverrides(constructors)
+      .build();
     this.definitions = createAdapterDefinitions();
   }
 
