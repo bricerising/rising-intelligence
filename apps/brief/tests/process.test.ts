@@ -366,6 +366,60 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(90);
   });
 
+  it("emits retryable llm_error failure when codex-cli request fails", async () => {
+    codexCliMocks.executeCodexCli.mockRejectedValue(new Error("token expired"));
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("llm_error");
+    expect(persistedPayload.failure.retryable).toBe(true);
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
+    expect(ctx.healthContext.metrics.errors.get("llm_error")).toBe(1);
+  });
+
+  it("categorizes retryable LLM timeouts as timeout failures", async () => {
+    codexCliMocks.executeCodexCli.mockRejectedValue(new Error("request timed out"));
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("timeout");
+    expect(persistedPayload.failure.retryable).toBe(true);
+    expect(ctx.healthContext.metrics.errors.get("timeout")).toBe(1);
+  });
+
   it("charges budget on processing date instead of request timestamp date", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-02-10T00:05:00.000Z"));
@@ -637,6 +691,110 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
   });
 
+  it("drops LLM highlights that reference topics outside the request scope", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Scoped Brief",
+        highlights: [
+          {
+            topic: "signal.quality",
+            what_happened: "Classifiers are drifting",
+            why_it_matters: "Can lead to false positives",
+            suggested_action: "Review quality controls",
+            citations: ["https://example.com/1"],
+          },
+          {
+            topic: "AWS.BEDROCK",
+            what_happened: "Model update landed [1]",
+            why_it_matters: "Lower latency for key workloads",
+            suggested_action: "Re-check production defaults",
+            citations: ["https://example.com/1"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(1);
+    expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
+  });
+
+  it("keeps only topic-scoped citations for each LLM highlight", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Scoped Citations Brief",
+        highlights: [
+          {
+            topic: "data.kafka",
+            what_happened: "Kafka updates landed",
+            why_it_matters: "Teams may adjust stream plans",
+            suggested_action: "Review Kafka changes",
+            citations: ["https://example.com/1", "https://example.com/2"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeRequest();
+    request.topics.push({
+      topic: "data.kafka",
+      metrics: [
+        {
+          topic: "data.kafka",
+          window: 2,
+          score: 8,
+          volume: 11,
+          acceleration: 0.4,
+        },
+      ],
+      evidence: [
+        {
+          eventId: "evt-2",
+          source: "news",
+          url: "https://example.com/2",
+          title: "Kafka release",
+          publishedAt: new Date("2026-02-06T09:20:00.000Z"),
+          fetchedAt: new Date("2026-02-06T09:30:00.000Z"),
+          textExcerpt: "Kafka release notes",
+        },
+      ],
+    });
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(1);
+    expect(persistedPayload.brief.highlights[0].topic).toBe("data.kafka");
+    expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/2"]);
+  });
+
   it("emits non-retryable failure when notes include ungrounded URLs", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -752,6 +910,111 @@ describe("processSummaryRequest", () => {
     const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
     expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
+  it("filters query-mode evidence that is weakly aligned with the topic key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Kafka Brief",
+        highlights: [
+          {
+            topic: "data.kafka",
+            what_happened: "Kafka activity increased",
+            why_it_matters: "Teams are re-evaluating stream infra",
+            suggested_action: "Review cited Kafka sources",
+            citations: ["https://example.com/kafka-release-notes"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeQueryRequest();
+    request.query = {
+      ...request.query,
+      topicGlobs: ["data.kafka"],
+      evidenceStrategy: "recency",
+    };
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+        BRIEF_DEFAULT_LOOKBACK_DAYS: 7,
+        BRIEF_MAX_LOOKBACK_DAYS: 30,
+        BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: 25,
+      },
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-06T09:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "data.kafka",
+                    score: 82,
+                    volume: 24,
+                    acceleration: 0.7,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-kafka-noise",
+              source: "news",
+              url: "https://example.com/general-sponsor-roundup",
+              title: "General sponsor roundup",
+              publishedAt: new Date("2026-02-06T09:50:00.000Z"),
+              fetchedAt: new Date("2026-02-06T09:55:00.000Z"),
+              text: "A broad update covering regional events and unrelated narratives.",
+              topics: ["data.kafka"],
+              engagementScore: 80,
+            },
+            {
+              eventId: "evt-kafka-signal",
+              source: "news",
+              url: "https://example.com/kafka-release-notes",
+              title: "Kafka release notes",
+              publishedAt: new Date("2026-02-06T08:50:00.000Z"),
+              fetchedAt: new Date("2026-02-06T08:55:00.000Z"),
+              text: "Apache Kafka adds cluster balancing and improved Kafka client controls.",
+              topics: ["data.kafka"],
+              engagementScore: 30,
+            },
+          ]),
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body as string) as {
+      topics: Array<{
+        topic: string;
+        evidence: Array<{ event_id: string }>;
+      }>;
+    };
+    const topicPayload = payload.topics.find((topic) => topic.topic === "data.kafka");
+    expect(topicPayload?.evidence.map((evidence) => evidence.event_id)).toEqual(["evt-kafka-signal"]);
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
   });
 
   it("emits no_coverage failure when query mode has no trend snapshots", async () => {
@@ -1005,10 +1268,10 @@ describe("processSummaryRequest", () => {
               eventId: "evt-recency-top",
               source: "rss",
               url: "https://example.com/recency-top",
-              title: "Most recent, low engagement",
+              title: "Most recent Bedrock note, low engagement",
               publishedAt: new Date("2026-02-06T09:45:00.000Z"),
               fetchedAt: new Date("2026-02-06T09:50:00.000Z"),
-              text: "recent low engagement",
+              text: "recent low engagement for Bedrock updates",
               topics: ["aws.bedrock"],
               engagementScore: 5,
             },
@@ -1016,10 +1279,10 @@ describe("processSummaryRequest", () => {
               eventId: "evt-engagement-top",
               source: "rss",
               url: "https://example.com/engagement-top",
-              title: "Older, high engagement",
+              title: "Older Bedrock note, high engagement",
               publishedAt: new Date("2026-02-06T09:10:00.000Z"),
               fetchedAt: new Date("2026-02-06T09:20:00.000Z"),
-              text: "older high engagement",
+              text: "older high engagement discussion for Bedrock users",
               topics: ["aws.bedrock"],
               engagementScore: 90,
             },
@@ -1027,10 +1290,10 @@ describe("processSummaryRequest", () => {
               eventId: "evt-engagement-second",
               source: "rss",
               url: "https://example.com/engagement-second",
-              title: "Older, medium engagement",
+              title: "Older Bedrock note, medium engagement",
               publishedAt: new Date("2026-02-06T08:10:00.000Z"),
               fetchedAt: new Date("2026-02-06T08:20:00.000Z"),
-              text: "older medium engagement",
+              text: "older medium engagement with Bedrock examples",
               topics: ["aws.bedrock"],
               engagementScore: 40,
             },

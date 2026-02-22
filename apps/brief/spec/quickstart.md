@@ -33,6 +33,16 @@ Run the Compose-backed end-to-end test (real Kafka/Postgres/Redis + mock HTTP LL
 npm run test:e2e:brief:compose
 ```
 
+This test harness uses an isolated Compose project (`ri-brief-e2e`) so it can run concurrently with the main local stack. Optional host-port overrides:
+
+```bash
+E2E_BRIEF_COMPOSE_PROJECT=ri-brief-e2e-alt \
+E2E_KAFKA_HOST_PORT=19093 \
+E2E_SCHEMA_REGISTRY_HOST_PORT=28082 \
+E2E_BRIEF_HOST_PORT=13006 \
+npm run test:e2e:brief:compose
+```
+
 ## Local Codex CLI Provider
 
 Use local Codex CLI for brief generation:

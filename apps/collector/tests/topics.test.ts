@@ -208,6 +208,54 @@ describe("Topic Extraction", () => {
       );
       expect(topics).toContain("aws.general");
     });
+
+    it("should NOT match data.kafka for Peter Kafka mentions on Techmeme", () => {
+      const topics = extractTopics(
+        {
+          title: "Techmeme roundup",
+          text: "Channels with Peter Kafka: media and creator economy coverage.",
+          url: "http://techmeme.com/260218/p26",
+        },
+        allowlist
+      );
+      expect(topics).not.toContain("data.kafka");
+    });
+
+    it("should match data.kafka for Apache Kafka technical coverage", () => {
+      const topics = extractTopics(
+        {
+          title: "Apache Kafka 4.0 roadmap",
+          text: "Kafka brokers, partitions, and stream processing improvements are discussed.",
+          url: "https://example.com/apache-kafka-roadmap",
+        },
+        allowlist
+      );
+      expect(topics).toContain("data.kafka");
+    });
+
+    it("should NOT match observability.opentelemetry for hotel text", () => {
+      const topics = extractTopics(
+        {
+          title: "Hotel occupancy report",
+          text: "The hotel operations team published quarterly metrics.",
+          url: "https://example.com/hotel-report",
+        },
+        allowlist
+      );
+      expect(topics).not.toContain("observability.opentelemetry");
+    });
+
+    it("should match observability.opentelemetry for OTEL tracing context", () => {
+      const topics = extractTopics(
+        {
+          title: "OTEL collector rollout",
+          text: "Engineers added OTEL traces, metrics, and exporter settings in production.",
+          url: "https://example.com/otel-rollout",
+        },
+        allowlist
+      );
+      expect(topics).toContain("observability.opentelemetry");
+    });
   });
 });
 

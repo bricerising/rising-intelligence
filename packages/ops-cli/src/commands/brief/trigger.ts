@@ -389,7 +389,7 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     reportTimezone,
     reportStartAtIso,
     reportEndAtIso,
-    llmProvider: getStringFlag(flags, "llm-provider"),
+    llmProvider: getStringFlag(flags, "llm-provider") || getEnvString("LLM_PROVIDER") || "codex-cli",
     dryRun: getBooleanFlag(flags, "dry-run"),
     noWait: getBooleanFlag(flags, "no-wait"),
     timeoutSeconds: getNumberFlag(flags, "timeout") ?? 300,

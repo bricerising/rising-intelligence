@@ -116,4 +116,40 @@ describe("CommandRegistry", () => {
     expect(command).not.toBeNull();
     expect(alias).toBe(command);
   });
+
+  it("registers kafka ensure-topics in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("kafka", "ensure-topics");
+    const alias = registry.resolve("kafka", "ensure");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
+
+  it("registers brief diagnose in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("brief", "diagnose");
+    const alias = registry.resolve("brief", "triage");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
+
+  it("registers db test-bootstrap-check in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("db", "test-bootstrap-check");
+    const alias = registry.resolve("db", "test-bootstrap");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
+
+  it("registers e2e brief-run in the default command registry", () => {
+    const registry = createDefaultCommandRegistry();
+    const command = registry.resolve("e2e", "brief-run");
+    const alias = registry.resolve("e2e", "brief");
+
+    expect(command).not.toBeNull();
+    expect(alias).toBe(command);
+  });
 });

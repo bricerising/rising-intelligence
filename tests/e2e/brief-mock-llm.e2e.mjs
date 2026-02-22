@@ -165,6 +165,34 @@ class ResultCollector {
     });
   }
 
+  async waitForAdditional(key, baselineCount, timeoutMs) {
+    const existing = this.messagesByKey.get(key) ?? [];
+    if (existing.length > baselineCount) {
+      return existing[existing.length - 1];
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.listeners.delete(listener);
+        reject(new Error(`Timed out waiting for additional result key: ${key}`));
+      }, timeoutMs);
+
+      const listener = (receivedKey, payload) => {
+        if (receivedKey !== key) {
+          return;
+        }
+        if (this.getCount(key) <= baselineCount) {
+          return;
+        }
+        clearTimeout(timeout);
+        this.listeners.delete(listener);
+        resolve(payload);
+      };
+
+      this.listeners.add(listener);
+    });
+  }
+
   async stop() {
     try {
       await this.consumer.stop();
@@ -258,9 +286,14 @@ async function main() {
         },
       ],
     });
-    await collector.ensureNoAdditional(firstRequest.request_id, baselineCount, 5000);
+    const duplicateResult = await collector.waitForAdditional(
+      firstRequest.request_id,
+      baselineCount,
+      WAIT_TIMEOUT_MS
+    );
+    assert(duplicateResult?.brief, "Duplicate request did not republish a success brief payload");
 
-    const secondRequest = createSummaryRequest("e2e-mock-llm-req-2", 0.02);
+    const secondRequest = createSummaryRequest("e2e-mock-llm-req-2", 0.001);
     await producer.send({
       topic: REQUEST_TOPIC,
       messages: [

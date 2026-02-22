@@ -42,7 +42,10 @@ function describeExecError(error: unknown): string {
       stdout?: string | Buffer;
       stderr?: string | Buffer;
     };
-    const message = details.message ?? "unknown error";
+    const rawMessage = details.message?.trim() ?? "unknown error";
+    const message = rawMessage.startsWith("Command failed:")
+      ? "command failed"
+      : rawMessage.split("\n")[0].slice(0, 200);
     const code = details.code !== undefined ? ` code=${String(details.code)}` : "";
     const signal = details.signal ? ` signal=${details.signal}` : "";
     const stderr =

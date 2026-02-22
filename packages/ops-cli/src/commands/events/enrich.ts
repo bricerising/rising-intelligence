@@ -256,6 +256,7 @@ const RETAG_STEP: EnrichStep = {
       {
         title: event.title ?? undefined,
         text: event.text,
+        url: event.url ?? undefined,
       },
       ctx.allowlist
     );

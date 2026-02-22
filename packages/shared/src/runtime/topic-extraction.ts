@@ -104,6 +104,9 @@ const MATCHER_COMPILERS: Record<MatcherType, MatcherCompiler> = {
 interface MatcherEvaluationContext {
   content: string;
   lowerContent: string;
+  lowerTitle: string;
+  lowerText: string;
+  lowerUrl: string;
 }
 
 const MATCHER_EVALUATORS: {
@@ -115,6 +118,98 @@ const MATCHER_EVALUATORS: {
   keyword: (matcher, context) => context.lowerContent.includes(matcher.value),
   regex: (matcher, context) => matcher.pattern.test(context.content),
 };
+
+const KAFKA_TECHNICAL_PATTERNS = [
+  /\bapache\s+kafka\b/,
+  /\bredpanda\b/,
+  /\bkafka\s+(streams?|connect|brokers?|cluster|consumer|producer|topics?|partitions?)\b/,
+  /\b(confluent|schema\s+registry|ksql)\b/,
+  /\b(stream(?:ing)?|event\s+stream)\b/,
+] as const;
+
+const OTEL_TECHNICAL_PATTERNS = [
+  /\b(traces?|tracing|spans?|metrics?|telemetry|instrumentation)\b/,
+  /\b(collector|exporter|sdk|semconv|otlp)\b/,
+  /\b(prometheus|grafana|tempo|jaeger)\b/,
+] as const;
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function countWholeWord(content: string, term: string): number {
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegexLiteral(term)}([^a-z0-9]|$)`, "g");
+  const matches = content.match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function hasWholeWord(content: string, term: string): boolean {
+  return countWholeWord(content, term) > 0;
+}
+
+function hasAnyPattern(content: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(content));
+}
+
+function isKafkaTopicRelevant(context: MatcherEvaluationContext): boolean {
+  const content = `${context.lowerTitle} ${context.lowerText}`.trim();
+  if (content.length === 0) {
+    return false;
+  }
+
+  if (hasWholeWord(content, "redpanda")) {
+    return true;
+  }
+  if (hasWholeWord(content, "apache kafka")) {
+    return true;
+  }
+
+  const kafkaCount = countWholeWord(content, "kafka");
+  if (kafkaCount === 0) {
+    return false;
+  }
+
+  const hasTechnicalSignals = hasAnyPattern(content, KAFKA_TECHNICAL_PATTERNS);
+  if (hasWholeWord(content, "peter kafka") && !hasTechnicalSignals) {
+    return false;
+  }
+  if (hasWholeWord(content, "kafkaesque") && !hasTechnicalSignals) {
+    return false;
+  }
+  if (context.lowerUrl.includes("techmeme.com") && !hasTechnicalSignals) {
+    return false;
+  }
+
+  if (hasTechnicalSignals) {
+    return true;
+  }
+
+  return kafkaCount >= 2 && !hasWholeWord(content, "peter kafka");
+}
+
+function isOpenTelemetryTopicRelevant(context: MatcherEvaluationContext): boolean {
+  const content = `${context.lowerTitle} ${context.lowerText}`.trim();
+  if (content.length === 0) {
+    return false;
+  }
+  if (hasWholeWord(content, "opentelemetry")) {
+    return true;
+  }
+  if (!hasWholeWord(content, "otel")) {
+    return false;
+  }
+  return hasAnyPattern(content, OTEL_TECHNICAL_PATTERNS);
+}
+
+function passesTopicRelevanceFilter(topicKey: string, context: MatcherEvaluationContext): boolean {
+  if (topicKey === "data.kafka") {
+    return isKafkaTopicRelevant(context);
+  }
+  if (topicKey === "observability.opentelemetry") {
+    return isOpenTelemetryTopicRelevant(context);
+  }
+  return true;
+}
 
 function isMatcherType(value: string): value is MatcherType {
   return value === "keyword" || value === "regex";
@@ -216,13 +311,19 @@ interface TopicMatch {
  * This ensures deterministic results: same content + allowlist = same topics.
  */
 export function extractTopics(
-  event: { title?: string; text: string },
+  event: { title?: string; text: string; url?: string | null },
   allowlist: CompiledAllowlist
 ): string[] {
-  const content = `${event.title ?? ""} ${event.text}`;
+  const title = event.title ?? "";
+  const text = event.text;
+  const url = event.url ?? "";
+  const content = `${title} ${text}`;
   const matcherContext: MatcherEvaluationContext = {
     content,
     lowerContent: content.toLowerCase(),
+    lowerTitle: title.toLowerCase(),
+    lowerText: text.toLowerCase(),
+    lowerUrl: url.toLowerCase(),
   };
   const matches: TopicMatch[] = [];
 
@@ -233,13 +334,22 @@ export function extractTopics(
       continue;
     }
 
+    let matched = false;
     // Check each matcher (any match counts)
     for (const matcher of topic.matchers) {
       if (matchesCompiledMatcher(matcher, matcherContext)) {
-        matches.push({ key: topic.key, priority: topic.priority });
+        matched = true;
         break; // Only add topic once (first matching matcher wins)
       }
     }
+
+    if (!matched) {
+      continue;
+    }
+    if (!passesTopicRelevanceFilter(topic.key, matcherContext)) {
+      continue;
+    }
+    matches.push({ key: topic.key, priority: topic.priority });
   }
 
   // Step 2: Sort by priority (desc), then key (asc) for determinism

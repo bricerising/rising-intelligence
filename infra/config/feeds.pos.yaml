@@ -12,7 +12,7 @@ edgar_watchlist:
     source_type: edgar
     cik: "0001512673"
     topics: ["market.pos", "payments.block"]
-    entity_terms: ["block", "square", "cash app"]
+    entity_terms: ["cash app", "block inc", "squareup"]
 
   - name: EDGAR - Fiserv, Inc.
     url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000798354&type=&owner=exclude&count=100&output=atom
@@ -124,13 +124,13 @@ merchant_feeds:
     url: https://www.pymnts.com/feed/
     source_type: merchant
     poll_interval_seconds: 900
-    topics: ["market.pos", "payments.general"]
+    topics: ["market.pos"]
 
   - name: PaymentsJournal News
     url: https://www.paymentsjournal.com/feed/
     source_type: merchant
     poll_interval_seconds: 900
-    topics: ["market.pos", "payments.general"]
+    topics: ["market.pos"]
 
 wire_feeds:
   - name: PR Newswire All Releases
@@ -138,10 +138,10 @@ wire_feeds:
     source_type: wire
     signal_tier: high_volume
     poll_interval_seconds: 900
-    topics: ["market.pos", "payments.general"]
+    topics: ["market.pos"]
     entity_terms:
       - "adyen"
-      - "block"
+      - "block inc"
       - "fiserv"
       - "fis"
       - "global payments"
@@ -155,3 +155,5 @@ wire_feeds:
       - "ingenico"
       - "stripe"
       - "shopify"
+      - "cash app"
+      - "squareup"

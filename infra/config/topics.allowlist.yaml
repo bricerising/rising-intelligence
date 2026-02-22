@@ -550,6 +550,10 @@ topics:
         value: "tap to pay"
       - type: keyword
         value: "contactless payment"
+      - type: regex
+        pattern: "\\b(payment(s)?|merchant)\\b.{0,30}\\b(terminal|checkout|acquir|gateway|processor|card[- ]present|contactless|tap to pay|pay later|bnpl)\\b"
+      - type: regex
+        pattern: "\\b(checkout|card[- ]present|contactless|tap to pay|pay later|bnpl)\\b.{0,30}\\bpayment(s)?\\b"
 
   - key: payments.general
     display_name: Merchant Payments
@@ -557,7 +561,9 @@ topics:
     aliases: ["Payment Processing", "Merchant Acquiring"]
     matchers:
       - type: regex
-        pattern: "\\bpayment(s)?\\b"
+        pattern: "\\b(payment(s)?|merchant)\\b.{0,30}\\b(terminal|checkout|acquir|gateway|processor|card[- ]present|contactless|tap to pay)\\b"
+      - type: regex
+        pattern: "\\b(merchant|checkout|card[- ]present|contactless|tap to pay)\\b.{0,30}\\bpayment(s)?\\b"
       - type: keyword
         value: "merchant acquiring"
       - type: keyword

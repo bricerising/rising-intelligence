@@ -39,7 +39,7 @@ export interface CollectorEventProcessorInput {
   now?: () => Date;
   generateDlqId?: () => string;
   topicExtractor?: (
-    event: { title?: string; text: string },
+    event: { title?: string; text: string; url?: string | null },
     allowlist: CompiledAllowlist
   ) => string[];
 }
@@ -79,7 +79,7 @@ interface RuntimeContext {
   now: () => Date;
   generateDlqId: () => string;
   topicExtractor: (
-    event: { title?: string; text: string },
+    event: { title?: string; text: string; url?: string | null },
     allowlist: CompiledAllowlist
   ) => string[];
 }
@@ -195,7 +195,7 @@ function createTopicExtractionStep(): ProcessingStep {
     name: "extract-topics",
     async execute({ runtime, state }, next): Promise<CollectorEventProcessResult> {
       const topics = runtime.topicExtractor(
-        { title: state.event.title, text: state.event.text },
+        { title: state.event.title, text: state.event.text, url: state.event.url },
         runtime.allowlist
       );
       state.topics = topics;

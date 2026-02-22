@@ -131,6 +131,14 @@ const DEFAULT_COMMANDS: readonly CliCommandDefinition[] = [
     loadModule: () => import("./commands/kafka/topics.js"),
     exportName: "kafkaTopics",
   }),
+  createLazyCommandDefinition({
+    group: "kafka",
+    command: "ensure-topics",
+    aliases: ["kafka:ensure"],
+    summary: "Ensure topics exist and leaders are ready",
+    loadModule: () => import("./commands/kafka/ensure-topics.js"),
+    exportName: "kafkaEnsureTopics",
+  }),
   {
     group: "lgtm",
     command: "urls",
@@ -149,6 +157,14 @@ const DEFAULT_COMMANDS: readonly CliCommandDefinition[] = [
     summary: "Publish a manual SummaryRequest to Kafka",
     loadModule: () => import("./commands/brief/trigger.js"),
     exportName: "briefTrigger",
+  }),
+  createLazyCommandDefinition({
+    group: "brief",
+    command: "diagnose",
+    aliases: ["brief:triage"],
+    summary: "Trigger and diagnose brief request execution path",
+    loadModule: () => import("./commands/brief/diagnose.js"),
+    exportName: "briefDiagnose",
   }),
   createLazyCommandDefinition({
     group: "topics",
@@ -180,6 +196,22 @@ const DEFAULT_COMMANDS: readonly CliCommandDefinition[] = [
     summary: "Create Postgres snapshot backups (single-run or scheduled loop)",
     loadModule: () => import("./commands/db/snapshot.js"),
     exportName: "dbSnapshot",
+  }),
+  createLazyCommandDefinition({
+    group: "db",
+    command: "test-bootstrap-check",
+    aliases: ["db:test-bootstrap"],
+    summary: "Check test DB bootstrap tables and Prisma migrations",
+    loadModule: () => import("./commands/db/test-bootstrap-check.js"),
+    exportName: "dbTestBootstrapCheck",
+  }),
+  createLazyCommandDefinition({
+    group: "e2e",
+    command: "brief-run",
+    aliases: ["e2e:brief"],
+    summary: "Run brief compose e2e with isolated project/ports",
+    loadModule: () => import("./commands/e2e/brief-run.js"),
+    exportName: "e2eBriefRun",
   }),
 ];
 

@@ -14,6 +14,10 @@
 # - aggregator: Curated news aggregators
 # - community: Developer communities (HN, Reddit, Lobsters)
 # - opensource: GitHub trending and releases
+# - release_notes: Product changelogs and release streams
+# - security_bulletin: Vendor security advisories and bulletins
+# - service_health: Public cloud status dashboards
+# - community_signal: Third-party curated ecosystem signals
 
 defaults:
   poll_interval_seconds: 900  # 15 minutes default
@@ -27,7 +31,7 @@ official_blogs:
 
   # AWS - Primary source for AWS news
   - name: AWS News Blog
-    url: http://feeds.feedburner.com/AmazonWebServicesBlog
+    url: https://aws.amazon.com/blogs/aws/feed/
     poll_interval_seconds: 3600  # Hourly (more frequent during re:Invent)
     priority: 95
     category: official_blog
@@ -35,7 +39,7 @@ official_blogs:
     notes: "Official Amazon Web Services news blog - major announcements"
 
   - name: AWS What's New
-    url: https://aws.amazon.com/new/feed/
+    url: https://aws.amazon.com/about-aws/whats-new/recent/feed/
     poll_interval_seconds: 1800  # 30 minutes (high volume, many daily updates)
     priority: 90
     category: official_blog
@@ -44,7 +48,7 @@ official_blogs:
 
   # Google Cloud
   - name: Google Cloud Blog
-    url: https://blog.google/products/google-cloud/rss/
+    url: https://cloudblog.withgoogle.com/rss
     poll_interval_seconds: 3600  # Hourly
     priority: 90
     category: official_blog
@@ -77,6 +81,352 @@ official_blogs:
     category: official_blog
     topics: ["cloud.cloudflare"]
     notes: "Engineering blog - security, performance, networking deep-dives"
+
+# =============================================================================
+# Cloud Vendor Deep-Dive Blogs
+# =============================================================================
+cloud_vendor_deep_dives:
+
+  # AWS category blogs (official, product/domain-focused)
+  - name: AWS Compute Blog
+    url: http://feeds.feedburner.com/AwsComputeBlog
+    poll_interval_seconds: 7200
+    priority: 82
+    category: official_blog
+    topics: ["aws.compute"]
+    notes: "Compute services deep dives and release walkthroughs"
+
+  - name: AWS Security Blog
+    url: http://blogs.aws.amazon.com/security/blog/feed/recentPosts.rss
+    poll_interval_seconds: 7200
+    priority: 88
+    category: official_blog
+    topics: ["aws.security"]
+    notes: "AWS security architecture guidance and product updates"
+
+  - name: AWS Big Data Blog
+    url: http://blogs.aws.amazon.com/bigdata/blog/feed/recentPosts.rss
+    poll_interval_seconds: 10800
+    priority: 75
+    category: official_blog
+    topics: ["aws.data"]
+    notes: "Data engineering and analytics guidance on AWS services"
+
+  - name: AWS Machine Learning Blog
+    url: http://feeds.feedburner.com/amazon/AWSAI
+    poll_interval_seconds: 7200
+    priority: 82
+    category: official_blog
+    topics: ["aws.ml"]
+    notes: "ML/AI service launches and implementation guidance"
+
+  - name: AWS IoT Blog
+    url: https://aws.amazon.com/blogs/iot/feed
+    poll_interval_seconds: 10800
+    priority: 70
+    category: official_blog
+    topics: ["aws.iot"]
+    notes: "IoT platform updates and architecture references"
+
+  - name: AWS Infrastructure and Automation Blog
+    url: https://aws.amazon.com/blogs/infrastructure-and-automation/feed/
+    poll_interval_seconds: 7200
+    priority: 75
+    category: official_blog
+    topics: ["aws.devops"]
+    notes: "Infrastructure as code and automation patterns for AWS"
+
+  - name: AWS Application Management and DevOps Blog
+    url: https://blogs.aws.amazon.com/application-management/blog/feed/recentPosts.rss
+    poll_interval_seconds: 10800
+    priority: 72
+    category: official_blog
+    topics: ["aws.devops"]
+    notes: "Operational guidance for AWS management and DevOps tooling"
+
+  - name: AWS Developer Blog
+    url: http://feeds.feedburner.com/AwsDeveloperBlog
+    poll_interval_seconds: 10800
+    priority: 70
+    category: official_blog
+    topics: ["aws.developer"]
+    notes: "SDK and developer tooling updates for AWS builders"
+
+  # Google Cloud threat intelligence stream
+  - name: Google Threat Intelligence Blog
+    url: https://feeds.feedburner.com/threatintelligence/pvexyqv7v0v
+    poll_interval_seconds: 14400
+    priority: 78
+    category: official_blog
+    topics: ["cloud.gcp", "security.threat-intel"]
+    notes: "Google Cloud threat intelligence and security research posts"
+
+# =============================================================================
+# Cloud Release Notes & Product Update Streams
+# =============================================================================
+cloud_release_notes:
+
+  # AWS documentation/release-note style feeds
+  - name: AWS Lambda Documentation Updates
+    url: https://docs.aws.amazon.com/lambda/latest/dg/lambda-updates.rss
+    poll_interval_seconds: 7200
+    priority: 86
+    category: release_notes
+    topics: ["aws.lambda"]
+    notes: "AWS Lambda documentation and feature update changelog feed"
+
+  - name: AWS IAM Release Notes
+    url: https://docs.aws.amazon.com/IAM/latest/UserGuide/aws-iam-release-notes.rss
+    poll_interval_seconds: 7200
+    priority: 84
+    category: release_notes
+    topics: ["aws.iam"]
+    notes: "Identity and access management release notes"
+
+  - name: AWS CloudFormation Release Notes
+    url: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-cloudformation-user-guide-updates.rss
+    poll_interval_seconds: 7200
+    priority: 84
+    category: release_notes
+    topics: ["aws.cloudformation"]
+    notes: "CloudFormation changelog and capability updates"
+
+  - name: AWS API Gateway Release Notes
+    url: https://docs.aws.amazon.com/apigateway/latest/developerguide/amazon-apigateway-release-notes.rss
+    poll_interval_seconds: 7200
+    priority: 80
+    category: release_notes
+    topics: ["aws.apigateway"]
+    notes: "API Gateway release notes and behavior changes"
+
+  - name: AWS S3 Developer Guide Updates
+    url: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-userguide-rss-updates.rss
+    poll_interval_seconds: 10800
+    priority: 78
+    category: release_notes
+    topics: ["aws.s3"]
+    notes: "S3 developer guide updates and API behavior notes"
+
+  # Google Cloud release note feeds
+  - name: Google Cloud Release Notes (All Products)
+    url: https://docs.cloud.google.com/feeds/gcp-release-notes.xml
+    poll_interval_seconds: 1800
+    priority: 92
+    category: release_notes
+    topics: ["cloud.gcp"]
+    notes: "Primary Google Cloud cross-product release notes feed"
+
+  - name: GCP Compute Engine Release Notes
+    url: https://cloud.google.com/feeds/compute-engine-release-notes.xml
+    poll_interval_seconds: 3600
+    priority: 82
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.compute"]
+    notes: "Compute Engine release and maintenance notes"
+
+  - name: GCP GKE Release Notes
+    url: https://cloud.google.com/feeds/kubernetes-engine-release-notes.xml
+    poll_interval_seconds: 3600
+    priority: 86
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.gke"]
+    notes: "Google Kubernetes Engine release notes"
+
+  - name: GCP Cloud Run Release Notes
+    url: https://cloud.google.com/feeds/cloud-run-release-notes.xml
+    poll_interval_seconds: 3600
+    priority: 82
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.cloudrun"]
+    notes: "Cloud Run revisions and feature rollout notes"
+
+  - name: GCP Cloud Functions Release Notes
+    url: https://cloud.google.com/feeds/cloud-functions-release-notes.xml
+    poll_interval_seconds: 3600
+    priority: 80
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.functions"]
+    notes: "Cloud Functions platform and runtime release notes"
+
+  - name: GCP Cloud SQL Release Notes
+    url: https://cloud.google.com/feeds/cloud-sql-release-notes.xml
+    poll_interval_seconds: 3600
+    priority: 84
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.cloudsql"]
+    notes: "Cloud SQL release notes for database engines and operations"
+
+  - name: GCP Cloud Build Release Notes
+    url: https://cloud.google.com/feeds/cloud-build-release-notes.xml
+    poll_interval_seconds: 7200
+    priority: 78
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.cloudbuild"]
+    notes: "Cloud Build release notes and CI/CD behavior changes"
+
+  - name: GCP BigQuery Revision History
+    url: https://cloud.google.com/feeds/bigquery-revision-history.xml
+    poll_interval_seconds: 3600
+    priority: 86
+    category: release_notes
+    topics: ["cloud.gcp", "gcp.bigquery"]
+    notes: "BigQuery revision history and product update stream"
+
+  # Azure service release stream
+  - name: Azure Service Updates
+    url: https://www.microsoft.com/releasecommunications/api/v2/azure/rss
+    poll_interval_seconds: 1800
+    priority: 90
+    category: release_notes
+    topics: ["cloud.azure"]
+    notes: "Azure release communications feed for product update notices"
+
+# =============================================================================
+# Cloud Security Bulletins
+# =============================================================================
+cloud_security_advisories:
+
+  - name: AWS Security Bulletins
+    url: https://aws.amazon.com/security/security-bulletins/feed
+    poll_interval_seconds: 1800
+    priority: 95
+    category: security_bulletin
+    topics: ["aws.security"]
+    notes: "Official AWS security advisories and vulnerability disclosures"
+
+  - name: GCP Cloud Build Security Bulletins
+    url: https://cloud.google.com/feeds/cloud-build-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 88
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.cloudbuild", "security"]
+    notes: "Security advisories specific to Cloud Build"
+
+  - name: GCP Dataflow Security Bulletins
+    url: https://cloud.google.com/feeds/dataflow-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 86
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.dataflow", "security"]
+    notes: "Security advisories specific to Dataflow"
+
+  - name: GCP Generative AI on Vertex AI Security Bulletins
+    url: https://cloud.google.com/feeds/generative-ai-on-vertex-ai-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 88
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.vertex-ai", "security", "ai"]
+    notes: "Security advisories for generative AI capabilities on Vertex AI"
+
+  - name: GCP Managed Prometheus Security Bulletins
+    url: https://cloud.google.com/feeds/managed-prometheus-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 84
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.observability", "security"]
+    notes: "Security advisories for Managed Service for Prometheus"
+
+  - name: GCP Compute Engine Security Bulletins
+    url: https://cloud.google.com/feeds/compute-engine-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 90
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.compute", "security"]
+    notes: "Compute Engine vulnerability and patch advisories"
+
+  - name: GCP GKE Security Bulletins
+    url: https://cloud.google.com/feeds/kubernetes-engine-security-bulletins.xml
+    poll_interval_seconds: 7200
+    priority: 92
+    category: security_bulletin
+    topics: ["cloud.gcp", "gcp.gke", "security"]
+    notes: "Google Kubernetes Engine security advisories"
+
+# =============================================================================
+# Cloud Service Health Status Feeds
+# =============================================================================
+cloud_service_health:
+
+  - name: AWS Service Health Dashboard
+    url: https://status.aws.amazon.com/rss/all.rss
+    poll_interval_seconds: 900
+    priority: 93
+    category: service_health
+    topics: ["aws.status", "status"]
+    notes: "Public AWS service health feed across all services"
+
+  - name: Google Cloud Service Health
+    url: https://status.cloud.google.com/en/feed.atom
+    poll_interval_seconds: 900
+    priority: 93
+    category: service_health
+    topics: ["cloud.gcp", "status"]
+    notes: "Official Google Cloud service health status Atom feed"
+
+  - name: Azure Service Health
+    url: https://azure.status.microsoft/en-us/status/feed/
+    poll_interval_seconds: 900
+    priority: 93
+    category: service_health
+    topics: ["cloud.azure", "status"]
+    notes: "Public Azure status RSS feed"
+
+# =============================================================================
+# Indirect Cloud Signals (Optional/Curated)
+# =============================================================================
+cloud_indirect_signals:
+
+  - name: Last Week in AWS
+    url: https://www.lastweekinaws.com/feed
+    poll_interval_seconds: 14400
+    priority: 65
+    category: community_signal
+    topics: ["aws.general"]
+    notes: "Curated independent roundup of AWS ecosystem changes"
+
+  - name: Stack Overflow (AWS tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=amazon-web-services
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["aws.general", "developer.q-and-a"]
+    notes: "Newest Stack Overflow questions tagged amazon-web-services (high-volume)"
+
+  - name: Stack Overflow (Google Cloud tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=google-cloud-platform
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["cloud.gcp", "developer.q-and-a"]
+    notes: "Newest Stack Overflow questions tagged google-cloud-platform (high-volume)"
+
+  - name: Stack Overflow (Azure tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=azure
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["cloud.azure", "developer.q-and-a"]
+    notes: "Newest Stack Overflow questions tagged azure (high-volume)"
+
+  - name: InfoQ Google Cloud Topic
+    url: https://feed.infoq.com/google-cloud/articles/
+    poll_interval_seconds: 7200
+    priority: 68
+    category: aggregator
+    topics: ["cloud.gcp"]
+    notes: "InfoQ coverage stream focused on Google Cloud"
+
+  - name: Medium Google Cloud Publication
+    url: https://medium.com/feed/google-cloud
+    poll_interval_seconds: 21600
+    priority: 40
+    category: community_signal
+    enabled: false
+    topics: ["cloud.gcp"]
+    notes: "Google Cloud publication feed on Medium (broader and less curated)"
 
 # =============================================================================
 # AI & Research Focused Blogs
@@ -379,11 +729,11 @@ hnrss_custom:
 # Polling Strategy Notes
 # =============================================================================
 #
-# Real-time (5-15 min): HN top stories, critical aggregators
-# Near-real-time (30 min): Techmeme, OpenAI, AWS What's New
-# Hourly: Official blogs, Reddit hot posts
-# Every 2-4 hours: Research blogs, InfoQ, lower-priority sources
+# Real-time (5-15 min): Cloud status feeds, HN top stories, critical aggregators
+# Near-real-time (30 min): OpenAI, AWS What's New, cloud release streams
+# Hourly: Official blogs, selected product release-note feeds, Reddit hot posts
+# Every 2-4 hours: Security bulletins, research blogs, InfoQ, lower-priority sources
 # Daily: GitHub trending, GitHub releases
 #
-# Total sources (default enabled): ~20 RSS feeds + HN + 8 subreddits
-# Estimated daily API calls: ~2000-3000 (well within rate limits)
+# Total sources (default enabled): ~48 RSS feeds + HN + 8 subreddits
+# Estimated daily RSS polls (enabled feeds): ~1100 (well within rate limits)

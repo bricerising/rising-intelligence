@@ -2,21 +2,7 @@ import { Kafka } from "kafkajs";
 import { loadDotEnv } from "@rising-intelligence/shared";
 import type { CliFlags } from "../../lib/args.js";
 import { getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
-
-interface TopicConfig {
-  topic: string;
-  numPartitions?: number;
-  replicationFactor?: number;
-}
-
-const REQUIRED_TOPICS: TopicConfig[] = [
-  { topic: "events.raw", numPartitions: 3, replicationFactor: 1 },
-  { topic: "events.raw.dlq", numPartitions: 1, replicationFactor: 1 },
-  { topic: "trends.snapshots", numPartitions: 1, replicationFactor: 1 },
-  { topic: "summary.requests", numPartitions: 1, replicationFactor: 1 },
-  { topic: "summary.results", numPartitions: 1, replicationFactor: 1 },
-  { topic: "collector.heartbeat", numPartitions: 1, replicationFactor: 1 },
-];
+import { REQUIRED_TOPICS } from "./required-topics.js";
 
 export function resolveKafkaBrokers(
   flags: CliFlags,
@@ -74,15 +60,15 @@ export async function kafkaCreateTopics(flags: CliFlags): Promise<void> {
     await admin.createTopics({
       topics: topicsToCreate.map((topic) => ({
         topic: topic.topic,
-        numPartitions: topic.numPartitions ?? 1,
-        replicationFactor: topic.replicationFactor ?? 1,
+        numPartitions: topic.numPartitions,
+        replicationFactor: topic.replicationFactor,
       })),
     });
 
     for (const topic of topicsToCreate) {
       // eslint-disable-next-line no-console
       console.log(
-        `✓ Created topic: ${topic.topic} (partitions: ${topic.numPartitions ?? 1}, replication: ${topic.replicationFactor ?? 1})`
+        `✓ Created topic: ${topic.topic} (partitions: ${topic.numPartitions}, replication: ${topic.replicationFactor})`
       );
     }
 

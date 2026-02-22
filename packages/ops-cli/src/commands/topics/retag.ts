@@ -159,6 +159,7 @@ interface RetagTarget {
   id: bigint;
   eventId: string;
   source: Source;
+  url: string | null;
   title: string | null;
   text: string;
   tags: string[];
@@ -226,6 +227,7 @@ export async function topicsRetag(flags: CliFlags): Promise<void> {
           id: true,
           eventId: true,
           source: true,
+          url: true,
           title: true,
           text: true,
           tags: true,
@@ -247,7 +249,7 @@ export async function topicsRetag(flags: CliFlags): Promise<void> {
 
       for (const event of events) {
         const nextTopics = extractTopics(
-          { title: event.title ?? undefined, text: event.text },
+          { title: event.title ?? undefined, text: event.text, url: event.url ?? undefined },
           allowlist
         );
 

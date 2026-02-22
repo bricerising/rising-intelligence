@@ -166,6 +166,20 @@ function toNoCoverageError(message: string): NonRetryableProcessingError {
   return new NonRetryableProcessingError(message, NO_COVERAGE_ERROR_CODE);
 }
 
+function classifyRetryableFailureCode(error: LlmGenerationError): "llm_error" | "timeout" {
+  const message = error.message.toLowerCase();
+  if (
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("etimedout") ||
+    message.includes("abort")
+  ) {
+    return "timeout";
+  }
+
+  return "llm_error";
+}
+
 function getBudgetDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -256,9 +270,106 @@ interface RawEventForSelection {
   engagementScore: number | null;
 }
 
+interface QueryModeRawEvent extends RawEventForSelection {
+  url: string;
+  title: string | null;
+  publishedAt: Date | null;
+  text: string;
+  topics: string[];
+}
+
 interface EvidenceSelectionStrategy {
   readonly name: EvidenceStrategy;
   select<T extends RawEventForSelection>(events: T[], maxCount: number): T[];
+}
+
+const GENERIC_TOPIC_SEGMENTS = new Set([
+  "ai",
+  "cloud",
+  "data",
+  "devtools",
+  "framework",
+  "infra",
+  "language",
+  "ml",
+  "observability",
+  "platform",
+  "security",
+  "web",
+]);
+
+const TOPIC_RELEVANCE_ALIASES: Record<string, readonly string[]> = {
+  "data.kafka": ["kafka", "redpanda"],
+  "observability.opentelemetry": ["opentelemetry", "otel"],
+} as const;
+
+const TOPIC_RELEVANCE_MIN_BODY_MATCHES = 2;
+
+interface TopicRelevanceMatcher {
+  exactTermRegexes: RegExp[];
+}
+
+const topicRelevanceMatcherCache = new Map<string, TopicRelevanceMatcher | null>();
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function deriveTopicRelevanceTerms(topicKey: string): string[] {
+  const segments = topicKey
+    .split(/[._-]/)
+    .map((segment) => segment.trim().toLowerCase())
+    .filter((segment) => segment.length >= 3)
+    .filter((segment) => !GENERIC_TOPIC_SEGMENTS.has(segment));
+  const aliases = (TOPIC_RELEVANCE_ALIASES[topicKey] ?? []).map((term) => term.toLowerCase());
+  return [...new Set([...segments, ...aliases])];
+}
+
+function buildTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | null {
+  const terms = deriveTopicRelevanceTerms(topicKey);
+  if (terms.length === 0) {
+    return null;
+  }
+  return {
+    exactTermRegexes: terms.map((term) => new RegExp(`\\b${escapeRegexLiteral(term)}\\b`, "i")),
+  };
+}
+
+function getTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | null {
+  if (topicRelevanceMatcherCache.has(topicKey)) {
+    return topicRelevanceMatcherCache.get(topicKey) ?? null;
+  }
+  const matcher = buildTopicRelevanceMatcher(topicKey);
+  topicRelevanceMatcherCache.set(topicKey, matcher);
+  return matcher;
+}
+
+function countRegexMatches(content: string, regex: RegExp): number {
+  if (!content) {
+    return 0;
+  }
+  const globalRegex = new RegExp(regex.source, "gi");
+  const matches = content.match(globalRegex);
+  return matches ? matches.length : 0;
+}
+
+function isEventRelevantToTopic(event: QueryModeRawEvent, topicKey: string): boolean {
+  const matcher = getTopicRelevanceMatcher(topicKey);
+  if (!matcher) {
+    return true;
+  }
+
+  const titleAndUrl = `${event.title ?? ""} ${event.url}`.trim();
+  const titleOrUrlMatch = matcher.exactTermRegexes.some((regex) => regex.test(titleAndUrl));
+  if (titleOrUrlMatch) {
+    return true;
+  }
+
+  const bodyMatchCount = matcher.exactTermRegexes.reduce(
+    (count, regex) => count + countRegexMatches(event.text, regex),
+    0
+  );
+  return bodyMatchCount >= TOPIC_RELEVANCE_MIN_BODY_MATCHES;
 }
 
 function sortByEngagementThenRecency<T extends RawEventForSelection>(events: T[]): T[] {
@@ -510,17 +621,7 @@ async function buildQueryModeRequest(
   // Fetch all evidence in a single query
   const evidenceStrategy = request.query?.evidenceStrategy ?? "diversity";
   const rankedTopicKeys = new Set(rankedTopics.map((topic) => topic.topic));
-  let allEvents: Array<{
-    eventId: string;
-    source: Source;
-    url: string | null;
-    title: string | null;
-    publishedAt: Date | null;
-    fetchedAt: Date;
-    text: string;
-    topics: string[];
-    engagementScore: number | null;
-  }>;
+  let allEvents: QueryModeRawEvent[];
 
   try {
     const fetchedEvents = await ctx.prisma.rawEvent.findMany({
@@ -551,9 +652,9 @@ async function buildQueryModeRequest(
         engagementScore: true,
       },
     });
-    allEvents = fetchedEvents.filter(
-      (event): event is (typeof fetchedEvents)[number] & { url: string } => event.url !== null
-    );
+    allEvents = fetchedEvents.filter((event): event is (typeof fetchedEvents)[number] & { url: string } => {
+      return event.url !== null;
+    });
     ctx.healthContext.postgresHealthy = true;
   } catch (error) {
     ctx.healthContext.postgresHealthy = false;
@@ -562,9 +663,14 @@ async function buildQueryModeRequest(
 
   // Partition events by topic
   const eventsByTopic = new Map<string, typeof allEvents>();
+  const relevanceFilteredByTopic = new Map<string, number>();
   for (const event of allEvents) {
     for (const topicKey of event.topics) {
       if (!rankedTopicKeys.has(topicKey)) {
+        continue;
+      }
+      if (!isEventRelevantToTopic(event, topicKey)) {
+        relevanceFilteredByTopic.set(topicKey, (relevanceFilteredByTopic.get(topicKey) ?? 0) + 1);
         continue;
       }
       const existing = eventsByTopic.get(topicKey);
@@ -621,6 +727,16 @@ async function buildQueryModeRequest(
     );
   }
 
+  const relevanceFilteredCount = [...relevanceFilteredByTopic.values()].reduce(
+    (count, filtered) => count + filtered,
+    0
+  );
+  if (relevanceFilteredCount > 0) {
+    coverageWarnings.push(
+      `${relevanceFilteredCount} candidate event(s) were excluded by topic relevance checks.`
+    );
+  }
+
   logger.info(
     {
       lookbackDays,
@@ -629,6 +745,7 @@ async function buildQueryModeRequest(
       selectedTopicCount: topicsWithEvidence.length,
       maxEventsPerTopic,
       coverageWarningCount: coverageWarnings.length,
+      relevanceFilteredCount,
     },
     "Resolved query-mode summary request using trend snapshots and raw events"
   );
@@ -706,6 +823,28 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
     suggested_action: highlight.suggested_action.trim(),
     citations: groundingFacade.dedupeCanonicalUrls(highlight.citations),
   };
+}
+
+function normalizeTopicKey(topic: string): string {
+  return topic.trim().toLowerCase();
+}
+
+interface TopicEvidenceScope {
+  canonicalTopic: string;
+  evidenceUrls: Set<string>;
+}
+
+function buildTopicEvidenceScopes(request: ParsedSummaryRequest): Map<string, TopicEvidenceScope> {
+  const scopes = new Map<string, TopicEvidenceScope>();
+  for (const topic of request.topics) {
+    const canonicalTopic = topic.topic.trim();
+    const topicKey = normalizeTopicKey(canonicalTopic);
+    scopes.set(topicKey, {
+      canonicalTopic,
+      evidenceUrls: new Set(groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url))),
+    });
+  }
+  return scopes;
 }
 
 function formatReportDate(value: Date | undefined, timezone: string | undefined): string | null {
@@ -951,15 +1090,32 @@ function enforceGroundedHighlights(
   highlights: NormalizedHighlight[]
 ): NormalizedHighlight[] {
   const evidenceUrls = groundingFacade.createEvidenceUrlSet(request);
+  const topicEvidenceScopes = buildTopicEvidenceScopes(request);
   if (evidenceUrls.size === 0) {
     throw new NonRetryableProcessingError("No evidence URLs were provided in the summary request");
   }
 
   const groundedHighlights = highlights
-    .map((highlight) => ({
-      ...highlight,
-      citations: groundingFacade.filterGroundedCitations(highlight.citations, evidenceUrls),
-    }))
+    .map((highlight) => {
+      const topicScope = topicEvidenceScopes.get(normalizeTopicKey(highlight.topic));
+      if (!topicScope) {
+        return null;
+      }
+      const globallyGroundedCitations = groundingFacade.filterGroundedCitations(
+        highlight.citations,
+        evidenceUrls
+      );
+      const topicScopedCitations = globallyGroundedCitations.filter((citation) =>
+        topicScope.evidenceUrls.has(citation)
+      );
+
+      return {
+        ...highlight,
+        topic: topicScope.canonicalTopic,
+        citations: topicScopedCitations,
+      };
+    })
+    .filter((highlight): highlight is NormalizedHighlight => highlight !== null)
     .filter((highlight) => highlight.citations.length > 0);
 
   if (groundedHighlights.length === 0) {
@@ -1790,9 +1946,29 @@ export async function processSummaryRequest(
       throw error;
     }
 
+    if (error instanceof LlmGenerationError) {
+      const failureCode = classifyRetryableFailureCode(error);
+      incrementError(ctx.healthContext, failureCode);
+      incrementGeneration(ctx.healthContext, "failure");
+      logger.error(
+        { error: serializeError(error), failureCode },
+        "Failed to process summary request due to retryable LLM error"
+      );
+      await emitFailureResult(
+        ctx,
+        publisher,
+        request.requestId,
+        producedAt,
+        failureCode,
+        error.message,
+        true
+      );
+      return;
+    }
+
     incrementError(
       ctx.healthContext,
-      error instanceof LlmGenerationError ? "llm_error" : "generation_error"
+      "generation_error"
     );
     incrementGeneration(ctx.healthContext, "failure");
     logger.error({ error: serializeError(error) }, "Failed to process summary request");
