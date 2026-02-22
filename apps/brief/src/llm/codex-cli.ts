@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type pino from "pino";
@@ -62,7 +62,7 @@ function describeExecError(error: unknown): string {
   return "unknown error";
 }
 
-function buildCodexExecArgs(config: Config, outputPath: string, prompt: string): string[] {
+function buildCodexExecArgs(config: Config, outputPath: string | null, prompt: string): string[] {
   const args = [
     "exec",
     "--skip-git-repo-check",
@@ -72,9 +72,11 @@ function buildCodexExecArgs(config: Config, outputPath: string, prompt: string):
     "never",
     "-C",
     process.cwd(),
-    "--output-last-message",
-    outputPath,
   ];
+
+  if (outputPath && outputPath.trim().length > 0) {
+    args.push("--output-last-message", outputPath);
+  }
 
   const profile = config.LLM_CODEX_PROFILE.trim();
   if (profile.length > 0) {
@@ -90,12 +92,61 @@ function buildCodexExecArgs(config: Config, outputPath: string, prompt: string):
   return args;
 }
 
+function tryParseOutputMessage(message: string): { ok: true; value: unknown } | { ok: false; error: Error } {
+  try {
+    return { ok: true, value: parseJsonResponse(message) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error("Failed to parse Codex CLI response"),
+    };
+  }
+}
+
+async function createCodexTempDir(logger: pino.Logger): Promise<string> {
+  try {
+    return await mkdtemp(join(tmpdir(), TEMP_DIR_PREFIX));
+  } catch (error) {
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: string }).code)
+        : "";
+    if (code !== "ENOSPC") {
+      throw error;
+    }
+    const fallbackRoots = [join(homedir(), ".codex-tmp"), join(process.cwd(), ".tmp")];
+    logger.warn(
+      { fallbackRoots },
+      "Codex CLI temp dir allocation failed in /tmp (ENOSPC); retrying alternative temp roots"
+    );
+
+    let lastFallbackError: unknown = error;
+    for (const fallbackRoot of fallbackRoots) {
+      try {
+        await mkdir(fallbackRoot, { recursive: true });
+        return await mkdtemp(join(fallbackRoot, TEMP_DIR_PREFIX));
+      } catch (fallbackError) {
+        lastFallbackError = fallbackError;
+        logger.warn(
+          {
+            fallbackRoot,
+            error: describeExecError(fallbackError),
+          },
+          "Codex CLI temp dir fallback root unavailable"
+        );
+      }
+    }
+
+    throw lastFallbackError;
+  }
+}
+
 export async function executeCodexCli(
   config: Config,
   prompt: string,
   logger: pino.Logger
 ): Promise<unknown> {
-  const tempDir = await mkdtemp(join(tmpdir(), TEMP_DIR_PREFIX));
+  const tempDir = await createCodexTempDir(logger);
   const outputPath = join(tempDir, "last-message.txt");
   const args = buildCodexExecArgs(config, outputPath, prompt);
 
@@ -108,27 +159,58 @@ export async function executeCodexCli(
       logger.debug({ stderr: stderr.trim().slice(0, 400) }, "Codex CLI emitted stderr output");
     }
 
-    let message: string;
+    const stdoutText = stdout.trim();
+    if (stdoutText.length > 0) {
+      const parsedStdout = tryParseOutputMessage(stdout);
+      if (parsedStdout.ok) {
+        return parsedStdout.value;
+      }
+      logger.debug(
+        {
+          error: parsedStdout.error.message,
+          stdoutPreview: stdoutText.slice(0, 300),
+        },
+        "Failed to parse Codex CLI stdout as JSON; attempting output file artifact"
+      );
+    }
+
     try {
-      message = await readFile(outputPath, "utf-8");
+      const message = await readFile(outputPath, "utf-8");
+      const parsedFile = tryParseOutputMessage(message);
+      if (parsedFile.ok) {
+        return parsedFile.value;
+      }
+      throw parsedFile.error;
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error
           ? String((error as { code?: string }).code)
           : "";
-      const stdoutText = stdout.trim();
       if (code === "ENOENT" && stdoutText.length > 0) {
         logger.warn(
           { outputPath, stdoutPreview: stdoutText.slice(0, 300) },
           "Codex CLI output file missing; falling back to stdout content"
         );
-        message = stdout;
-      } else {
-        throw error;
+        const parsedStdout = tryParseOutputMessage(stdout);
+        if (parsedStdout.ok) {
+          return parsedStdout.value;
+        }
       }
-    }
 
-    return parseJsonResponse(message);
+      if (code === "ENOENT") {
+        logger.warn(
+          { outputPath, hasStdout: stdoutText.length > 0 },
+          "Codex CLI output file missing; skipping retry and allowing caller fallback"
+        );
+        const artifactError = new Error(
+          `Codex CLI output file missing and stdout was not parseable: ${outputPath}`
+        ) as NodeJS.ErrnoException;
+        artifactError.code = "ENOENT";
+        throw artifactError;
+      }
+
+      throw error;
+    }
   } catch (error) {
     throw new Error(`Codex CLI execution failed: ${describeExecError(error)}`);
   } finally {

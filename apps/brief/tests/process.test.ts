@@ -426,6 +426,36 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
   });
 
+  it("falls back to internal brief when codex temp storage is unavailable", async () => {
+    codexCliMocks.executeCodexCli.mockRejectedValue(
+      new Error("Codex CLI execution failed: ENOSPC: no space left on device, mkdtemp '/tmp/x'")
+    );
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief).toBeDefined();
+    expect(persistedPayload.failure).toBeUndefined();
+    expect(persistedPayload.brief.meta.provider).toBe("internal");
+    expect(persistedPayload.brief.meta.model).toBe("rule-based-fallback-v1");
+    expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
   it("categorizes retryable LLM timeouts as timeout failures", async () => {
     codexCliMocks.executeCodexCli.mockRejectedValue(new Error("request timed out"));
 
@@ -720,6 +750,8 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief.highlights).toHaveLength(1);
     expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
     expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/1"]);
+    expect(persistedPayload.brief.meta.provider).toBe("internal");
+    expect(persistedPayload.brief.meta.model).toBe("rule-based-fallback-v1");
     expect(ctx.producer.send).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
   });
@@ -826,6 +858,42 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief.highlights).toHaveLength(1);
     expect(persistedPayload.brief.highlights[0].topic).toBe("data.kafka");
     expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/2"]);
+  });
+
+  it("reassigns LLM highlight topic when citations only ground to another topic", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Scoped Remap Brief",
+        highlights: [
+          {
+            topic: "cloud.azure",
+            what_happened: "Bedrock update landed",
+            why_it_matters: "Model latency improved",
+            suggested_action: "Review defaults",
+            citations: ["https://example.com/1"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(1);
+    expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
+    expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/1"]);
   });
 
   it("merges duplicate topic highlights into a single combined highlight", async () => {
@@ -1216,6 +1284,152 @@ describe("processSummaryRequest", () => {
     );
     expect(rawEventFindMany.mock.calls[0][0].where).not.toHaveProperty("fetchedAt");
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+  });
+
+  it("caps query-mode fallback highlights to budget maxTopics", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Ungrounded Query Brief",
+        highlights: [
+          {
+            topic: "cloud.gcp",
+            what_happened: "Untrusted citation",
+            why_it_matters: "Untrusted citation",
+            suggested_action: "Untrusted citation",
+            citations: ["https://not-in-evidence.example.com/1"],
+          },
+          {
+            topic: "aws.general",
+            what_happened: "Untrusted citation",
+            why_it_matters: "Untrusted citation",
+            suggested_action: "Untrusted citation",
+            citations: ["https://not-in-evidence.example.com/2"],
+          },
+          {
+            topic: "aws.lambda",
+            what_happened: "Untrusted citation",
+            why_it_matters: "Untrusted citation",
+            suggested_action: "Untrusted citation",
+            citations: ["https://not-in-evidence.example.com/3"],
+          },
+          {
+            topic: "cloud.azure",
+            what_happened: "Untrusted citation",
+            why_it_matters: "Untrusted citation",
+            suggested_action: "Untrusted citation",
+            citations: ["https://not-in-evidence.example.com/4"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeQueryRequest();
+    request.budget = {
+      ...request.budget!,
+      maxTopics: 3,
+    };
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+        BRIEF_DEFAULT_LOOKBACK_DAYS: 7,
+        BRIEF_MAX_LOOKBACK_DAYS: 30,
+        BRIEF_MAX_QUERY_EVENTS_PER_TOPIC: 25,
+      },
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-22T15:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  { topic: "cloud.gcp", score: 100, volume: 30, acceleration: 1.2 },
+                  { topic: "aws.general", score: 90, volume: 25, acceleration: 1.1 },
+                  { topic: "aws.lambda", score: 80, volume: 20, acceleration: 1.0 },
+                  { topic: "cloud.azure", score: 70, volume: 15, acceleration: 0.9 },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-gcp",
+              source: "news",
+              url: "https://example.com/gcp",
+              title: "GCP release",
+              publishedAt: new Date("2026-02-22T15:50:00.000Z"),
+              fetchedAt: new Date("2026-02-22T15:55:00.000Z"),
+              text: "GCP release details",
+              topics: ["cloud.gcp"],
+              engagementScore: 50,
+            },
+            {
+              eventId: "evt-aws-general",
+              source: "news",
+              url: "https://example.com/aws-general",
+              title: "AWS update",
+              publishedAt: new Date("2026-02-22T15:45:00.000Z"),
+              fetchedAt: new Date("2026-02-22T15:50:00.000Z"),
+              text: "AWS update details",
+              topics: ["aws.general"],
+              engagementScore: 49,
+            },
+            {
+              eventId: "evt-aws-lambda",
+              source: "news",
+              url: "https://example.com/aws-lambda",
+              title: "Lambda update",
+              publishedAt: new Date("2026-02-22T15:40:00.000Z"),
+              fetchedAt: new Date("2026-02-22T15:45:00.000Z"),
+              text: "Lambda update details",
+              topics: ["aws.lambda"],
+              engagementScore: 48,
+            },
+            {
+              eventId: "evt-azure",
+              source: "news",
+              url: "https://example.com/azure",
+              title: "Azure update",
+              publishedAt: new Date("2026-02-22T15:35:00.000Z"),
+              fetchedAt: new Date("2026-02-22T15:40:00.000Z"),
+              text: "Azure update details",
+              topics: ["cloud.azure"],
+              engagementScore: 47,
+            },
+          ]),
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.meta.provider).toBe("internal");
+    expect(persistedPayload.brief.meta.model).toBe("rule-based-fallback-v1");
+    expect(persistedPayload.brief.highlights.length).toBeLessThanOrEqual(3);
+    expect(persistedPayload.brief.highlights[0].why_it_matters).not.toContain(
+      "These updates may affect delivery"
+    );
+    expect(persistedPayload.brief.notes).not.toContain(
+      "runtime policy controls, review gates, and continuous evaluation"
+    );
   });
 
   it("filters query-mode evidence that is weakly aligned with the topic key", async () => {

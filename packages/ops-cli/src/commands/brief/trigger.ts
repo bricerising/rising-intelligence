@@ -509,7 +509,7 @@ async function checkDataFreshness(flags: Flags): Promise<FreshnessIssue[]> {
       const now = Date.now();
       const staleRecords = lagRecords.filter((r) => now - r.updatedAt.getTime() > MAX_LAG_AGE_MS);
       if (staleRecords.length > 0) {
-        const groups = staleRecords.map((r) => r.consumerGroup).join(", ");
+        const groups = [...new Set(staleRecords.map((r) => r.consumerGroup))].join(", ");
         issues.push({
           category: "consumer_lag",
           message: `Consumer lag records are stale (>5 min old) for: ${groups}`,

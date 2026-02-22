@@ -34,6 +34,7 @@ import {
 import type {
   EvidenceStrategy,
   LlmProvider,
+  ParsedSummaryEvidence,
   ParsedSummaryRequest,
   ParsedSummaryTopic,
 } from "./types.js";
@@ -859,23 +860,336 @@ function normalizeUsdDelta(value: number): number {
   return rounded === 0 ? 0 : rounded;
 }
 
-function selectPrimaryMetric(topic: ParsedSummaryTopic) {
-  return topic.metrics.find((metric) => metric.window === 2) ?? topic.metrics[0] ?? null;
+type SignalCategory =
+  | "security"
+  | "reliability"
+  | "lifecycle"
+  | "governance"
+  | "cost"
+  | "feature";
+
+interface EvidenceInsight {
+  summary: string;
+  citation: string | null;
+  categories: Set<SignalCategory>;
+  score: number;
+  recencyMs: number;
+}
+
+const DATE_ONLY_TITLE_REGEX =
+  /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2},\s+\d{4}$/i;
+
+const GENERIC_EVIDENCE_SNIPPET_PATTERNS: RegExp[] = [
+  /^the following release notes cover/i,
+  /^for a comprehensive list/i,
+  /^you can also see and filter all release notes/i,
+  /^get the latest updates on azure/i,
+  /^subscribe to notifications to stay informed/i,
+  /^skip to main content/i,
+  /^overview guides reference samples resources/i,
+  /^welcome to /i,
+  /^reading time:/i,
+  /^table of contents/i,
+  /^transcript$/i,
+];
+
+const SIGNAL_CATEGORY_PATTERNS: Record<SignalCategory, RegExp> = {
+  security:
+    /\b(cve-|vulnerability|security|privilege escalation|exploit|patch|xss|rce|authn|authz|jwt|oidc|iam)\b/i,
+  reliability:
+    /\b(outage|incident|degradation|latency|error rates?|unavailable|downtime|fail(?:ed|ure)|partition|control plane)\b/i,
+  lifecycle:
+    /\b(deprecat(?:e|ed|ion)|sunset|end of support|eol|removed support|no longer supported|upgrade required)\b/i,
+  governance:
+    /\b(policy|organization policy|compliance|governance|trust policy|permission|identity provider)\b/i,
+  cost: /\b(pricing|cost|finops|optimi[sz]e|idle|throughput|latency reduction|ttlb|storage tier|ssd)\b/i,
+  feature: /\b(generally available|ga|public preview|preview|launched|now available|release update|added support)\b/i,
+};
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function getEvidenceRecencyMs(evidence: ParsedSummaryEvidence): number {
+  return (evidence.publishedAt ?? evidence.fetchedAt ?? new Date(0)).getTime();
+}
+
+function getEvidenceHostname(url: string | null): string | null {
+  if (!url) {
+    return null;
+  }
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isPreferredCloudHost(topic: string, hostname: string | null): boolean {
+  if (!hostname) {
+    return false;
+  }
+
+  const normalizedTopic = normalizeTopicKey(topic);
+  if (normalizedTopic.startsWith("aws.")) {
+    return hostname.endsWith("aws.amazon.com") || hostname.endsWith("docs.aws.amazon.com");
+  }
+  if (normalizedTopic.startsWith("cloud.gcp")) {
+    return (
+      hostname.endsWith("cloud.google.com") ||
+      hostname.endsWith("docs.cloud.google.com") ||
+      hostname.endsWith("status.cloud.google.com")
+    );
+  }
+  if (normalizedTopic.startsWith("cloud.azure")) {
+    return hostname.endsWith("azure.microsoft.com") || hostname.endsWith("learn.microsoft.com");
+  }
+  if (normalizedTopic.startsWith("cloud.terraform")) {
+    return (
+      hostname.endsWith("hashicorp.com") ||
+      hostname.endsWith("terraform.io") ||
+      hostname.endsWith("aws.amazon.com") ||
+      hostname.endsWith("cloud.google.com") ||
+      hostname.endsWith("azure.microsoft.com")
+    );
+  }
+  return false;
+}
+
+function hasPreferredCloudHostRule(topic: string): boolean {
+  const normalizedTopic = normalizeTopicKey(topic);
+  return (
+    normalizedTopic.startsWith("aws.") ||
+    normalizedTopic.startsWith("cloud.gcp") ||
+    normalizedTopic.startsWith("cloud.azure") ||
+    normalizedTopic.startsWith("cloud.terraform")
+  );
+}
+
+function isLowSignalTitle(value: string): boolean {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return true;
+  }
+  if (DATE_ONLY_TITLE_REGEX.test(normalized)) {
+    return true;
+  }
+  if (normalized.length < 12) {
+    return true;
+  }
+  return GENERIC_EVIDENCE_SNIPPET_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function extractFirstMeaningfulSentence(value: string, maxChars: number): string | null {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const candidates = normalized
+    .split(/(?<=[.!?])\s+|\s*\n+\s*/)
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => candidate.length >= 24)
+    .filter((candidate) => !GENERIC_EVIDENCE_SNIPPET_PATTERNS.some((pattern) => pattern.test(candidate)));
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return truncateText(candidates[0], maxChars);
+}
+
+function detectSignalCategories(value: string): Set<SignalCategory> {
+  const categories = new Set<SignalCategory>();
+  const normalized = normalizeWhitespace(value);
+  for (const [category, pattern] of Object.entries(SIGNAL_CATEGORY_PATTERNS) as Array<
+    [SignalCategory, RegExp]
+  >) {
+    if (pattern.test(normalized)) {
+      categories.add(category);
+    }
+  }
+  return categories;
+}
+
+function countTopicEvidenceTermMatches(topic: string, value: string): number {
+  const matcher = getTopicRelevanceMatcher(topic);
+  if (!matcher) {
+    return 1;
+  }
+  return matcher.exactTermRegexes.reduce(
+    (count, regex) => count + countRegexMatches(value, regex),
+    0
+  );
+}
+
+function buildEvidenceInsight(topic: ParsedSummaryTopic, evidence: ParsedSummaryEvidence): EvidenceInsight | null {
+  const title = normalizeWhitespace(evidence.title ?? "");
+  const excerptSentence = extractFirstMeaningfulSentence(evidence.textExcerpt ?? "", 170);
+  const citation = evidence.url
+    ? groundingFacade.dedupeCanonicalUrls([evidence.url])[0] ?? null
+    : null;
+
+  let summary = "";
+  if (!isLowSignalTitle(title)) {
+    summary = truncateText(title, 140);
+    if (excerptSentence) {
+      const titleFingerprint = normalizeTextFingerprint(summary);
+      const excerptFingerprint = normalizeTextFingerprint(excerptSentence);
+      if (excerptFingerprint.length > 0 && !excerptFingerprint.includes(titleFingerprint)) {
+        summary = truncateText(`${summary} — ${excerptSentence}`, 220);
+      }
+    }
+  } else if (excerptSentence) {
+    summary = excerptSentence;
+  } else {
+    const hostname = getEvidenceHostname(evidence.url);
+    if (hostname) {
+      summary = `Update reported by ${hostname}`;
+    }
+  }
+
+  if (!summary) {
+    return null;
+  }
+
+  const categories = detectSignalCategories([title, evidence.textExcerpt ?? "", evidence.url ?? ""].join(" "));
+  const hostname = getEvidenceHostname(evidence.url);
+  const preferredHost = isPreferredCloudHost(topic.topic, hostname);
+  const topicTermMatches = countTopicEvidenceTermMatches(
+    topic.topic,
+    `${title} ${evidence.textExcerpt ?? ""} ${evidence.url ?? ""}`
+  );
+  let score = 0;
+  score += isLowSignalTitle(title) ? -2 : 3;
+  score += excerptSentence ? 2 : 0;
+  score += categories.size;
+  score += preferredHost ? 4 : 0;
+  score += Math.min(topicTermMatches, 2);
+  if (topicTermMatches === 0 && !preferredHost) {
+    score -= 4;
+  }
+  if (hasPreferredCloudHostRule(topic.topic) && !preferredHost) {
+    score -= 2;
+  }
+  score += evidence.publishedAt ? 1 : 0;
+
+  return {
+    summary,
+    citation,
+    categories,
+    score,
+    recencyMs: getEvidenceRecencyMs(evidence),
+  };
+}
+
+function collectTopEvidenceInsights(topic: ParsedSummaryTopic, limit: number): EvidenceInsight[] {
+  const seen = new Set<string>();
+  const insights = topic.evidence
+    .map((evidence) => buildEvidenceInsight(topic, evidence))
+    .filter((insight): insight is EvidenceInsight => insight !== null)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return right.recencyMs - left.recencyMs;
+    })
+    .filter((insight) => {
+      const key = normalizeTextFingerprint(insight.summary);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+
+  return insights.slice(0, limit);
+}
+
+function buildInternalWhyItMatters(topic: string, categories: Set<SignalCategory>): string {
+  const parts: string[] = [];
+  if (categories.has("security")) {
+    parts.push("Security-related changes may require immediate remediation to reduce exposure.");
+  }
+  if (categories.has("reliability")) {
+    parts.push("Reliability and incident signals can impact SLOs if dependency failure paths are untested.");
+  }
+  if (categories.has("lifecycle")) {
+    parts.push("Lifecycle/deprecation updates can break runtimes and automation if upgrades are delayed.");
+  }
+  if (categories.has("governance")) {
+    parts.push("Identity and policy shifts can block deploys unless controls and trust policies are updated.");
+  }
+  if (categories.has("cost")) {
+    parts.push("Cost and performance changes can materially alter spend and latency assumptions.");
+  }
+  if (categories.has("feature")) {
+    parts.push("New GA/preview capabilities may reduce custom platform work once validated.");
+  }
+
+  if (parts.length === 0) {
+    return `Recent ${topic} updates include concrete platform changes that may affect near-term delivery plans.`;
+  }
+  return parts.slice(0, 2).join(" ");
+}
+
+function buildInternalSuggestedAction(categories: Set<SignalCategory>): string {
+  const actions: string[] = [];
+  if (categories.has("security")) {
+    actions.push("Prioritize patch validation and configuration audits for affected services.");
+  }
+  if (categories.has("reliability")) {
+    actions.push("Run failover and alert drills for impacted dependency paths.");
+  }
+  if (categories.has("lifecycle")) {
+    actions.push("Inventory impacted runtimes/services and stage upgrades before enforcement dates.");
+  }
+  if (categories.has("governance")) {
+    actions.push("Review IAM/trust policy baselines and update policy-as-code checks.");
+  }
+  if (categories.has("cost")) {
+    actions.push("Benchmark cost/latency impact in non-production before broad rollout.");
+  }
+  if (categories.has("feature")) {
+    actions.push("Pilot new capabilities in non-production with clear rollback criteria.");
+  }
+
+  if (actions.length === 0) {
+    return "Review cited changes, assign owners, and schedule validation work this week.";
+  }
+  return actions.slice(0, 2).join(" ");
 }
 
 function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
-  const primaryMetric = selectPrimaryMetric(topic);
-  const citations = groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url));
-  const score = primaryMetric ? primaryMetric.score.toFixed(1) : "0.0";
-  const volume = primaryMetric ? Math.round(primaryMetric.volume) : topic.evidence.length;
-  const acceleration = primaryMetric ? primaryMetric.acceleration.toFixed(2) : "0.00";
+  const fallbackCitations = groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url));
+  const insights = collectTopEvidenceInsights(topic, 2);
+  const citations = groundingFacade.dedupeCanonicalUrls(
+    insights.map((insight) => insight.citation).filter((citation): citation is string => Boolean(citation))
+  );
+  const categories = new Set<SignalCategory>();
+  for (const insight of insights) {
+    for (const category of insight.categories) {
+      categories.add(category);
+    }
+  }
+
+  const whatHappened =
+    insights.length > 0
+      ? ensureSentenceEnding(insights.map((insight) => insight.summary).join("; "))
+      : `Recent updates were detected for ${topic.topic}.`;
 
   return {
     topic: topic.topic,
-    why_it_matters: `${topic.topic} is sustaining measurable momentum with ${volume} recent signals.`,
-    what_happened: `${topic.topic} reached score ${score} with volume ${volume} and acceleration ${acceleration}.`,
-    suggested_action: `Review ${citations[0] ?? "the supporting sources"} and validate whether this trend impacts current priorities.`,
-    citations,
+    what_happened: whatHappened,
+    why_it_matters: buildInternalWhyItMatters(topic.topic, categories),
+    suggested_action: buildInternalSuggestedAction(categories),
+    citations: citations.length > 0 ? citations : fallbackCitations,
   };
 }
 
@@ -960,6 +1274,8 @@ function mergeHighlightsByTopic(highlights: NormalizedHighlight[]): NormalizedHi
 
 interface TopicEvidenceScope {
   canonicalTopic: string;
+  normalizedTopic: string;
+  topLevelGroup: string;
   evidenceUrls: Set<string>;
 }
 
@@ -970,10 +1286,52 @@ function buildTopicEvidenceScopes(request: ParsedSummaryRequest): Map<string, To
     const topicKey = normalizeTopicKey(canonicalTopic);
     scopes.set(topicKey, {
       canonicalTopic,
+      normalizedTopic: topicKey,
+      topLevelGroup: getTopLevelTopicGroup(topicKey),
       evidenceUrls: new Set(groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url))),
     });
   }
   return scopes;
+}
+
+function countScopeCitationOverlap(scope: TopicEvidenceScope, citations: string[]): number {
+  return citations.reduce((count, citation) => count + (scope.evidenceUrls.has(citation) ? 1 : 0), 0);
+}
+
+function resolveGroundedTopicScope(
+  topicEvidenceScopes: Map<string, TopicEvidenceScope>,
+  requestedTopicKey: string,
+  groundedCitations: string[]
+): TopicEvidenceScope | null {
+  const declaredScope = topicEvidenceScopes.get(requestedTopicKey);
+  if (declaredScope && countScopeCitationOverlap(declaredScope, groundedCitations) > 0) {
+    return declaredScope;
+  }
+
+  const requestedTopLevelGroup = getTopLevelTopicGroup(requestedTopicKey);
+  let bestScope: TopicEvidenceScope | null = null;
+  let bestOverlap = 0;
+  let bestSameTopLevelGroup = false;
+
+  for (const scope of topicEvidenceScopes.values()) {
+    const overlap = countScopeCitationOverlap(scope, groundedCitations);
+    if (overlap <= 0) {
+      continue;
+    }
+
+    const sameTopLevelGroup =
+      requestedTopLevelGroup.length > 0 && scope.topLevelGroup === requestedTopLevelGroup;
+    if (
+      overlap > bestOverlap ||
+      (overlap === bestOverlap && sameTopLevelGroup && !bestSameTopLevelGroup)
+    ) {
+      bestScope = scope;
+      bestOverlap = overlap;
+      bestSameTopLevelGroup = sameTopLevelGroup;
+    }
+  }
+
+  return bestScope;
 }
 
 function formatReportDate(value: Date | undefined, timezone: string | undefined): string | null {
@@ -1013,12 +1371,43 @@ function deriveStructuredNotes(
   const topTopics = highlights.slice(0, 3).map((highlight) => highlight.topic);
   const topTopicSentence =
     topTopics.length > 0 ? topTopics.join(", ") : "No dominant topics were confidently grounded";
+  const distinctSentences = (
+    values: string[],
+    limit: number,
+    fallback: string
+  ): string => {
+    const sentenceCandidates = values
+      .map((value) => normalizeWhitespace(value))
+      .flatMap((value) => value.split(/(?<=[.!?])\s+/))
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .map((value) => ensureSentenceEnding(value));
+    const deduped = [...new Set(sentenceCandidates)];
+    if (deduped.length === 0) {
+      return fallback;
+    }
+    return deduped.slice(0, limit).join(" ");
+  };
   const topicLandscapeLines =
     highlights.length > 0
       ? highlights
           .slice(0, 3)
           .map((highlight) => `- **${highlight.topic}**: ${highlight.why_it_matters}`)
       : ["- Limited coverage: no grounded highlights were produced for this request."];
+  const riskAndGovernance = distinctSentences(
+    highlights.map((highlight) => highlight.why_it_matters),
+    2,
+    "No grounded risk signals were available in this run."
+  );
+  const executionAndEconomics = distinctSentences(
+    highlights.map((highlight) => highlight.suggested_action),
+    2,
+    "No grounded execution actions were available in this run."
+  );
+  const outlookText =
+    topTopics.length > 0
+      ? `Near-term execution focus is likely to remain on ${topTopicSentence} as teams operationalize the cited changes.`
+      : "Collect additional grounded evidence before setting near-term outlook assumptions.";
 
   return [
     "# State of Signals and Where They're Going",
@@ -1027,19 +1416,19 @@ function deriveStructuredNotes(
     `This report summarizes topic-level evidence gathered over ${timeframe}${timezone ? ` (${timezone})` : ""}.`,
     "",
     "## Dominant shifts",
-    `Current signals are clustering around ${topTopicSentence}, indicating momentum is moving from isolated updates to coordinated pattern-level changes.`,
+    `Current signals are clustering around ${topTopicSentence}, with emphasis on concrete operational and platform updates.`,
     "",
     "## Topic landscape",
     ...topicLandscapeLines,
     "",
     "## Risk and governance",
-    "As operational depth increases, runtime policy controls, review gates, and continuous evaluation remain the gating requirements for safe deployment.",
+    riskAndGovernance,
     "",
     "## Execution and economics",
-    "Execution quality is increasingly shaped by workflow automation and routing decisions that balance latency, quality, and spend.",
+    executionAndEconomics,
     "",
     "## Outlook",
-    "Near-term advantage is likely to come from teams that combine grounded trend monitoring with fast operational experimentation.",
+    outlookText,
   ].join("\n");
 }
 
@@ -1065,6 +1454,8 @@ function buildCodexCliPrompt(
   const promptSections = [
     "You are generating a human-readable engineering intelligence brief from a structured summary request.",
     "Use only the evidence included in SUMMARY_REQUEST_JSON. Do not invent facts or URLs.",
+    "Trend metrics (score, volume, acceleration) are ranking inputs only. Do not repeat these numbers in highlights.",
+    "Do not write phrases like '<topic> reached score ...'. Summarize concrete events from evidence (releases, incidents, CVEs, deprecations, region/feature launches, policy/pricing changes).",
     "Each highlight must include concrete what_happened, why_it_matters, suggested_action, and citations.",
     "Do not emit duplicate topics in highlights. If multiple points map to the same topic, combine them into one highlight.",
     `Keep output concise and practical. Limit highlights to at most ${maxTopics} and per-topic evidence references to at most ${maxEvidencePerTopic}.`,
@@ -1227,17 +1618,29 @@ function enforceGroundedHighlights(
 
   const groundedHighlights = highlights
     .map((highlight) => {
-      const topicScope = topicEvidenceScopes.get(normalizeTopicKey(highlight.topic));
-      if (!topicScope) {
-        return null;
-      }
       const globallyGroundedCitations = groundingFacade.filterGroundedCitations(
         highlight.citations,
         evidenceUrls
       );
+      if (globallyGroundedCitations.length === 0) {
+        return null;
+      }
+
+      const topicScope = resolveGroundedTopicScope(
+        topicEvidenceScopes,
+        normalizeTopicKey(highlight.topic),
+        globallyGroundedCitations
+      );
+      if (!topicScope) {
+        return null;
+      }
+
       const topicScopedCitations = globallyGroundedCitations.filter((citation) =>
         topicScope.evidenceUrls.has(citation)
       );
+      if (topicScopedCitations.length === 0) {
+        return null;
+      }
 
       return {
         ...highlight,
@@ -1283,10 +1686,22 @@ function isCodexOutputArtifactError(error: unknown): boolean {
     return false;
   }
   const message = error.message.toLowerCase();
+  const isArtifactMissing =
+    (message.includes("last-message.txt") || message.includes("output file missing")) &&
+    message.includes("enoent");
+  const isTempStorageFailure =
+    (message.includes("enospc") ||
+      message.includes("no space left on device") ||
+      message.includes("eacces") ||
+      message.includes("permission denied")) &&
+    (message.includes("mkdtemp") ||
+      message.includes("mkdir") ||
+      message.includes("codex-tmp") ||
+      message.includes(".tmp"));
+
   return (
     message.includes("codex cli request failed") &&
-    message.includes("last-message.txt") &&
-    message.includes("code=enoent")
+    (isArtifactMissing || isTempStorageFailure)
   );
 }
 
@@ -1303,6 +1718,29 @@ function resolveHighlightLimit(request: ParsedSummaryRequest, availableCount: nu
   return Math.min(maxTopics, availableCount);
 }
 
+function selectInternalFallbackTopics(
+  request: ParsedSummaryRequest,
+  preferredCount?: number,
+  conciseQueryMode = false
+): ParsedSummaryTopic[] {
+  let limit = resolveHighlightLimit(request, request.topics.length);
+
+  // Query-mode can include many subtopics for evidence selection; apply concise cap only for fallback paths.
+  if (conciseQueryMode && request.query) {
+    const maxTopics = request.budget?.maxTopics;
+    if (typeof maxTopics === "number" && Number.isInteger(maxTopics) && maxTopics > 0) {
+      limit = Math.min(limit, maxTopics);
+    }
+  }
+
+  if (typeof preferredCount === "number" && Number.isInteger(preferredCount) && preferredCount > 0) {
+    limit = Math.min(limit, preferredCount);
+  }
+
+  const boundedLimit = Math.max(1, Math.min(limit, request.topics.length));
+  return request.topics.slice(0, boundedLimit);
+}
+
 function appendCoverageWarnings(notes: string, request: ParsedSummaryRequest): string {
   if (!request.coverageWarnings || request.coverageWarnings.length === 0) {
     return notes;
@@ -1315,9 +1753,13 @@ function appendCoverageWarnings(notes: string, request: ParsedSummaryRequest): s
 function buildInternalSuccessResult(
   request: ParsedSummaryRequest,
   producedAt: Date,
-  estimatedCostUsd: number
+  estimatedCostUsd: number,
+  preferredTopicCount?: number,
+  conciseQueryMode = false,
+  provider = "internal",
+  model = "rule-based-v1"
 ): SuccessResult {
-  const topics = request.topics.slice(0, resolveHighlightLimit(request, request.topics.length));
+  const topics = selectInternalFallbackTopics(request, preferredTopicCount, conciseQueryMode);
   const highlights = enforceGroundedHighlights(
     request,
     topics.map((topic) => buildInternalHighlight(topic))
@@ -1334,8 +1776,8 @@ function buildInternalSuccessResult(
     `Trend Brief ${producedAt.toISOString().slice(0, 10)}`,
     highlights,
     notes,
-    "internal",
-    "rule-based-v1",
+    provider,
+    model,
     inputTokens,
     outputTokens,
     normalizeUsd(estimatedCostUsd)
@@ -1363,7 +1805,7 @@ function buildLlmBackedSuccessResult(
       throw error;
     }
 
-    const fallbackTopics = request.topics.slice(0, resolveHighlightLimit(request, request.topics.length));
+    const fallbackTopics = selectInternalFallbackTopics(request, llmHighlights.length, true);
     highlights = enforceGroundedHighlights(
       request,
       fallbackTopics.map((topic) => buildInternalHighlight(topic))
@@ -1394,8 +1836,8 @@ function buildLlmBackedSuccessResult(
     llmResponse.title,
     highlights,
     notes,
-    llmResponse.meta?.provider?.trim() || defaultProvider,
-    llmResponse.meta?.model?.trim() || defaultModel,
+    usedInternalFallback ? "internal" : llmResponse.meta?.provider?.trim() || defaultProvider,
+    usedInternalFallback ? "rule-based-fallback-v1" : llmResponse.meta?.model?.trim() || defaultModel,
     inputTokens,
     outputTokens,
     normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd)
@@ -1441,9 +1883,17 @@ async function buildCodexCliSuccessResult(input: BuildSuccessResultInput): Promi
         requestId: request.requestId,
         error: serializeError(error),
       },
-      "Codex CLI output artifact missing; using internal grounded fallback brief"
+      "Codex CLI execution unavailable; using internal grounded fallback brief"
     );
-    return buildInternalSuccessResult(request, producedAt, estimatedCostUsd);
+    return buildInternalSuccessResult(
+      request,
+      producedAt,
+      estimatedCostUsd,
+      request.budget?.maxTopics,
+      true,
+      "internal",
+      "rule-based-fallback-v1"
+    );
   }
 }
 
