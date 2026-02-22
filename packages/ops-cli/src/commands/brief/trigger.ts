@@ -6,6 +6,7 @@ import {
   getRepeatedStringFlag,
   normalizeTopicGlobs,
 } from "./feed-config.js";
+import { resolveTopicsDatabaseUrl } from "../topics/database-url.js";
 
 type Flags = Record<string, string | boolean | string[]>;
 type TriggerMode = "query" | "explicit";
@@ -479,16 +480,9 @@ interface FreshnessIssue {
   message: string;
 }
 
-async function checkDataFreshness(): Promise<FreshnessIssue[]> {
+async function checkDataFreshness(flags: Flags): Promise<FreshnessIssue[]> {
   const issues: FreshnessIssue[] = [];
-  const databaseUrl = getEnvString("DATABASE_URL");
-  if (!databaseUrl) {
-    issues.push({
-      category: "config",
-      message: "DATABASE_URL not set, unable to check data freshness",
-    });
-    return issues;
-  }
+  const databaseUrl = resolveTopicsDatabaseUrl(flags);
 
   const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 
@@ -734,7 +728,7 @@ export async function briefTrigger(flags: Flags): Promise<void> {
   }
 
   // Check data freshness
-  const freshnessIssues = await checkDataFreshness();
+  const freshnessIssues = await checkDataFreshness(flags);
   if (freshnessIssues.length > 0) {
     // eslint-disable-next-line no-console
     console.warn("⚠️  Data freshness warnings:");

@@ -103,7 +103,7 @@
 
 ### T020: Trend snapshot ranking in Brief service
 
-- **Acceptance**: Query mode reads `trend_snapshots` for `TREND_WINDOW_60M` in lookback window and computes recent-weighted average score ranking.
+- **Acceptance**: Query mode reads `trend_snapshots` for `TREND_WINDOW_60M` in lookback window, computes recent-weighted average score ranking, and applies `max_topics` as a top-level topic-group cap.
 
 ### T021: Topic glob filtering
 
@@ -111,7 +111,7 @@
 
 ### T022: Postgres evidence fetch in Brief service
 
-- **Acceptance**: After ranking, query mode loads events from `raw_events` within lookback window and builds bounded per-topic evidence.
+- **Acceptance**: After ranking, query mode loads events from `raw_events` where `published_at` is within lookback bounds and builds bounded per-topic evidence.
 
 ### T023: Executive summary output contract
 

@@ -71,14 +71,15 @@ When `topics` are omitted/empty, Brief resolves ranked topics from Trend outputs
 1. Read `trend_snapshots` for `TREND_WINDOW_60M` within lookback window.
 2. Apply `topic_globs` to topic keys before ranking.
 3. Rank with recent-weighted average score (higher recent scores weigh more).
-4. Select bounded topics (`budget.max_topics`/service cap).
-5. Query `raw_events` for evidence on selected topics.
+4. Select bounded top-level topic groups (`budget.max_topics`/service cap, using the first topic-key segment such as `aws` from `aws.lambda`).
+5. Include relevant subtopics under selected top-level groups.
+6. Query `raw_events` for evidence on selected topics.
 
 This keeps Trend service as the scoring source while allowing Brief to summarize across a lookback range.
 
 `raw_events` query constraints:
 
-- Time bound: `fetched_at >= requested_at - lookback_days`
+- Time bound: `published_at >= requested_at - lookback_days` and `published_at <= requested_at`
 - Topic bound: event `topics[]` matches at least one `topic_glob` (or all topics when no filter)
 - Ordering: newest first for evidence selection
 - Bounded selection: capped by `max_topics` and `max_evidence_per_topic` from budget/request config

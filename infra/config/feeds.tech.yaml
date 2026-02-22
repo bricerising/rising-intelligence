@@ -475,7 +475,6 @@ aggregators:
     poll_interval_seconds: 1800  # Every 30 minutes (real-time aggregator)
     priority: 85
     category: aggregator
-    topics: []  # Topics extracted from content
     notes: "Tech news aggregator - surfaces breaking stories from across the web"
 
   # InfoQ - Developer-focused news
@@ -484,7 +483,6 @@ aggregators:
     poll_interval_seconds: 7200  # Every 2 hours
     priority: 75
     category: aggregator
-    topics: []
     notes: "Software development news - architecture, cloud, DevOps, AI"
 
   # InfoQ - Cloud Computing specific
@@ -512,7 +510,6 @@ aggregators:
     priority: 60
     category: aggregator
     enabled: false  # Disabled by default - enable if you want broader coverage
-    topics: []
     notes: "Tech industry news - startups, funding, product launches"
 
   # Ars Technica (optional)
@@ -522,7 +519,6 @@ aggregators:
     priority: 55
     category: aggregator
     enabled: false  # Disabled by default
-    topics: []
     notes: "In-depth tech coverage - security, policy, science"
 
 # =============================================================================

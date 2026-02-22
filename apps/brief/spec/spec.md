@@ -2,7 +2,7 @@
 
 **Service**: `@rising-intelligence/brief`
 **Created**: 2026-02-05
-**Updated**: 2026-02-10
+**Updated**: 2026-02-22
 **Status**: Planned
 
 ## Overview
@@ -13,7 +13,7 @@ Brief generation is request-driven: briefs are produced only when a `SummaryRequ
 
 Summary generation supports two request modes:
 
-- **Query mode (default)**: if `topics` are omitted or empty, Brief resolves ranked topics from Trend service snapshots and then fetches evidence from Postgres for the last `N` days.
+- **Query mode (default)**: if `topics` are omitted or empty, Brief resolves ranked topics from Trend service snapshots and then fetches evidence from Postgres using `published_at` in the last `N` days.
 - **Explicit mode (backward-compatible)**: if `topics[]` and `evidence[]` are provided, Brief uses those inputs directly.
 
 Key capabilities:
@@ -22,6 +22,7 @@ Key capabilities:
 - **Lookback guardrail**: enforce max `30` days (`BRIEF_MAX_LOOKBACK_DAYS`).
 - **Topic filtering**: optional topic glob filters (for example `aws.*`, `ai.*`, `*.bedrock`).
 - **Trend reference**: query-mode ranking is derived from `trend_snapshots` (`TREND_WINDOW_60M`) using a recent-weighted average score.
+- **Top-level topic cap**: in query mode, `budget.max_topics` caps top-level topic groups (for example `aws`, `cloud`) while allowing relevant subtopics within selected groups.
 - **Executive output**: produce a concise executive summary intended for human reading (not raw metrics dump).
 - **Structured notes format**: render `brief.notes` as sectioned, domain-neutral markdown suitable for deeper review and sharing.
 - **Notes grounding enforcement**: URLs present in generated `brief.notes` MUST resolve to evidence URLs from the request.
@@ -33,11 +34,11 @@ Key capabilities:
 
 As an operator, I can request a summary without preselecting topics, and Brief returns an executive summary of what happened over the last `N` days.
 
-**Independent Test**: Publish a `SummaryRequest` with empty `topics`; verify Brief ranks from `trend_snapshots` over last `N` days, fetches bounded evidence from `raw_events`, and returns a success `BriefResult`.
+**Independent Test**: Publish a `SummaryRequest` with empty `topics`; verify Brief ranks from `trend_snapshots` over last `N` days, fetches bounded evidence from `raw_events` where `published_at` is within lookback, and returns a success `BriefResult`.
 
 **Acceptance Scenarios**:
 
-1. **Given** `topics` is omitted or empty, **When** a request arrives, **Then** Brief MUST rank candidate topics from `trend_snapshots` (`TREND_WINDOW_60M`) using recent-weighted average score before fetching evidence from `raw_events`.
+1. **Given** `topics` is omitted or empty, **When** a request arrives, **Then** Brief MUST rank candidate topics from `trend_snapshots` (`TREND_WINDOW_60M`) using recent-weighted average score, select top-level topic groups using `budget.max_topics`, and then fetch evidence for relevant subtopics from `raw_events` constrained by `published_at` lookback.
 2. **Given** `query.lookback_days` is omitted, **When** query mode runs, **Then** Brief MUST use `BRIEF_DEFAULT_LOOKBACK_DAYS`.
 3. **Given** no events are found, **When** query mode runs, **Then** Brief MUST return a non-retryable failure result with clear reason.
 
@@ -145,7 +146,7 @@ async function processRequest(request: SummaryRequest): Promise<void> {
 - **FR-011 (Ranking method)**: Query-mode ranking MUST use recent-weighted average score and deterministic tie-breaking.
 - **FR-012 (Lookback default + limits)**: `query.lookback_days` defaults to `BRIEF_DEFAULT_LOOKBACK_DAYS=7` and MUST be bounded by `BRIEF_MAX_LOOKBACK_DAYS=30`.
 - **FR-013 (Topic globs)**: Service MUST support optional `query.topic_globs[]` using glob semantics over canonical topic keys; missing filter means all topics, and filtering MUST be applied before ranking.
-- **FR-014 (Evidence fetch)**: After ranking, service MUST load bounded evidence from Postgres `raw_events` for selected topics.
+- **FR-014 (Evidence fetch)**: After ranking and top-level topic-group selection, service MUST load bounded evidence from Postgres `raw_events` for selected subtopics using `published_at` lookback bounds.
 - **FR-015 (Executive summary)**: Service MUST produce a human-readable executive summary in `brief.notes`, followed by grounded highlights.
 - **FR-016 (Mode compatibility)**: Service MUST support both query mode (self-fetch) and explicit mode (pre-supplied topics/evidence).
 - **FR-017 (Notes framing hints)**: Service SHOULD support optional notes framing hints in `SummaryRequest.report` (time bounds/timezone) for scope wording.
@@ -182,6 +183,8 @@ When clients rely on Brief query mode, `SummaryRequest` payloads SHOULD include:
 Semantics:
 
 - `lookback_days`: optional, defaults to `BRIEF_DEFAULT_LOOKBACK_DAYS=7`, max `BRIEF_MAX_LOOKBACK_DAYS=30`.
+- `lookback_days` applies to `raw_events.published_at` in query mode.
+- `budget.max_topics` in query mode caps top-level topic groups (first segment of topic key) rather than individual subtopics.
 - `topic_globs`: optional, defaults to `["*"]` (all topics).
 - `max_events_per_topic`: optional, bounded by service configuration.
 - `report.timezone`: optional IANA timezone string used for date wording in notes.

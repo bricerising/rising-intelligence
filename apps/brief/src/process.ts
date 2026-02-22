@@ -266,6 +266,7 @@ const DISCUSSION_SOURCES = new Set<Source>([
 interface RawEventForSelection {
   eventId: string;
   source: Source;
+  publishedAt: Date | null;
   fetchedAt: Date;
   engagementScore: number | null;
 }
@@ -372,6 +373,10 @@ function isEventRelevantToTopic(event: QueryModeRawEvent, topicKey: string): boo
   return bodyMatchCount >= TOPIC_RELEVANCE_MIN_BODY_MATCHES;
 }
 
+function getEventRecencyTime(event: RawEventForSelection): number {
+  return (event.publishedAt ?? event.fetchedAt).getTime();
+}
+
 function sortByEngagementThenRecency<T extends RawEventForSelection>(events: T[]): T[] {
   return [...events].sort((left, right) => {
     const leftScore = left.engagementScore ?? 0;
@@ -379,12 +384,12 @@ function sortByEngagementThenRecency<T extends RawEventForSelection>(events: T[]
     if (rightScore !== leftScore) {
       return rightScore - leftScore;
     }
-    return right.fetchedAt.getTime() - left.fetchedAt.getTime();
+    return getEventRecencyTime(right) - getEventRecencyTime(left);
   });
 }
 
 function selectEvidenceByRecency<T extends RawEventForSelection>(events: T[], maxCount: number): T[] {
-  // Upstream query orders by fetchedAt DESC.
+  // Upstream query orders by publishedAt DESC then fetchedAt DESC.
   return events.slice(0, maxCount);
 }
 
@@ -485,11 +490,60 @@ interface RankedTopicScore {
   latestGeneratedAtMs: number;
 }
 
+function getTopLevelTopicGroup(topicKey: string): string {
+  const normalized = topicKey.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  const separatorIndex = normalized.indexOf(".");
+  if (separatorIndex === -1) {
+    return normalized;
+  }
+  return normalized.slice(0, separatorIndex);
+}
+
+function selectTopLevelTopicGroups(
+  rankedTopics: RankedTopicScore[],
+  maxTopicGroups: number
+): Set<string> {
+  const groupedScores = new Map<string, { score: number; latestGeneratedAtMs: number }>();
+
+  for (const rankedTopic of rankedTopics) {
+    const group = getTopLevelTopicGroup(rankedTopic.topic);
+    if (!group) {
+      continue;
+    }
+
+    const existing = groupedScores.get(group) ?? {
+      score: 0,
+      latestGeneratedAtMs: rankedTopic.latestGeneratedAtMs,
+    };
+    existing.score += rankedTopic.score;
+    existing.latestGeneratedAtMs = Math.max(existing.latestGeneratedAtMs, rankedTopic.latestGeneratedAtMs);
+    groupedScores.set(group, existing);
+  }
+
+  return new Set(
+    [...groupedScores.entries()]
+      .sort((left, right) => {
+        if (right[1].score !== left[1].score) {
+          return right[1].score - left[1].score;
+        }
+        if (right[1].latestGeneratedAtMs !== left[1].latestGeneratedAtMs) {
+          return right[1].latestGeneratedAtMs - left[1].latestGeneratedAtMs;
+        }
+        return left[0].localeCompare(right[0]);
+      })
+      .slice(0, maxTopicGroups)
+      .map(([group]) => group)
+  );
+}
+
 function rankTopicsFromSnapshots(
   snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>,
   requestedAt: Date,
-  topicMatchers: RegExp[],
-  maxTopics: number
+  topicMatchers: RegExp[]
 ): RankedTopicScore[] {
   const byTopic = new Map<string, RankedTopicAccumulator>();
 
@@ -544,7 +598,7 @@ function rankTopicsFromSnapshots(
       return left.topic.localeCompare(right.topic);
     });
 
-  return rankedTopics.slice(0, maxTopics);
+  return rankedTopics;
 }
 
 async function buildQueryModeRequest(
@@ -602,11 +656,14 @@ async function buildQueryModeRequest(
   const rankedTopics = rankTopicsFromSnapshots(
     snapshots,
     request.requestedAt,
-    topicMatchers,
-    maxTopics
+    topicMatchers
+  );
+  const selectedTopLevelTopicGroups = selectTopLevelTopicGroups(rankedTopics, maxTopics);
+  const selectedRankedTopics = rankedTopics.filter((rankedTopic) =>
+    selectedTopLevelTopicGroups.has(getTopLevelTopicGroup(rankedTopic.topic))
   );
 
-  if (rankedTopics.length === 0) {
+  if (selectedRankedTopics.length === 0) {
     logger.warn(
       { topicGlobCount: topicGlobs.length, lookbackDays },
       "No topics matched query filters"
@@ -620,7 +677,7 @@ async function buildQueryModeRequest(
 
   // Fetch all evidence in a single query
   const evidenceStrategy = request.query?.evidenceStrategy ?? "diversity";
-  const rankedTopicKeys = new Set(rankedTopics.map((topic) => topic.topic));
+  const rankedTopicKeys = new Set(selectedRankedTopics.map((topic) => topic.topic));
   let allEvents: QueryModeRawEvent[];
 
   try {
@@ -629,7 +686,7 @@ async function buildQueryModeRequest(
         topics: {
           hasSome: [...rankedTopicKeys],
         },
-        fetchedAt: {
+        publishedAt: {
           gte: lookbackStart,
           lte: request.requestedAt,
         },
@@ -637,9 +694,7 @@ async function buildQueryModeRequest(
           not: null, // Only fetch events with URLs for grounding
         },
       },
-      orderBy: {
-        fetchedAt: "desc",
-      },
+      orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }],
       select: {
         eventId: true,
         source: true,
@@ -683,7 +738,7 @@ async function buildQueryModeRequest(
   }
 
   // Apply evidence selection strategy per topic
-  const hydratedTopics: ParsedSummaryTopic[] = rankedTopics.map((rankedTopic) => {
+  const hydratedTopics: ParsedSummaryTopic[] = selectedRankedTopics.map((rankedTopic) => {
     const topicEvents = eventsByTopic.get(rankedTopic.topic) ?? [];
     const selectedEvents = selectEvidence(topicEvents, evidenceStrategy, maxEventsPerTopic);
 
@@ -714,10 +769,17 @@ async function buildQueryModeRequest(
 
   if (topicsWithEvidence.length === 0) {
     logger.warn(
-      { rankedTopicCount: rankedTopics.length, lookbackDays },
+      { rankedTopicCount: selectedRankedTopics.length, lookbackDays },
       "No evidence found for any ranked topics"
     );
     throw toNoCoverageError("No recent activity was found for matched topics in the lookback window.");
+  }
+
+  if (selectedRankedTopics.length < rankedTopics.length) {
+    const excludedByTopLevelCap = rankedTopics.length - selectedRankedTopics.length;
+    coverageWarnings.push(
+      `${excludedByTopLevelCap} subtopic(s) were excluded by top-level topic cap (${maxTopics}).`
+    );
   }
 
   if (topicsWithEvidence.length < hydratedTopics.length) {
@@ -741,7 +803,9 @@ async function buildQueryModeRequest(
     {
       lookbackDays,
       topicGlobCount: topicGlobs.length,
-      rankedTopicCount: rankedTopics.length,
+      candidateTopicCount: rankedTopics.length,
+      rankedTopicCount: selectedRankedTopics.length,
+      selectedTopLevelTopicCount: selectedTopLevelTopicGroups.size,
       selectedTopicCount: topicsWithEvidence.length,
       maxEventsPerTopic,
       coverageWarningCount: coverageWarnings.length,
@@ -827,6 +891,71 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
 
 function normalizeTopicKey(topic: string): string {
   return topic.trim().toLowerCase();
+}
+
+function normalizeTextFingerprint(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function ensureSentenceEnding(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return trimmed;
+  }
+  if (/[.!?]$/.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}.`;
+}
+
+function mergeNarrativeFields(values: string[]): string {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const fingerprint = normalizeTextFingerprint(trimmed);
+    if (seen.has(fingerprint)) {
+      continue;
+    }
+    seen.add(fingerprint);
+    merged.push(ensureSentenceEnding(trimmed));
+  }
+
+  return merged.join(" ");
+}
+
+function mergeHighlightsByTopic(highlights: NormalizedHighlight[]): NormalizedHighlight[] {
+  const merged: NormalizedHighlight[] = [];
+  const indexByTopic = new Map<string, number>();
+
+  for (const highlight of highlights) {
+    const topicKey = normalizeTopicKey(highlight.topic);
+    const existingIndex = indexByTopic.get(topicKey);
+    if (existingIndex === undefined) {
+      merged.push({
+        ...highlight,
+        citations: groundingFacade.dedupeCanonicalUrls(highlight.citations),
+      });
+      indexByTopic.set(topicKey, merged.length - 1);
+      continue;
+    }
+
+    const existing = merged[existingIndex];
+    merged[existingIndex] = {
+      topic: existing.topic,
+      what_happened: mergeNarrativeFields([existing.what_happened, highlight.what_happened]),
+      why_it_matters: mergeNarrativeFields([existing.why_it_matters, highlight.why_it_matters]),
+      suggested_action: mergeNarrativeFields([existing.suggested_action, highlight.suggested_action]),
+      citations: groundingFacade.dedupeCanonicalUrls([...existing.citations, ...highlight.citations]),
+    };
+  }
+
+  return merged;
 }
 
 interface TopicEvidenceScope {
@@ -927,7 +1056,7 @@ function buildCodexCliPrompt(
     logger,
     healthContext,
   });
-  const maxTopics = request.budget?.maxTopics ?? request.topics.length;
+  const maxTopics = resolveHighlightLimit(request, request.topics.length);
   const maxEvidencePerTopic =
     request.budget?.maxEvidencePerTopic ??
     Math.max(...request.topics.map((topic) => topic.evidence.length), 0);
@@ -937,6 +1066,7 @@ function buildCodexCliPrompt(
     "You are generating a human-readable engineering intelligence brief from a structured summary request.",
     "Use only the evidence included in SUMMARY_REQUEST_JSON. Do not invent facts or URLs.",
     "Each highlight must include concrete what_happened, why_it_matters, suggested_action, and citations.",
+    "Do not emit duplicate topics in highlights. If multiple points map to the same topic, combine them into one highlight.",
     `Keep output concise and practical. Limit highlights to at most ${maxTopics} and per-topic evidence references to at most ${maxEvidencePerTopic}.`,
     `Target no more than ${maxOutputTokens} tokens in total output.`,
     "Return valid JSON only with this shape:",
@@ -1118,13 +1248,15 @@ function enforceGroundedHighlights(
     .filter((highlight): highlight is NormalizedHighlight => highlight !== null)
     .filter((highlight) => highlight.citations.length > 0);
 
-  if (groundedHighlights.length === 0) {
+  const mergedHighlights = mergeHighlightsByTopic(groundedHighlights);
+
+  if (mergedHighlights.length === 0) {
     throw new NonRetryableProcessingError(
       "Brief generation produced no grounded highlights with valid evidence citations"
     );
   }
 
-  return groundedHighlights;
+  return mergedHighlights;
 }
 
 interface BuildSuccessResultInput {
@@ -1137,6 +1269,38 @@ interface BuildSuccessResultInput {
 interface LlmProviderStrategy {
   readonly provider: LlmProvider;
   build(input: BuildSuccessResultInput): Promise<SuccessResult>;
+}
+
+function isNoGroundedHighlightError(error: unknown): boolean {
+  return (
+    error instanceof NonRetryableProcessingError &&
+    error.message === "Brief generation produced no grounded highlights with valid evidence citations"
+  );
+}
+
+function isCodexOutputArtifactError(error: unknown): boolean {
+  if (!(error instanceof LlmGenerationError)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("codex cli request failed") &&
+    message.includes("last-message.txt") &&
+    message.includes("code=enoent")
+  );
+}
+
+function resolveHighlightLimit(request: ParsedSummaryRequest, availableCount: number): number {
+  if (request.query) {
+    return availableCount;
+  }
+
+  const maxTopics = request.budget?.maxTopics;
+  if (typeof maxTopics !== "number" || !Number.isInteger(maxTopics) || maxTopics <= 0) {
+    return availableCount;
+  }
+
+  return Math.min(maxTopics, availableCount);
 }
 
 function appendCoverageWarnings(notes: string, request: ParsedSummaryRequest): string {
@@ -1153,8 +1317,7 @@ function buildInternalSuccessResult(
   producedAt: Date,
   estimatedCostUsd: number
 ): SuccessResult {
-  const budgetMaxTopics = request.budget?.maxTopics ?? request.topics.length;
-  const topics = request.topics.slice(0, budgetMaxTopics);
+  const topics = request.topics.slice(0, resolveHighlightLimit(request, request.topics.length));
   const highlights = enforceGroundedHighlights(
     request,
     topics.map((topic) => buildInternalHighlight(topic))
@@ -1185,18 +1348,43 @@ function buildLlmBackedSuccessResult(
   estimatedCostUsd: number,
   llmResponse: ParsedLlmResponse,
   defaultProvider: string,
-  defaultModel: string
+  defaultModel: string,
+  logger: pino.Logger
 ): SuccessResult {
-  const maxTopics = request.budget?.maxTopics ?? llmResponse.highlights.length;
-  const highlights = enforceGroundedHighlights(
-    request,
-    llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight)
-  );
+  const maxTopics = resolveHighlightLimit(request, llmResponse.highlights.length);
+  const llmHighlights = llmResponse.highlights.slice(0, maxTopics).map(normalizeLlmHighlight);
+  let highlights: NormalizedHighlight[];
+  let usedInternalFallback = false;
+
+  try {
+    highlights = enforceGroundedHighlights(request, llmHighlights);
+  } catch (error) {
+    if (!isNoGroundedHighlightError(error)) {
+      throw error;
+    }
+
+    const fallbackTopics = request.topics.slice(0, resolveHighlightLimit(request, request.topics.length));
+    highlights = enforceGroundedHighlights(
+      request,
+      fallbackTopics.map((topic) => buildInternalHighlight(topic))
+    );
+    usedInternalFallback = true;
+    logger.warn(
+      {
+        requestId: request.requestId,
+        llmHighlightCount: llmHighlights.length,
+        fallbackHighlightCount: highlights.length,
+      },
+      "LLM highlights failed grounding; using internal grounded fallback highlights"
+    );
+  }
   const inputTokens = llmResponse.usage?.prompt_tokens ?? estimateTokenCount(JSON.stringify(request));
   const outputTokens =
     llmResponse.usage?.completion_tokens ?? estimateTokenCount(JSON.stringify(highlights));
 
-  let notes = llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
+  let notes = usedInternalFallback
+    ? deriveDefaultNotes(request, highlights)
+    : llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
   notes = appendCoverageWarnings(notes, request);
   notes = groundingFacade.enforceGroundedNotes(request, notes, toGroundingError);
 
@@ -1223,23 +1411,40 @@ async function buildHttpSuccessResult(input: BuildSuccessResultInput): Promise<S
     estimatedCostUsd,
     llmResponse,
     "http",
-    "http-v1"
+    "http-v1",
+    ctx.logger
   );
 }
 
 async function buildCodexCliSuccessResult(input: BuildSuccessResultInput): Promise<SuccessResult> {
   const { ctx, request, producedAt, estimatedCostUsd } = input;
-  const llmResponse = await callCodexCliLlm(ctx.config, request, ctx.logger, ctx.healthContext);
-  const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";
+  try {
+    const llmResponse = await callCodexCliLlm(ctx.config, request, ctx.logger, ctx.healthContext);
+    const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";
 
-  return buildLlmBackedSuccessResult(
-    request,
-    producedAt,
-    estimatedCostUsd,
-    llmResponse,
-    "codex-cli",
-    defaultModel
-  );
+    return buildLlmBackedSuccessResult(
+      request,
+      producedAt,
+      estimatedCostUsd,
+      llmResponse,
+      "codex-cli",
+      defaultModel,
+      ctx.logger
+    );
+  } catch (error) {
+    if (!isCodexOutputArtifactError(error)) {
+      throw error;
+    }
+
+    ctx.logger.warn(
+      {
+        requestId: request.requestId,
+        error: serializeError(error),
+      },
+      "Codex CLI output artifact missing; using internal grounded fallback brief"
+    );
+    return buildInternalSuccessResult(request, producedAt, estimatedCostUsd);
+  }
 }
 
 const LLM_PROVIDER_STRATEGIES: Record<LlmProvider, LlmProviderStrategy> = {

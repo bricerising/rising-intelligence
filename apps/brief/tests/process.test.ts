@@ -394,6 +394,38 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.errors.get("llm_error")).toBe(1);
   });
 
+  it("falls back to internal brief when codex output artifact is missing", async () => {
+    codexCliMocks.executeCodexCli.mockRejectedValue(
+      new Error(
+        "Codex CLI execution failed: ENOENT: no such file or directory, open '/tmp/brief-codex-cli-abcd/last-message.txt' code=ENOENT"
+      )
+    );
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief).toBeDefined();
+    expect(persistedPayload.failure).toBeUndefined();
+    expect(persistedPayload.brief.meta.provider).toBe("internal");
+    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
   it("categorizes retryable LLM timeouts as timeout failures", async () => {
     codexCliMocks.executeCodexCli.mockRejectedValue(new Error("request timed out"));
 
@@ -646,7 +678,7 @@ describe("processSummaryRequest", () => {
     expect(ctx.healthContext.metrics.generation.get("skipped")).toBe(1);
   });
 
-  it("emits non-retryable failure when LLM citations are not grounded", async () => {
+  it("falls back to internal grounded highlights when LLM citations are not grounded", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -684,11 +716,12 @@ describe("processSummaryRequest", () => {
     await processSummaryRequest(ctx, makeRequest());
 
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
-    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result;
-    expect((persistedPayload as any).failure.error_code).toBe("grounding_error");
-    expect((persistedPayload as any).failure.retryable).toBe(false);
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(1);
+    expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
+    expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/1"]);
     expect(ctx.producer.send).toHaveBeenCalledOnce();
-    expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
+    expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
   });
 
   it("drops LLM highlights that reference topics outside the request scope", async () => {
@@ -793,6 +826,97 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief.highlights).toHaveLength(1);
     expect(persistedPayload.brief.highlights[0].topic).toBe("data.kafka");
     expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/2"]);
+  });
+
+  it("merges duplicate topic highlights into a single combined highlight", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        title: "Merged Topics Brief",
+        highlights: [
+          {
+            topic: "CLOUD.GCP",
+            what_happened: "SecOps agent removed Python 3.7 support",
+            why_it_matters: "Older runtime hosts now require upgrades",
+            suggested_action: "Inventory Python versions on agent hosts",
+            citations: ["https://example.com/gcp-1"],
+          },
+          {
+            topic: "cloud.gcp",
+            what_happened: "VMware Engine added ve2 in Paris",
+            why_it_matters: "EU placement options expanded",
+            suggested_action: "Review EU workload placement plans",
+            citations: ["https://example.com/gcp-2", "https://example.com/gcp-1"],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = makeRequest();
+    request.topics = [
+      {
+        topic: "cloud.gcp",
+        metrics: [
+          {
+            topic: "cloud.gcp",
+            window: 2,
+            score: 18,
+            volume: 22,
+            acceleration: 0.9,
+          },
+        ],
+        evidence: [
+          {
+            eventId: "evt-gcp-1",
+            source: "news",
+            url: "https://example.com/gcp-1",
+            title: "SecOps update",
+            publishedAt: new Date("2026-02-06T09:25:00.000Z"),
+            fetchedAt: new Date("2026-02-06T09:35:00.000Z"),
+            textExcerpt: "SecOps runtime update",
+          },
+          {
+            eventId: "evt-gcp-2",
+            source: "news",
+            url: "https://example.com/gcp-2",
+            title: "VMware update",
+            publishedAt: new Date("2026-02-06T09:20:00.000Z"),
+            fetchedAt: new Date("2026-02-06T09:30:00.000Z"),
+            textExcerpt: "VMware Engine capacity update",
+          },
+        ],
+      },
+    ];
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "http",
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_DAILY_BUDGET_USD: 5,
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(1);
+    expect(persistedPayload.brief.highlights[0].topic).toBe("cloud.gcp");
+    expect(persistedPayload.brief.highlights[0].what_happened).toBe(
+      "SecOps agent removed Python 3.7 support. VMware Engine added ve2 in Paris."
+    );
+    expect(persistedPayload.brief.highlights[0].why_it_matters).toBe(
+      "Older runtime hosts now require upgrades. EU placement options expanded."
+    );
+    expect(persistedPayload.brief.highlights[0].suggested_action).toBe(
+      "Inventory Python versions on agent hosts. Review EU workload placement plans."
+    );
+    expect(persistedPayload.brief.highlights[0].citations).toEqual([
+      "https://example.com/gcp-1",
+      "https://example.com/gcp-2",
+    ]);
   });
 
   it("emits non-retryable failure when notes include ungrounded URLs", async () => {
@@ -910,6 +1034,188 @@ describe("processSummaryRequest", () => {
     const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
     expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
+  });
+
+  it("applies max_topics to top-level topic groups and keeps relevant subtopics", async () => {
+    const request = makeQueryRequest();
+    request.query = {
+      ...request.query,
+      topicGlobs: ["*"],
+      evidenceStrategy: "recency",
+    };
+    request.budget = {
+      ...request.budget!,
+      maxTopics: 1,
+    };
+
+    const rawEventFindMany = vi.fn().mockResolvedValue([
+      {
+        eventId: "evt-aws-general",
+        source: "news",
+        url: "https://example.com/aws-general",
+        title: "AWS operational update",
+        publishedAt: new Date("2026-02-06T09:30:00.000Z"),
+        fetchedAt: new Date("2026-02-06T09:35:00.000Z"),
+        text: "AWS teams announced operational changes.",
+        topics: ["aws.general"],
+        engagementScore: 40,
+      },
+      {
+        eventId: "evt-aws-lambda",
+        source: "news",
+        url: "https://example.com/aws-lambda",
+        title: "AWS Lambda runtime update",
+        publishedAt: new Date("2026-02-06T09:20:00.000Z"),
+        fetchedAt: new Date("2026-02-06T09:25:00.000Z"),
+        text: "AWS Lambda runtime improvements for production workloads.",
+        topics: ["aws.lambda"],
+        engagementScore: 38,
+      },
+      {
+        eventId: "evt-cloud-gcp",
+        source: "news",
+        url: "https://example.com/cloud-gcp",
+        title: "GCP platform update",
+        publishedAt: new Date("2026-02-06T09:10:00.000Z"),
+        fetchedAt: new Date("2026-02-06T09:15:00.000Z"),
+        text: "GCP platform updates for cloud operators.",
+        topics: ["cloud.gcp"],
+        engagementScore: 90,
+      },
+    ]);
+
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-06T09:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "cloud.gcp",
+                    score: 100,
+                    volume: 30,
+                    acceleration: 1.2,
+                  },
+                  {
+                    topic: "aws.general",
+                    score: 70,
+                    volume: 22,
+                    acceleration: 0.8,
+                  },
+                  {
+                    topic: "aws.lambda",
+                    score: 65,
+                    volume: 19,
+                    acceleration: 0.7,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: rawEventFindMany,
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(rawEventFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          topics: {
+            hasSome: ["aws.general", "aws.lambda"],
+          },
+        }),
+      })
+    );
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.highlights).toHaveLength(2);
+    expect(persistedPayload.brief.highlights.map((highlight: { topic: string }) => highlight.topic)).toEqual([
+      "aws.general",
+      "aws.lambda",
+    ]);
+  });
+
+  it("uses published_at lookback bounds by default in query mode", async () => {
+    const request = makeQueryRequest();
+    request.requestedAt = new Date("2026-02-22T15:25:04.085Z");
+    const lookbackStart = new Date(request.requestedAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const rawEventFindMany = vi.fn().mockResolvedValue([
+      {
+        eventId: "evt-query-published-window",
+        source: "rss",
+        url: "https://example.com/published-in-window",
+        title: "Published in window",
+        publishedAt: new Date("2026-02-21T15:00:00.000Z"),
+        fetchedAt: new Date("2026-02-22T15:00:00.000Z"),
+        text: "Bedrock release details",
+        topics: ["aws.bedrock"],
+        engagementScore: 12,
+      },
+    ]);
+    const ctx = makeContext({
+      prisma: {
+        briefResult: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(undefined),
+        },
+        briefBudgetTracking: {
+          upsert: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          findUnique: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+          update: vi.fn().mockResolvedValue({ spentUsd: 0.02 }),
+        },
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-22T15:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  {
+                    topic: "aws.bedrock",
+                    score: 80,
+                    volume: 20,
+                    acceleration: 0.8,
+                  },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: rawEventFindMany,
+        },
+      },
+    });
+
+    await processSummaryRequest(ctx, request);
+
+    expect(rawEventFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          publishedAt: {
+            gte: lookbackStart,
+            lte: request.requestedAt,
+          },
+        }),
+        orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }],
+      })
+    );
+    expect(rawEventFindMany.mock.calls[0][0].where).not.toHaveProperty("fetchedAt");
+    expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
   });
 
   it("filters query-mode evidence that is weakly aligned with the topic key", async () => {

@@ -100,7 +100,7 @@ export async function executeCodexCli(
   const args = buildCodexExecArgs(config, outputPath, prompt);
 
   try {
-    const { stderr } = await execFile(config.LLM_CODEX_CLI_COMMAND, args, {
+    const { stdout, stderr } = await execFile(config.LLM_CODEX_CLI_COMMAND, args, {
       timeout: config.LLM_CODEX_TIMEOUT_MS,
       maxBuffer: EXEC_MAX_BUFFER_BYTES,
     });
@@ -108,7 +108,26 @@ export async function executeCodexCli(
       logger.debug({ stderr: stderr.trim().slice(0, 400) }, "Codex CLI emitted stderr output");
     }
 
-    const message = await readFile(outputPath, "utf-8");
+    let message: string;
+    try {
+      message = await readFile(outputPath, "utf-8");
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: string }).code)
+          : "";
+      const stdoutText = stdout.trim();
+      if (code === "ENOENT" && stdoutText.length > 0) {
+        logger.warn(
+          { outputPath, stdoutPreview: stdoutText.slice(0, 300) },
+          "Codex CLI output file missing; falling back to stdout content"
+        );
+        message = stdout;
+      } else {
+        throw error;
+      }
+    }
+
     return parseJsonResponse(message);
   } catch (error) {
     throw new Error(`Codex CLI execution failed: ${describeExecError(error)}`);

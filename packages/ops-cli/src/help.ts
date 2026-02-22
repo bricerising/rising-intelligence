@@ -125,7 +125,7 @@ Flags (brief trigger):
   --requested-at <iso8601>         Default: current UTC timestamp
   --type <daily|threshold>         Default: daily
   --windows <csv>                  Default: 2 (query mode requires window 2)
-  --lookback-days <n>              Default: $BRIEF_DEFAULT_LOOKBACK_DAYS or 7
+  --lookback-days <n>              Default: $BRIEF_DEFAULT_LOOKBACK_DAYS or 7 (applies to published_at in query mode)
   --max-lookback-days <n>          Default: $BRIEF_MAX_LOOKBACK_DAYS or 30
   --topic-globs <csv>              Default: * (example: aws.*,ai.*)
   --feed-config <path>             Repeatable; derive topic globs from feed YAML files
@@ -142,7 +142,7 @@ Flags (brief trigger):
   --volume <n>                     Default: 100
   --acceleration <n>               Default: 0.4
   --daily-budget-usd <n>           Default: $BRIEF_DAILY_BUDGET_USD or $LLM_DAILY_BUDGET_USD or 5
-  --max-topics <n>                 Default: $BRIEF_MAX_TOPICS or 5
+  --max-topics <n>                 Default: $BRIEF_MAX_TOPICS or 5 (caps top-level topic groups in query mode)
   --max-evidence-per-topic <n>     Default: $BRIEF_MAX_EVIDENCE_PER_TOPIC or 3
   --max-output-tokens <n>          Default: $BRIEF_MAX_OUTPUT_TOKENS or 1200
   --llm-provider <name>            Default: $LLM_PROVIDER or codex-cli

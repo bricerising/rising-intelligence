@@ -86,6 +86,8 @@ Target payload shape for query mode (implementation tracked in `apps/brief/spec/
 Notes:
 1. Query mode ranking reads `TREND_WINDOW_60M` snapshots only.
 2. `lookback_days` defaults to `7` and is capped at `30`.
+3. Query-mode evidence lookback is applied to `raw_events.published_at` by default.
+4. `budget.max_topics` caps top-level topic groups in query mode; relevant subtopics under those groups may all be included.
 
 ## Docker + Codex CLI Provider
 
