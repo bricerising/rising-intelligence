@@ -200,10 +200,55 @@ export async function executeCodexCli(
       if (code === "ENOENT") {
         logger.warn(
           { outputPath, hasStdout: stdoutText.length > 0 },
-          "Codex CLI output file missing; skipping retry and allowing caller fallback"
+          "Codex CLI output file missing; retrying once without output artifact"
         );
+
+        const retryArgs = buildCodexExecArgs(config, null, prompt);
+        try {
+          const { stdout: retryStdout, stderr: retryStderr } = await execFile(
+            config.LLM_CODEX_CLI_COMMAND,
+            retryArgs,
+            {
+              timeout: config.LLM_CODEX_TIMEOUT_MS,
+              maxBuffer: EXEC_MAX_BUFFER_BYTES,
+            }
+          );
+          if (retryStderr.trim().length > 0) {
+            logger.debug(
+              { stderr: retryStderr.trim().slice(0, 400) },
+              "Codex CLI retry emitted stderr output"
+            );
+          }
+
+          const parsedRetryStdout = tryParseOutputMessage(retryStdout);
+          if (parsedRetryStdout.ok) {
+            logger.warn(
+              { outputPath },
+              "Codex CLI recovered via stdout-only retry after missing output artifact"
+            );
+            return parsedRetryStdout.value;
+          }
+
+          logger.warn(
+            {
+              outputPath,
+              error: parsedRetryStdout.error.message,
+              stdoutPreview: retryStdout.trim().slice(0, 300),
+            },
+            "Codex CLI retry did not produce parseable JSON output"
+          );
+        } catch (retryError) {
+          logger.warn(
+            {
+              outputPath,
+              error: describeExecError(retryError),
+            },
+            "Codex CLI retry failed after missing output artifact"
+          );
+        }
+
         const artifactError = new Error(
-          `Codex CLI output file missing and stdout was not parseable: ${outputPath}`
+          `Codex CLI output file missing and retry output was not parseable: ${outputPath}`
         ) as NodeJS.ErrnoException;
         artifactError.code = "ENOENT";
         throw artifactError;

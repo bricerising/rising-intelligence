@@ -82,7 +82,9 @@ async function runConsumer(ctx: TrendsRuntimeContext): Promise<void> {
   });
 
   await ctx.kafkaConsumerContext.consumer.run({
-    autoCommit: false,
+    // Offsets are resolved manually; auto-commit must stay enabled so
+    // commitOffsetsIfNecessary() records progress for restart recovery.
+    autoCommit: true,
     eachBatchAutoResolve: false,
     eachBatch: async (payload: EachBatchPayload) => {
       await topicBatchRouter.handle(payload);

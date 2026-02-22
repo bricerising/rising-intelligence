@@ -25,7 +25,9 @@ async function runConsumer(ctx: PersisterContext): Promise<void> {
   const consumer = ctx.kafkaContext.consumer;
 
   await consumer.run({
-    autoCommit: false,
+    // processBatch resolves offsets manually; keep auto-commit enabled so
+    // commitOffsetsIfNecessary() persists offsets across restarts.
+    autoCommit: true,
     eachBatchAutoResolve: false,
     eachBatch: async (payload) => {
       await processBatch(ctx, payload);
