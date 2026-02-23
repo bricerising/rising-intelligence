@@ -37,6 +37,7 @@ export * from "./runtime/raw-event-enrichment.js";
 export * from "./runtime/secrets.js";
 export * from "./runtime/service-bootstrap.js";
 export * from "./runtime/source.js";
+export * from "./runtime/startup-facade.js";
 export * from "./runtime/topic-router.js";
 export * from "./runtime/topic-extraction.js";
 export * from "./runtime/url.js";

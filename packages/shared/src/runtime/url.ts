@@ -51,11 +51,11 @@ function isPrivateOrLoopbackIpv4(hostname: string): boolean {
 }
 
 function isPrivateOrLoopbackIpv6(hostname: string): boolean {
-  if (hostname === "::1") {
+  // Treat the IPv6 special-use ::/8 range as disallowed for outbound fetches.
+  // This blocks unspecified/loopback and mapped/compatibility forms that can
+  // otherwise bypass IPv4 private-host checks.
+  if (hostname.startsWith("::")) {
     return true;
-  }
-  if (hostname.startsWith("::ffff:")) {
-    return isPrivateOrLoopbackIpv4(hostname.slice("::ffff:".length));
   }
   if (hostname.startsWith("fc") || hostname.startsWith("fd")) {
     return true;

@@ -51,7 +51,7 @@ interface EnrichPreviewRow {
   eventId: string;
   source: Source;
   stepChanges: EnrichStepName[];
-  changedFields: string[];
+  changedFields: ManagedFieldName[];
   previousTopics: string[];
   nextTopics: string[];
 }
@@ -102,6 +102,20 @@ interface EnrichMutableEvent {
   extractedHashtags: string[];
   extractedUrls: string[];
   sourceMeta: Record<string, unknown> | null;
+}
+
+type ManagedFieldName =
+  | "tags"
+  | "topics"
+  | "url"
+  | "text"
+  | "lang"
+  | "source_meta";
+
+interface ManagedFieldChangeStrategy {
+  readonly name: ManagedFieldName;
+  hasChanged(previous: EnrichMutableEvent, next: EnrichMutableEvent): boolean;
+  writeUpdate(data: Prisma.RawEventUpdateInput, next: EnrichMutableEvent): void;
 }
 
 function createStats(): EnrichStats {
@@ -175,75 +189,102 @@ function toMutableEvent(row: EnrichTargetRow): EnrichMutableEvent {
   };
 }
 
-function hasManagedChanges(previous: EnrichMutableEvent, next: EnrichMutableEvent): boolean {
-  return (
-    !stringArraysEqual(previous.tags, next.tags)
-    || !stringArraysEqual(previous.topics, next.topics)
-    || previous.url !== next.url
-    || previous.text !== next.text
-    || previous.lang !== next.lang
-    || !isDeepStrictEqual(previous.sourceMeta, next.sourceMeta)
-  );
+const MANAGED_FIELD_CHANGE_STRATEGIES: ReadonlyArray<ManagedFieldChangeStrategy> = [
+  {
+    name: "tags",
+    hasChanged(previous, next): boolean {
+      return !stringArraysEqual(previous.tags, next.tags);
+    },
+    writeUpdate(data, next): void {
+      data.tags = [...next.tags];
+    },
+  },
+  {
+    name: "topics",
+    hasChanged(previous, next): boolean {
+      return !stringArraysEqual(previous.topics, next.topics);
+    },
+    writeUpdate(data, next): void {
+      data.topics = [...next.topics];
+    },
+  },
+  {
+    name: "url",
+    hasChanged(previous, next): boolean {
+      return previous.url !== next.url;
+    },
+    writeUpdate(data, next): void {
+      data.url = next.url;
+    },
+  },
+  {
+    name: "text",
+    hasChanged(previous, next): boolean {
+      return previous.text !== next.text;
+    },
+    writeUpdate(data, next): void {
+      data.text = next.text;
+    },
+  },
+  {
+    name: "lang",
+    hasChanged(previous, next): boolean {
+      return previous.lang !== next.lang;
+    },
+    writeUpdate(data, next): void {
+      data.lang = next.lang;
+    },
+  },
+  {
+    name: "source_meta",
+    hasChanged(previous, next): boolean {
+      return !isDeepStrictEqual(previous.sourceMeta, next.sourceMeta);
+    },
+    writeUpdate(data, next): void {
+      data.sourceMeta = next.sourceMeta === null
+        ? Prisma.JsonNull
+        : (next.sourceMeta as Prisma.InputJsonValue);
+    },
+  },
+];
+
+function collectManagedFieldChanges(
+  previous: EnrichMutableEvent,
+  next: EnrichMutableEvent
+): ManagedFieldChangeStrategy[] {
+  return MANAGED_FIELD_CHANGE_STRATEGIES.filter((strategy) => strategy.hasChanged(previous, next));
 }
 
-function diffManagedFields(previous: EnrichMutableEvent, next: EnrichMutableEvent): string[] {
-  const fields: string[] = [];
-  if (!stringArraysEqual(previous.tags, next.tags)) {
-    fields.push("tags");
-  }
-  if (!stringArraysEqual(previous.topics, next.topics)) {
-    fields.push("topics");
-  }
-  if (previous.url !== next.url) {
-    fields.push("url");
-  }
-  if (previous.text !== next.text) {
-    fields.push("text");
-  }
-  if (previous.lang !== next.lang) {
-    fields.push("lang");
-  }
-  if (!isDeepStrictEqual(previous.sourceMeta, next.sourceMeta)) {
-    fields.push("source_meta");
-  }
-
-  return fields;
+function diffManagedFields(
+  changes: readonly ManagedFieldChangeStrategy[]
+): ManagedFieldName[] {
+  return changes.map((change) => change.name);
 }
 
 function buildUpdateData(
-  previous: EnrichMutableEvent,
-  next: EnrichMutableEvent
+  next: EnrichMutableEvent,
+  changes: readonly ManagedFieldChangeStrategy[]
 ): Prisma.RawEventUpdateInput | null {
-  const changedFields = diffManagedFields(previous, next);
-  if (changedFields.length === 0) {
+  if (changes.length === 0) {
     return null;
   }
 
   const data: Prisma.RawEventUpdateInput = {};
-
-  if (!stringArraysEqual(previous.tags, next.tags)) {
-    data.tags = [...next.tags];
-  }
-  if (!stringArraysEqual(previous.topics, next.topics)) {
-    data.topics = [...next.topics];
-  }
-  if (previous.url !== next.url) {
-    data.url = next.url;
-  }
-  if (previous.text !== next.text) {
-    data.text = next.text;
-  }
-  if (previous.lang !== next.lang) {
-    data.lang = next.lang;
-  }
-  if (!isDeepStrictEqual(previous.sourceMeta, next.sourceMeta)) {
-    data.sourceMeta = next.sourceMeta === null
-      ? Prisma.JsonNull
-      : (next.sourceMeta as Prisma.InputJsonValue);
+  for (const change of changes) {
+    change.writeUpdate(data, next);
   }
 
   return data;
 }
+
+const STEP_CHANGE_COUNTERS: Record<EnrichStepName, (stats: EnrichStats) => void> = {
+  retag(stats): void {
+    stats.retagStepChanged += 1;
+  },
+  quality(stats): void {
+    stats.qualityStepChanged += 1;
+  },
+};
 
 const RETAG_STEP: EnrichStep = {
   name: "retag",
@@ -480,18 +521,15 @@ export async function eventsEnrich(flags: CliFlags): Promise<void> {
 
         for (const step of stepPipeline) {
           const stepResult = step.apply(transformedEvent, context);
-          if (hasManagedChanges(transformedEvent, stepResult)) {
+          if (collectManagedFieldChanges(transformedEvent, stepResult).length > 0) {
             stepChanges.push(step.name);
-            if (step.name === "retag") {
-              stats.retagStepChanged += 1;
-            } else {
-              stats.qualityStepChanged += 1;
-            }
+            STEP_CHANGE_COUNTERS[step.name](stats);
           }
           transformedEvent = stepResult;
         }
 
-        const changedFields = diffManagedFields(originalEvent, transformedEvent);
+        const fieldChanges = collectManagedFieldChanges(originalEvent, transformedEvent);
+        const changedFields = diffManagedFields(fieldChanges);
         if (changedFields.length === 0) {
           stats.unchanged += 1;
           continue;
@@ -510,7 +548,7 @@ export async function eventsEnrich(flags: CliFlags): Promise<void> {
         }
 
         if (!dryRun) {
-          const updateData = buildUpdateData(originalEvent, transformedEvent);
+          const updateData = buildUpdateData(transformedEvent, fieldChanges);
           if (updateData) {
             updates.push(
               prisma.rawEvent.update({

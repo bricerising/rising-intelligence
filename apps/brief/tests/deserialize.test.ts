@@ -226,6 +226,28 @@ describe("brief deserializeSummaryRequest", () => {
     );
   });
 
+  it("rejects non-positive topic metric windows", () => {
+    const payload = {
+      request_id: "req-topic-window",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      topics: [
+        {
+          topic: "aws.bedrock",
+          metrics: [
+            {
+              window: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported trend window enum"
+    );
+  });
+
   it("rejects unknown positive window enums", () => {
     const payload = {
       request_id: "req-1",

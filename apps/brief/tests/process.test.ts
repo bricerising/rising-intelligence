@@ -9,7 +9,10 @@ vi.mock("../src/llm/codex-cli.js", () => ({
 }));
 
 import { createHealthContext } from "../src/health.js";
-import { processSummaryRequest } from "../src/process.js";
+import {
+  createSummaryRequestProcessor,
+  processSummaryRequest,
+} from "../src/process.js";
 import type { ParsedSummaryRequest } from "../src/types.js";
 
 function makeLogger() {
@@ -197,6 +200,16 @@ afterEach(() => {
 });
 
 describe("processSummaryRequest", () => {
+  it("fails fast when a dependency override is not a function", () => {
+    expect(() =>
+      createSummaryRequestProcessor({
+        createBriefResultStore: 123 as unknown as never,
+      })
+    ).toThrow(
+      'Summary request processor dependency override "createBriefResultStore" must be a function'
+    );
+  });
+
   it("persists and publishes a successful brief result", async () => {
     const ctx = makeContext();
 

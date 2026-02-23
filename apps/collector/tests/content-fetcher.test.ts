@@ -76,6 +76,30 @@ describe("content fetcher URL safety", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("skips unspecified IPv6 URLs", async () => {
+    const logger = createTestLogger();
+
+    await expect(
+      fetchArticleContent("http://[::]/", contentFetcherConfig, logger)
+    ).resolves.toBeNull();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("skips IPv4-mapped IPv6 loopback URLs", async () => {
+    const logger = createTestLogger();
+
+    await expect(
+      fetchArticleContent(
+        "http://[::ffff:127.0.0.1]/internal",
+        contentFetcherConfig,
+        logger
+      )
+    ).resolves.toBeNull();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("skips non-http protocols", async () => {
     const logger = createTestLogger();
 

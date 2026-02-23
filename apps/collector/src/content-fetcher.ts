@@ -274,33 +274,24 @@ class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
   }
 }
 
-class UrlSafetyArticleContentFetcherProxy implements ArticleContentFetcher {
-  constructor(
-    private readonly delegate: ArticleContentFetcher,
-    private readonly logger: Logger,
-    private readonly safetyFacade: UrlSafetyFacade
-  ) {}
-
-  async fetch(url: string): Promise<ArticleContent | null> {
-    if (!this.safetyFacade.isAllowedFetchUrl(url)) {
-      this.logger.debug({ url }, "Skipping disallowed fetch URL");
-      return null;
-    }
-
-    return this.delegate.fetch(url);
-  }
+interface FetchGuardDecision {
+  allowed: boolean;
+  blockedMessage: string;
 }
 
-class BlockedDomainArticleContentFetcherProxy implements ArticleContentFetcher {
+type FetchGuard = (url: string) => FetchGuardDecision;
+
+class GuardedArticleContentFetcherProxy implements ArticleContentFetcher {
   constructor(
     private readonly delegate: ArticleContentFetcher,
     private readonly logger: Logger,
-    private readonly blockedDomains: Set<string>
+    private readonly guard: FetchGuard
   ) {}
 
   async fetch(url: string): Promise<ArticleContent | null> {
-    if (isDomainBlocked(url, this.blockedDomains)) {
-      this.logger.debug({ url }, "Skipping blocked domain");
+    const decision = this.guard(url);
+    if (!decision.allowed) {
+      this.logger.debug({ url }, decision.blockedMessage);
       return null;
     }
 
@@ -356,6 +347,7 @@ function createReadabilityContentFetcher(
   logger: Logger,
   dependencies: CreateArticleContentFetcherDependencies
 ): ArticleContentFetcher {
+  const safetyFacade = dependencies.safetyFacade ?? DEFAULT_URL_SAFETY_FACADE;
   const coreFetcher = new ReadabilityArticleContentFetcher(config, logger, {
     fetchHtml: dependencies.fetchHtml ?? fetchHtml,
     extractContent: dependencies.extractContent ?? extractContent,
@@ -368,15 +360,21 @@ function createReadabilityContentFetcher(
       delegate,
       domainRequestLimiter
     ),
-    (delegate) => new BlockedDomainArticleContentFetcherProxy(
+    (delegate) => new GuardedArticleContentFetcherProxy(
       delegate,
       logger,
-      config.blockedDomains
+      (url) => ({
+        allowed: !isDomainBlocked(url, config.blockedDomains),
+        blockedMessage: "Skipping blocked domain",
+      })
     ),
-    (delegate) => new UrlSafetyArticleContentFetcherProxy(
+    (delegate) => new GuardedArticleContentFetcherProxy(
       delegate,
       logger,
-      dependencies.safetyFacade ?? DEFAULT_URL_SAFETY_FACADE
+      (url) => ({
+        allowed: safetyFacade.isAllowedFetchUrl(url),
+        blockedMessage: "Skipping disallowed fetch URL",
+      })
     ),
   ];
 

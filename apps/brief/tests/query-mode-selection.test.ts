@@ -1,6 +1,7 @@
 import { Source } from "@rising-intelligence/db";
 import { describe, expect, it } from "vitest";
 import {
+  createTopicRelevanceMatcherCache,
   getTopLevelTopicGroup,
   isEventRelevantToTopic,
   rankTopicsFromSnapshots,
@@ -23,6 +24,55 @@ function makeEvent(overrides: Partial<QueryModeRawEvent> = {}): QueryModeRawEven
     ...overrides,
   };
 }
+
+describe("topic relevance matcher cache", () => {
+  it("reuses cached matcher instances for repeated topic keys", () => {
+    const cache = createTopicRelevanceMatcherCache(4);
+    const build = (topicKey: string) => ({
+      exactTermRegexes: [new RegExp(topicKey, "i")],
+    });
+
+    const first = cache.resolve("aws.bedrock", build);
+    const second = cache.resolve("aws.bedrock", () => ({
+      exactTermRegexes: [/should-not-be-used/i],
+    }));
+
+    expect(second).toBe(first);
+  });
+
+  it("evicts the least-recently-used matcher when max capacity is exceeded", () => {
+    const cache = createTopicRelevanceMatcherCache(2);
+    const buildCalls: string[] = [];
+    const build = (topicKey: string) => {
+      buildCalls.push(topicKey);
+      return {
+        exactTermRegexes: [new RegExp(topicKey, "i")],
+      };
+    };
+
+    cache.resolve("aws.bedrock", build);
+    cache.resolve("data.kafka", build);
+    cache.resolve("aws.bedrock", build); // refresh LRU order
+    cache.resolve("observability.opentelemetry", build); // should evict data.kafka
+    cache.resolve("data.kafka", build); // rebuilt after eviction
+
+    expect(buildCalls).toEqual([
+      "aws.bedrock",
+      "data.kafka",
+      "observability.opentelemetry",
+      "data.kafka",
+    ]);
+  });
+
+  it("fails fast when cache max entries is not a positive integer", () => {
+    expect(() => createTopicRelevanceMatcherCache(0)).toThrow(
+      "Topic relevance matcher cache maxEntries must be a positive integer"
+    );
+    expect(() => createTopicRelevanceMatcherCache(1.2)).toThrow(
+      "Topic relevance matcher cache maxEntries must be a positive integer"
+    );
+  });
+});
 
 describe("query-mode selection strategies", () => {
   it("selects recency strategy in source order", () => {
@@ -95,6 +145,14 @@ describe("query-mode selection strategies", () => {
       "evt-discussion-first",
       "evt-curated-second",
     ]);
+  });
+
+  it("fails fast for unsupported runtime strategy values", () => {
+    const events = [makeEvent({ eventId: "evt-1" })];
+
+    expect(() =>
+      selectEvidence(events, "unsupported" as unknown as "diversity", 1)
+    ).toThrow("Unsupported evidence strategy: unsupported");
   });
 });
 
@@ -198,6 +256,28 @@ describe("query-mode ranking", () => {
     expect(ranked[0]?.topic).toBe("aws.bedrock");
     expect(ranked[0]?.score).toBeGreaterThan(9);
     expect(ranked[0]?.score).toBeLessThan(18);
+  });
+
+  it("returns no groups when maxTopicGroups is zero or negative", () => {
+    const rankedTopics = [
+      {
+        topic: "aws.bedrock",
+        score: 5,
+        volume: 10,
+        acceleration: 1,
+        latestGeneratedAtMs: 100,
+      },
+      {
+        topic: "data.kafka",
+        score: 4,
+        volume: 7,
+        acceleration: 1,
+        latestGeneratedAtMs: 90,
+      },
+    ];
+
+    expect([...selectTopLevelTopicGroups(rankedTopics, 0)]).toEqual([]);
+    expect([...selectTopLevelTopicGroups(rankedTopics, -2)]).toEqual([]);
   });
 });
 

@@ -7,7 +7,8 @@ import {
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createInitializationResourceBuilder,
+  createStartupFacade,
+  createStartupResourceConnector,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
@@ -95,61 +96,62 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
   constructor(private readonly dependencies: BriefRuntimeFactoryDependencies) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<BriefRuntimeContext> {
-    const resourceBuilder = createInitializationResourceBuilder();
+    const startup = createStartupFacade(logger);
+    const resources = createStartupResourceConnector(startup);
 
-    try {
+    return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext(config.LLM_DAILY_BUDGET_USD);
-      const healthServer = await resourceBuilder.create({
+      const healthServer = await resources.connect({
         name: "health-server",
-        create: () => this.dependencies.startHealthServer(healthContext, logger),
-        rollback: async (server) => this.dependencies.closeHealthServer(server),
-        rollbackErrorMessage: "Health server close failed during initialization rollback",
+        connect: () => this.dependencies.startHealthServer(healthContext, logger),
+        disconnect: (server) => this.dependencies.closeHealthServer(server),
+        rollbackAction: "close",
       });
 
       this.dependencies.setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
 
-      const prisma = await resourceBuilder.create({
+      const prisma = await resources.connect({
         name: "postgres",
-        create: async () => this.dependencies.createPrismaClient(config),
-        rollback: async (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
-        rollbackErrorMessage: "Postgres disconnect failed during initialization rollback",
+        connect: () => this.dependencies.createPrismaClient(config),
+        disconnect: (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
+        rollbackAction: "disconnect",
       });
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resourceBuilder.create({
+      const redis = await resources.connect({
         name: "redis",
-        create: async () =>
+        connect: () =>
           this.dependencies.createRedisClient(
             config,
             logger.child({ component: "redis" })
           ),
-        rollback: async (redisClient) => this.dependencies.disconnectRedis(redisClient, logger),
-        rollbackErrorMessage: "Redis disconnect failed during initialization rollback",
+        disconnect: (redisClient) => this.dependencies.disconnectRedis(redisClient, logger),
+        rollbackAction: "disconnect",
       });
       healthContext.redisHealthy = true;
 
-      const kafkaConsumerContext = await resourceBuilder.create({
+      const kafkaConsumerContext = await resources.connect({
         name: "kafka-consumer",
-        create: async () => this.dependencies.createKafkaConsumer(logger),
-        rollback: async (consumerContext) =>
+        connect: () => this.dependencies.createKafkaConsumer(logger),
+        disconnect: (consumerContext) =>
           this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
-        rollbackErrorMessage: "Kafka consumer disconnect failed during initialization rollback",
+        rollbackAction: "disconnect",
       });
       await kafkaConsumerContext.consumer.subscribe({
         topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
         fromBeginning: false,
       });
 
-      const kafkaProducerContext = await resourceBuilder.create({
+      const kafkaProducerContext = await resources.connect({
         name: "kafka-producer",
-        create: async () =>
+        connect: () =>
           this.dependencies.createKafkaProducer(
             logger.child({ component: "kafka-producer" })
           ),
-        rollback: async (producerContext) =>
+        disconnect: (producerContext) =>
           this.dependencies.disconnectKafkaProducer(producerContext.producer, logger),
-        rollbackErrorMessage: "Kafka producer disconnect failed during initialization rollback",
+        rollbackAction: "disconnect",
       });
       healthContext.kafkaHealthy = true;
 
@@ -171,10 +173,7 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
         prisma,
         redis,
       };
-    } catch (error) {
-      await resourceBuilder.rollback(logger);
-      throw error;
-    }
+    });
   }
 }
 

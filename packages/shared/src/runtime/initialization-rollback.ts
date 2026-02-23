@@ -35,7 +35,8 @@ export function createInitializationRollbackBuilder(): InitializationRollbackBui
         return;
       }
 
-      await runShutdownSteps(logger, steps);
+      const registeredSteps = steps.splice(0, steps.length);
+      await runShutdownSteps(logger, registeredSteps);
     },
   };
 }

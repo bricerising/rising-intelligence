@@ -31,6 +31,34 @@ const DISCUSSION_SOURCES = new Set<Source>([
   Source.mastodon,
 ]);
 
+type DiversitySourceBucket = "curated" | "discussion" | "other";
+
+interface DiversitySourceBucketStrategy {
+  readonly name: DiversitySourceBucket;
+  matches(source: Source): boolean;
+}
+
+const DIVERSITY_SOURCE_BUCKET_STRATEGIES: ReadonlyArray<DiversitySourceBucketStrategy> = [
+  {
+    name: "curated",
+    matches(source) {
+      return CURATED_SOURCES.has(source);
+    },
+  },
+  {
+    name: "discussion",
+    matches(source) {
+      return DISCUSSION_SOURCES.has(source);
+    },
+  },
+  {
+    name: "other",
+    matches() {
+      return true;
+    },
+  },
+];
+
 const GENERIC_TOPIC_SEGMENTS = new Set([
   "ai",
   "cloud",
@@ -57,7 +85,71 @@ interface TopicRelevanceMatcher {
   exactTermRegexes: RegExp[];
 }
 
-const topicRelevanceMatcherCache = new Map<string, TopicRelevanceMatcher | null>();
+interface TopicRelevanceRuleContext {
+  event: QueryModeRawEvent;
+  matcher: TopicRelevanceMatcher;
+}
+
+interface TopicRelevanceRule {
+  readonly name: string;
+  evaluate(context: TopicRelevanceRuleContext): boolean | null;
+}
+
+export interface TopicRelevanceMatcherCache {
+  resolve(
+    topicKey: string,
+    build: (topicKey: string) => TopicRelevanceMatcher | null
+  ): TopicRelevanceMatcher | null;
+}
+
+const DEFAULT_TOPIC_RELEVANCE_MATCHER_CACHE_MAX_ENTRIES = 512;
+
+class LruTopicRelevanceMatcherCache implements TopicRelevanceMatcherCache {
+  private readonly cache = new Map<string, TopicRelevanceMatcher | null>();
+
+  constructor(private readonly maxEntries: number) {
+    if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
+      throw new Error("Topic relevance matcher cache maxEntries must be a positive integer");
+    }
+  }
+
+  resolve(
+    topicKey: string,
+    build: (topicKey: string) => TopicRelevanceMatcher | null
+  ): TopicRelevanceMatcher | null {
+    if (this.cache.has(topicKey)) {
+      const cached = this.cache.get(topicKey) ?? null;
+      // Refresh insertion order to keep recently-used keys.
+      this.cache.delete(topicKey);
+      this.cache.set(topicKey, cached);
+      return cached;
+    }
+
+    const matcher = build(topicKey);
+    this.cache.set(topicKey, matcher);
+    this.evictLeastRecentlyUsedIfNeeded();
+    return matcher;
+  }
+
+  private evictLeastRecentlyUsedIfNeeded(): void {
+    if (this.cache.size <= this.maxEntries) {
+      return;
+    }
+
+    const oldestKey = this.cache.keys().next().value;
+    if (typeof oldestKey === "string") {
+      this.cache.delete(oldestKey);
+    }
+  }
+}
+
+export function createTopicRelevanceMatcherCache(
+  maxEntries = DEFAULT_TOPIC_RELEVANCE_MATCHER_CACHE_MAX_ENTRIES
+): TopicRelevanceMatcherCache {
+  return new LruTopicRelevanceMatcherCache(maxEntries);
+}
+
+const topicRelevanceMatcherCache = createTopicRelevanceMatcherCache();
 
 const TrendSnapshotTopicSchema = z.object({
   topic: z.string().min(1),
@@ -111,13 +203,7 @@ function buildTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | n
 }
 
 function getTopicRelevanceMatcher(topicKey: string): TopicRelevanceMatcher | null {
-  if (topicRelevanceMatcherCache.has(topicKey)) {
-    return topicRelevanceMatcherCache.get(topicKey) ?? null;
-  }
-
-  const matcher = buildTopicRelevanceMatcher(topicKey);
-  topicRelevanceMatcherCache.set(topicKey, matcher);
-  return matcher;
+  return topicRelevanceMatcherCache.resolve(topicKey, buildTopicRelevanceMatcher);
 }
 
 function countRegexMatches(content: string, regex: RegExp): number {
@@ -128,6 +214,34 @@ function countRegexMatches(content: string, regex: RegExp): number {
   const matches = content.match(globalRegex);
   return matches ? matches.length : 0;
 }
+
+const TITLE_OR_URL_TOPIC_RELEVANCE_RULE: TopicRelevanceRule = {
+  name: "title_or_url",
+  evaluate({ event, matcher }) {
+    const titleAndUrl = `${event.title ?? ""} ${event.url}`.trim();
+    const titleOrUrlMatch = matcher.exactTermRegexes.some((regex) => regex.test(titleAndUrl));
+    return titleOrUrlMatch ? true : null;
+  },
+};
+
+const BODY_MATCH_THRESHOLD_TOPIC_RELEVANCE_RULE: TopicRelevanceRule = {
+  name: "body_match_threshold",
+  evaluate({ event, matcher }) {
+    let bodyMatchCount = 0;
+    for (const regex of matcher.exactTermRegexes) {
+      bodyMatchCount += countRegexMatches(event.text, regex);
+      if (bodyMatchCount >= TOPIC_RELEVANCE_MIN_BODY_MATCHES) {
+        return true;
+      }
+    }
+    return false;
+  },
+};
+
+const TOPIC_RELEVANCE_RULES: ReadonlyArray<TopicRelevanceRule> = [
+  TITLE_OR_URL_TOPIC_RELEVANCE_RULE,
+  BODY_MATCH_THRESHOLD_TOPIC_RELEVANCE_RULE,
+];
 
 export function countTopicRelevanceTermMatches(
   topicKey: string,
@@ -160,6 +274,15 @@ function sortByEngagementThenRecency<T extends RawEventForSelection>(events: rea
   });
 }
 
+function resolveDiversitySourceBucket(source: Source): DiversitySourceBucket {
+  for (const strategy of DIVERSITY_SOURCE_BUCKET_STRATEGIES) {
+    if (strategy.matches(source)) {
+      return strategy.name;
+    }
+  }
+  return "other";
+}
+
 function selectEvidenceByRecency<T extends RawEventForSelection>(events: readonly T[], maxCount: number): T[] {
   // Upstream query orders by publishedAt DESC then fetchedAt DESC.
   return events.slice(0, maxCount);
@@ -176,37 +299,34 @@ function selectEvidenceByDiversity<T extends RawEventForSelection>(
   events: readonly T[],
   maxCount: number
 ): T[] {
-  const curated: T[] = [];
-  const discussion: T[] = [];
-  const other: T[] = [];
+  const eventsByBucket: Record<DiversitySourceBucket, T[]> = {
+    curated: [],
+    discussion: [],
+    other: [],
+  };
 
   for (const event of events) {
-    if (CURATED_SOURCES.has(event.source)) {
-      curated.push(event);
-      continue;
-    }
-    if (DISCUSSION_SOURCES.has(event.source)) {
-      discussion.push(event);
-      continue;
-    }
-    other.push(event);
+    eventsByBucket[resolveDiversitySourceBucket(event.source)].push(event);
   }
+
+  const curated = eventsByBucket.curated;
+  const discussion = eventsByBucket.discussion;
+  const other = eventsByBucket.other;
 
   const selected: T[] = [];
-  if (curated.length > 0) {
-    selected.push(curated[0]);
-  }
-  if (discussion.length > 0 && selected.length < maxCount) {
-    selected.push(discussion[0]);
-  }
+  const selectedSet = new Set<T>();
+  const seed = (event: T | undefined): void => {
+    if (!event || selected.length >= maxCount || selectedSet.has(event)) {
+      return;
+    }
+    selected.push(event);
+    selectedSet.add(event);
+  };
 
-  const curatedStartIndex = curated.length > 0 && selected[0] === curated[0] ? 1 : 0;
-  const discussionStartIndex = discussion.length > 0 && selected.includes(discussion[0]) ? 1 : 0;
-  const remaining = [
-    ...curated.slice(curatedStartIndex),
-    ...discussion.slice(discussionStartIndex),
-    ...other,
-  ];
+  seed(curated[0]);
+  seed(discussion[0]);
+
+  const remaining = [...curated, ...discussion, ...other].filter((event) => !selectedSet.has(event));
 
   selected.push(...sortByEngagementThenRecency(remaining).slice(0, maxCount - selected.length));
   return selected;
@@ -233,6 +353,14 @@ const EVIDENCE_SELECTION_STRATEGIES = {
   diversity: DIVERSITY_EVIDENCE_SELECTION_STRATEGY,
 } as const satisfies Record<EvidenceStrategy, EvidenceSelectionStrategyHandler>;
 
+function resolveEvidenceSelectionStrategy(strategy: string): EvidenceSelectionStrategyHandler {
+  if (!Object.prototype.hasOwnProperty.call(EVIDENCE_SELECTION_STRATEGIES, strategy)) {
+    throw new Error(`Unsupported evidence strategy: ${strategy}`);
+  }
+
+  return EVIDENCE_SELECTION_STRATEGIES[strategy as EvidenceStrategy];
+}
+
 function computeRecentWeight(snapshotGeneratedAt: Date, requestedAt: Date): number {
   const ageMs = Math.max(0, requestedAt.getTime() - snapshotGeneratedAt.getTime());
   const ageHours = ageMs / (60 * 60 * 1000);
@@ -245,17 +373,14 @@ export function isEventRelevantToTopic(event: QueryModeRawEvent, topicKey: strin
     return true;
   }
 
-  const titleAndUrl = `${event.title ?? ""} ${event.url}`.trim();
-  const titleOrUrlMatch = matcher.exactTermRegexes.some((regex) => regex.test(titleAndUrl));
-  if (titleOrUrlMatch) {
-    return true;
+  const context: TopicRelevanceRuleContext = { event, matcher };
+  for (const rule of TOPIC_RELEVANCE_RULES) {
+    const decision = rule.evaluate(context);
+    if (decision !== null) {
+      return decision;
+    }
   }
-
-  const bodyMatchCount = matcher.exactTermRegexes.reduce(
-    (count, regex) => count + countRegexMatches(event.text, regex),
-    0
-  );
-  return bodyMatchCount >= TOPIC_RELEVANCE_MIN_BODY_MATCHES;
+  return false;
 }
 
 export function selectEvidence<T extends RawEventForSelection>(
@@ -267,7 +392,7 @@ export function selectEvidence<T extends RawEventForSelection>(
     return [];
   }
 
-  const selectionStrategy = EVIDENCE_SELECTION_STRATEGIES[strategy];
+  const selectionStrategy = resolveEvidenceSelectionStrategy(strategy);
   return selectionStrategy.select(events, maxCount);
 }
 
@@ -288,6 +413,10 @@ export function selectTopLevelTopicGroups(
   rankedTopics: readonly RankedTopicScore[],
   maxTopicGroups: number
 ): Set<string> {
+  if (!Number.isFinite(maxTopicGroups) || maxTopicGroups <= 0) {
+    return new Set();
+  }
+  const boundedMaxTopicGroups = Math.floor(maxTopicGroups);
   const groupedScores = new Map<string, { score: number; latestGeneratedAtMs: number }>();
 
   for (const rankedTopic of rankedTopics) {
@@ -316,7 +445,7 @@ export function selectTopLevelTopicGroups(
         }
         return left[0].localeCompare(right[0]);
       })
-      .slice(0, maxTopicGroups)
+      .slice(0, boundedMaxTopicGroups)
       .map(([group]) => group)
   );
 }

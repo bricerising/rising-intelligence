@@ -1,39 +1,36 @@
 import { Kafka } from "kafkajs";
 import { createPrismaClient } from "@rising-intelligence/db";
 import { getEnvString, parseCanonicalSource } from "@rising-intelligence/shared";
+import type { CliFlags } from "../../lib/args.js";
+import {
+  getBooleanFlag,
+  getStringFlag,
+  parseKafkaBrokers,
+} from "../../lib/flags.js";
 import {
   deriveTopicGlobsFromFeedConfigs,
   getRepeatedStringFlag,
   normalizeTopicGlobs,
 } from "./feed-config.js";
+import {
+  setupRequestResultWaiter,
+  type RequestResultWaiter,
+} from "./result-waiter.js";
 import { resolveTopicsDatabaseUrl } from "../topics/database-url.js";
 
-type Flags = Record<string, string | boolean | string[]>;
-type TriggerMode = "query" | "explicit";
+type RequestType = "daily" | "threshold";
+type QueryEvidenceStrategy = "diversity" | "recency" | "engagement";
 
-interface TriggerBriefConfig {
+interface TriggerBriefCommonConfig {
   kafkaBrokers: string[];
   kafkaClientId: string;
   summaryRequestsTopic: string;
   summaryResultsTopic: string;
   requestId: string;
   requestedAtIso: string;
-  requestType: "daily" | "threshold";
+  requestType: RequestType;
   windows: number[];
-  mode: TriggerMode;
-  queryLookbackDays: number;
-  queryTopicGlobs: string[];
   warnings: string[];
-  queryMaxEventsPerTopic: number;
-  queryEvidenceStrategy: "diversity" | "recency" | "engagement";
-  topicKey?: string;
-  score?: number;
-  volume?: number;
-  acceleration?: number;
-  evidenceUrl?: string;
-  evidenceSource?: string;
-  evidenceTitle?: string;
-  evidenceExcerpt?: string;
   dailyBudgetUsd: number;
   maxTopics: number;
   maxEvidencePerTopic: number;
@@ -47,21 +44,98 @@ interface TriggerBriefConfig {
   timeoutSeconds: number;
 }
 
-function getStringFlag(flags: Flags, name: string): string | undefined {
-  const value = flags[name];
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const last = value[value.length - 1];
-    return typeof last === "string" ? last : undefined;
-  }
-  return undefined;
+interface QueryModeTriggerBriefConfig extends TriggerBriefCommonConfig {
+  mode: "query";
+  queryLookbackDays: number;
+  queryTopicGlobs: string[];
+  queryMaxEventsPerTopic: number;
+  queryEvidenceStrategy: QueryEvidenceStrategy;
 }
 
-function getBooleanFlag(flags: Flags, name: string): boolean {
-  return flags[name] === true;
+interface ExplicitModeTriggerBriefConfig extends TriggerBriefCommonConfig {
+  mode: "explicit";
+  topicKey: string;
+  score: number;
+  volume: number;
+  acceleration: number;
+  evidenceUrl: string;
+  evidenceSource: ReturnType<typeof parseCanonicalSource>;
+  evidenceTitle: string;
+  evidenceExcerpt: string;
 }
+
+type TriggerBriefConfig = QueryModeTriggerBriefConfig | ExplicitModeTriggerBriefConfig;
+
+interface QueryModeSelection {
+  mode: "query";
+}
+
+interface ExplicitModeSelection {
+  mode: "explicit";
+  topicKey: string;
+  evidenceUrl: string;
+}
+
+type TriggerModeSelection = QueryModeSelection | ExplicitModeSelection;
+
+interface BaseSummaryRequestPayload {
+  request_id: string;
+  requested_at: string;
+  type: RequestType;
+  windows: number[];
+  budget: {
+    daily_budget_usd: number;
+    max_topics: number;
+    max_evidence_per_topic: number;
+    max_output_tokens: number;
+  };
+  report?: {
+    timezone?: string;
+    start_at?: string;
+    end_at?: string;
+  };
+  llm_provider?: string;
+}
+
+interface QuerySummaryRequestPayload extends BaseSummaryRequestPayload {
+  query: {
+    lookback_days: number;
+    topic_globs: string[];
+    max_events_per_topic: number;
+    evidence_strategy: QueryEvidenceStrategy;
+  };
+  topics: [];
+}
+
+interface ExplicitSummaryRequestPayload extends BaseSummaryRequestPayload {
+  topics: [
+    {
+      topic: string;
+      metrics: [
+        {
+          topic: string;
+          window: number;
+          score: number;
+          volume: number;
+          acceleration: number;
+        },
+      ];
+      evidence: [
+        {
+          event_id: string;
+          source: ReturnType<typeof parseCanonicalSource>;
+          url: string;
+          title: string;
+          published_at: string;
+          fetched_at: string;
+          text_excerpt: string;
+        },
+      ];
+    },
+  ];
+}
+
+type SummaryRequestPayload = QuerySummaryRequestPayload | ExplicitSummaryRequestPayload;
 
 function parseNumber(rawValue: string, key: string): number {
   const parsed = Number(rawValue);
@@ -71,7 +145,7 @@ function parseNumber(rawValue: string, key: string): number {
   return parsed;
 }
 
-function getNumberFlag(flags: Flags, name: string): number | undefined {
+function getNumberFlag(flags: CliFlags, name: string): number | undefined {
   const value = getStringFlag(flags, name);
   return value === undefined ? undefined : parseNumber(value, `--${name}`);
 }
@@ -97,14 +171,12 @@ function assertNonNegative(value: number, key: string): number {
   return value;
 }
 
-function parseRequestType(rawType: string): "daily" | "threshold" {
+function parseRequestType(rawType: string): RequestType {
   const normalized = rawType.trim().toLowerCase();
-  if (normalized === "daily") {
-    return "daily";
+  if (normalized === "daily" || normalized === "threshold") {
+    return normalized;
   }
-  if (normalized === "threshold") {
-    return "threshold";
-  }
+
   throw new Error(`Invalid request type: ${rawType}. Supported values: daily, threshold`);
 }
 
@@ -138,18 +210,6 @@ function parseIsoDate(rawValue: string): string {
   return parsed.toISOString();
 }
 
-function parseKafkaBrokers(rawValue: string): string[] {
-  const brokers = rawValue
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-
-  if (brokers.length === 0) {
-    throw new Error("KAFKA_BROKERS resolved to an empty value");
-  }
-  return brokers;
-}
-
 function parseTopicGlobs(rawValue: string): string[] {
   const globs = rawValue
     .split(",")
@@ -163,7 +223,7 @@ function parseTopicGlobs(rawValue: string): string[] {
 }
 
 function resolveQueryTopicGlobs(
-  flags: Flags
+  flags: CliFlags
 ): { queryTopicGlobs: string[]; warnings: string[] } {
   const warnings: string[] = [];
   const explicitTopicGlobsRaw = getStringFlag(flags, "topic-globs");
@@ -196,11 +256,12 @@ function resolveQueryTopicGlobs(
   return { queryTopicGlobs: ["*"], warnings };
 }
 
-function parseEvidenceStrategy(rawValue: string): "diversity" | "recency" | "engagement" {
+function parseEvidenceStrategy(rawValue: string): QueryEvidenceStrategy {
   const normalized = rawValue.trim().toLowerCase();
   if (normalized === "diversity" || normalized === "recency" || normalized === "engagement") {
     return normalized;
   }
+
   throw new Error(
     `Invalid evidence-strategy: ${rawValue}. Must be one of: diversity, recency, engagement`
   );
@@ -231,7 +292,16 @@ function parseOptionalTimezone(rawValue: string | undefined): string | undefined
   return timezone;
 }
 
-function resolveMode(flags: Flags): { mode: TriggerMode; topicKey?: string; evidenceUrl?: string } {
+function resolveTimeoutSeconds(flags: CliFlags): number {
+  const rawTimeout = getStringFlag(flags, "timeout");
+  if (rawTimeout === undefined) {
+    return 300;
+  }
+
+  return assertPositiveInteger(parseNumber(rawTimeout, "--timeout"), "--timeout");
+}
+
+function resolveMode(flags: CliFlags): TriggerModeSelection {
   const topicKey = getStringFlag(flags, "topic-key")?.trim();
   const evidenceUrl = getStringFlag(flags, "evidence-url")?.trim();
 
@@ -242,6 +312,9 @@ function resolveMode(flags: Flags): { mode: TriggerMode; topicKey?: string; evid
   }
 
   if (hasTopicKey && hasEvidenceUrl) {
+    if (!topicKey || !evidenceUrl) {
+      throw new Error("Explicit mode requires both --topic-key and --evidence-url");
+    }
     return {
       mode: "explicit",
       topicKey,
@@ -251,23 +324,215 @@ function resolveMode(flags: Flags): { mode: TriggerMode; topicKey?: string; evid
   return { mode: "query" };
 }
 
-function resolveConfig(flags: Flags): TriggerBriefConfig {
+type TriggerBriefConfigBase = Omit<TriggerBriefCommonConfig, "windows" | "warnings">;
+
+interface ResolveTriggerModeConfigInput<TSelection extends TriggerModeSelection> {
+  flags: CliFlags;
+  modeSelection: TSelection;
+  parsedWindows: number[];
+  parsedLookbackDays: number;
+  baseConfig: TriggerBriefConfigBase;
+}
+
+interface TriggerModeStrategy<
+  TSelection extends TriggerModeSelection,
+  TConfig extends TriggerBriefConfig,
+> {
+  readonly mode: TSelection["mode"];
+  buildConfig(input: ResolveTriggerModeConfigInput<TSelection>): TConfig;
+  buildSummaryRequest(
+    basePayload: BaseSummaryRequestPayload,
+    config: TConfig
+  ): SummaryRequestPayload;
+}
+
+const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
+  QueryModeSelection,
+  QueryModeTriggerBriefConfig
+> = {
+  mode: "query",
+  buildConfig({
+    flags,
+    parsedWindows,
+    parsedLookbackDays,
+    baseConfig,
+  }): QueryModeTriggerBriefConfig {
+    if (!parsedWindows.includes(2)) {
+      throw new Error("Query mode requires TREND_WINDOW_60M (window=2)");
+    }
+
+    const queryTopicResolution = resolveQueryTopicGlobs(flags);
+    const requestedQueryMaxEvents =
+      getNumberFlag(flags, "max-events-per-topic") ??
+      parseNumberEnv(
+        "BRIEF_MAX_QUERY_EVENTS_PER_TOPIC",
+        getEnvString("BRIEF_MAX_QUERY_EVENTS_PER_TOPIC"),
+        baseConfig.maxEvidencePerTopic
+      );
+    const queryMaxEventsPerTopic = Math.min(
+      assertPositiveInteger(requestedQueryMaxEvents, "--max-events-per-topic"),
+      baseConfig.maxEvidencePerTopic
+    );
+    const queryEvidenceStrategyRaw = getStringFlag(flags, "evidence-strategy") || "diversity";
+
+    return {
+      ...baseConfig,
+      mode: "query",
+      windows: [2],
+      warnings: queryTopicResolution.warnings,
+      queryLookbackDays: parsedLookbackDays,
+      queryTopicGlobs: queryTopicResolution.queryTopicGlobs,
+      queryMaxEventsPerTopic,
+      queryEvidenceStrategy: parseEvidenceStrategy(queryEvidenceStrategyRaw),
+    };
+  },
+  buildSummaryRequest(
+    basePayload,
+    config
+  ): QuerySummaryRequestPayload {
+    return {
+      ...basePayload,
+      query: {
+        lookback_days: config.queryLookbackDays,
+        topic_globs: config.queryTopicGlobs,
+        max_events_per_topic: config.queryMaxEventsPerTopic,
+        evidence_strategy: config.queryEvidenceStrategy,
+      },
+      topics: [],
+    };
+  },
+};
+
+const EXPLICIT_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
+  ExplicitModeSelection,
+  ExplicitModeTriggerBriefConfig
+> = {
+  mode: "explicit",
+  buildConfig({
+    flags,
+    modeSelection,
+    parsedWindows,
+    baseConfig,
+  }): ExplicitModeTriggerBriefConfig {
+    const score = getNumberFlag(flags, "score") ?? 8.5;
+    const volume = getNumberFlag(flags, "volume") ?? 100;
+    const acceleration = getNumberFlag(flags, "acceleration") ?? 0.4;
+    const evidenceSourceRaw = getStringFlag(flags, "evidence-source") || "rss";
+
+    return {
+      ...baseConfig,
+      mode: "explicit",
+      windows: parsedWindows,
+      warnings: [],
+      topicKey: modeSelection.topicKey,
+      score: assertNonNegative(score, "--score"),
+      volume: assertNonNegative(volume, "--volume"),
+      acceleration,
+      evidenceUrl: modeSelection.evidenceUrl,
+      evidenceSource: parseCanonicalSource(evidenceSourceRaw),
+      evidenceTitle:
+        getStringFlag(flags, "evidence-title") || "Manual summary request trigger",
+      evidenceExcerpt:
+        getStringFlag(flags, "evidence-excerpt") ||
+        "Manual summary request trigger generated via riops.",
+    };
+  },
+  buildSummaryRequest(
+    basePayload,
+    config
+  ): ExplicitSummaryRequestPayload {
+    const nowIso = config.requestedAtIso;
+    const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
+
+    return {
+      ...basePayload,
+      topics: [
+        {
+          topic: config.topicKey,
+          metrics: [
+            {
+              topic: config.topicKey,
+              window: primaryWindow,
+              score: config.score,
+              volume: config.volume,
+              acceleration: config.acceleration,
+            },
+          ],
+          evidence: [
+            {
+              event_id: `${config.requestId}-event-1`,
+              source: config.evidenceSource,
+              url: config.evidenceUrl,
+              title: config.evidenceTitle,
+              published_at: nowIso,
+              fetched_at: nowIso,
+              text_excerpt: config.evidenceExcerpt,
+            },
+          ],
+        },
+      ],
+    };
+  },
+};
+
+function buildTriggerModeConfig(
+  input: ResolveTriggerModeConfigInput<TriggerModeSelection>
+): TriggerBriefConfig {
+  if (input.modeSelection.mode === "query") {
+    return QUERY_TRIGGER_MODE_STRATEGY.buildConfig({
+      ...input,
+      modeSelection: input.modeSelection,
+    });
+  }
+
+  return EXPLICIT_TRIGGER_MODE_STRATEGY.buildConfig({
+    ...input,
+    modeSelection: input.modeSelection,
+  });
+}
+
+function createBaseSummaryRequestPayload(
+  config: TriggerBriefConfig
+): BaseSummaryRequestPayload {
+  const basePayload: BaseSummaryRequestPayload = {
+    request_id: config.requestId,
+    requested_at: config.requestedAtIso,
+    type: config.requestType,
+    windows: config.windows,
+    budget: {
+      daily_budget_usd: config.dailyBudgetUsd,
+      max_topics: config.maxTopics,
+      max_evidence_per_topic: config.maxEvidencePerTopic,
+      max_output_tokens: config.maxOutputTokens,
+    },
+  };
+
+  if (
+    config.reportTimezone !== undefined ||
+    config.reportStartAtIso !== undefined ||
+    config.reportEndAtIso !== undefined
+  ) {
+    basePayload.report = {
+      ...(config.reportTimezone && { timezone: config.reportTimezone }),
+      ...(config.reportStartAtIso && { start_at: config.reportStartAtIso }),
+      ...(config.reportEndAtIso && { end_at: config.reportEndAtIso }),
+    };
+  }
+  if (config.llmProvider) {
+    basePayload.llm_provider = config.llmProvider;
+  }
+
+  return basePayload;
+}
+
+function resolveConfig(flags: CliFlags): TriggerBriefConfig {
   const kafkaBrokersRaw =
     getStringFlag(flags, "kafka-brokers") || getEnvString("KAFKA_BROKERS") || "localhost:9092";
   const requestedAtRaw = getStringFlag(flags, "requested-at") || new Date().toISOString();
   const requestTypeRaw = getStringFlag(flags, "type") || "daily";
   const windowsRaw = getStringFlag(flags, "windows") || "2";
-
-  const modeConfig = resolveMode(flags);
+  const modeSelection = resolveMode(flags);
   const parsedWindows = parseWindows(windowsRaw);
-  const windows =
-    modeConfig.mode === "query"
-      ? parsedWindows.includes(2)
-        ? [2]
-        : (() => {
-            throw new Error("Query mode requires TREND_WINDOW_60M (window=2)");
-          })()
-      : parsedWindows;
 
   const dailyBudgetUsd =
     getNumberFlag(flags, "daily-budget-usd") ??
@@ -309,22 +574,6 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     );
   }
 
-  const queryTopicResolution = resolveQueryTopicGlobs(flags);
-  const queryTopicGlobs = queryTopicResolution.queryTopicGlobs;
-  const requestedQueryMaxEvents =
-    getNumberFlag(flags, "max-events-per-topic") ??
-    parseNumberEnv(
-      "BRIEF_MAX_QUERY_EVENTS_PER_TOPIC",
-      getEnvString("BRIEF_MAX_QUERY_EVENTS_PER_TOPIC"),
-      maxEvidencePerTopic
-    );
-  const queryMaxEventsPerTopic = Math.min(
-    assertPositiveInteger(requestedQueryMaxEvents, "--max-events-per-topic"),
-    assertPositiveInteger(maxEvidencePerTopic, "--max-evidence-per-topic")
-  );
-
-  const queryEvidenceStrategyRaw = getStringFlag(flags, "evidence-strategy") || "diversity";
-  const queryEvidenceStrategy = parseEvidenceStrategy(queryEvidenceStrategyRaw);
   const reportTimezone = parseOptionalTimezone(getStringFlag(flags, "report-timezone"));
   const reportStartAtIso = parseOptionalIsoDate(
     getStringFlag(flags, "report-start-at"),
@@ -343,136 +592,55 @@ function resolveConfig(flags: Flags): TriggerBriefConfig {
     }
   }
 
-  const topicKey = modeConfig.topicKey;
-  const evidenceUrl = modeConfig.evidenceUrl;
-  const score = modeConfig.mode === "explicit" ? getNumberFlag(flags, "score") ?? 8.5 : undefined;
-  const volume = modeConfig.mode === "explicit" ? getNumberFlag(flags, "volume") ?? 100 : undefined;
-  const acceleration =
-    modeConfig.mode === "explicit" ? getNumberFlag(flags, "acceleration") ?? 0.4 : undefined;
-  const evidenceSourceRaw = getStringFlag(flags, "evidence-source") || "rss";
-
-  return {
+  const validatedMaxEvidencePerTopic = assertPositiveInteger(
+    maxEvidencePerTopic,
+    "--max-evidence-per-topic"
+  );
+  const baseConfig: TriggerBriefConfigBase = {
     kafkaBrokers: parseKafkaBrokers(kafkaBrokersRaw),
     kafkaClientId: getStringFlag(flags, "kafka-client-id") || "riops-brief-trigger",
     summaryRequestsTopic:
       getStringFlag(flags, "summary-requests-topic") ||
       getEnvString("KAFKA_TOPIC_SUMMARY_REQUESTS") ||
       "summary.requests",
-    requestId: getStringFlag(flags, "request-id") || `manual-${Date.now()}`,
-    requestedAtIso: parseIsoDate(requestedAtRaw),
-    requestType: parseRequestType(requestTypeRaw),
-    windows,
-    mode: modeConfig.mode,
-    queryLookbackDays: parsedLookbackDays,
-    queryTopicGlobs,
-    warnings: queryTopicResolution.warnings,
-    queryMaxEventsPerTopic,
-    queryEvidenceStrategy,
-    topicKey,
-    score: score === undefined ? undefined : assertNonNegative(score, "--score"),
-    volume: volume === undefined ? undefined : assertNonNegative(volume, "--volume"),
-    acceleration,
-    evidenceUrl,
-    evidenceSource: modeConfig.mode === "explicit" ? parseCanonicalSource(evidenceSourceRaw) : undefined,
-    evidenceTitle:
-      modeConfig.mode === "explicit"
-        ? getStringFlag(flags, "evidence-title") || "Manual summary request trigger"
-        : undefined,
-    evidenceExcerpt:
-      modeConfig.mode === "explicit"
-        ? getStringFlag(flags, "evidence-excerpt") ||
-          "Manual summary request trigger generated via riops."
-        : undefined,
-    dailyBudgetUsd: assertNonNegative(dailyBudgetUsd, "--daily-budget-usd"),
-    maxTopics: assertPositiveInteger(maxTopics, "--max-topics"),
-    maxEvidencePerTopic: assertPositiveInteger(maxEvidencePerTopic, "--max-evidence-per-topic"),
-    maxOutputTokens: assertPositiveInteger(maxOutputTokens, "--max-output-tokens"),
-    reportTimezone,
-    reportStartAtIso,
-    reportEndAtIso,
-    llmProvider: getStringFlag(flags, "llm-provider") || getEnvString("LLM_PROVIDER") || "codex-cli",
-    dryRun: getBooleanFlag(flags, "dry-run"),
-    noWait: getBooleanFlag(flags, "no-wait"),
-    timeoutSeconds: getNumberFlag(flags, "timeout") ?? 300,
     summaryResultsTopic:
       getStringFlag(flags, "summary-results-topic") ||
       getEnvString("KAFKA_TOPIC_SUMMARY_RESULTS") ||
       "summary.results",
+    requestId: getStringFlag(flags, "request-id") || `manual-${Date.now()}`,
+    requestedAtIso: parseIsoDate(requestedAtRaw),
+    requestType: parseRequestType(requestTypeRaw),
+    dailyBudgetUsd: assertNonNegative(dailyBudgetUsd, "--daily-budget-usd"),
+    maxTopics: assertPositiveInteger(maxTopics, "--max-topics"),
+    maxEvidencePerTopic: validatedMaxEvidencePerTopic,
+    maxOutputTokens: assertPositiveInteger(maxOutputTokens, "--max-output-tokens"),
+    reportTimezone,
+    reportStartAtIso,
+    reportEndAtIso,
+    llmProvider:
+      getStringFlag(flags, "llm-provider") || getEnvString("LLM_PROVIDER") || "codex-cli",
+    dryRun: getBooleanFlag(flags, "dry-run"),
+    noWait: getBooleanFlag(flags, "no-wait"),
+    timeoutSeconds: resolveTimeoutSeconds(flags),
   };
+
+  return buildTriggerModeConfig({
+    flags,
+    modeSelection,
+    parsedWindows,
+    parsedLookbackDays,
+    baseConfig,
+  });
 }
 
-function buildSummaryRequest(config: TriggerBriefConfig) {
-  const nowIso = config.requestedAtIso;
-  const report =
-    config.reportTimezone !== undefined ||
-    config.reportStartAtIso !== undefined ||
-    config.reportEndAtIso !== undefined
-      ? {
-          ...(config.reportTimezone && { timezone: config.reportTimezone }),
-          ...(config.reportStartAtIso && { start_at: config.reportStartAtIso }),
-          ...(config.reportEndAtIso && { end_at: config.reportEndAtIso }),
-        }
-      : undefined;
-  const basePayload = {
-    request_id: config.requestId,
-    requested_at: nowIso,
-    type: config.requestType,
-    windows: config.windows,
-    budget: {
-      daily_budget_usd: config.dailyBudgetUsd,
-      max_topics: config.maxTopics,
-      max_evidence_per_topic: config.maxEvidencePerTopic,
-      max_output_tokens: config.maxOutputTokens,
-    },
-    ...(report && { report }),
-    ...(config.llmProvider && { llm_provider: config.llmProvider }),
-  };
+function buildSummaryRequest(config: TriggerBriefConfig): SummaryRequestPayload {
+  const basePayload = createBaseSummaryRequestPayload(config);
 
   if (config.mode === "query") {
-    return {
-      ...basePayload,
-      query: {
-        lookback_days: config.queryLookbackDays,
-        topic_globs: config.queryTopicGlobs,
-        max_events_per_topic: config.queryMaxEventsPerTopic,
-        evidence_strategy: config.queryEvidenceStrategy,
-      },
-      topics: [],
-    };
+    return QUERY_TRIGGER_MODE_STRATEGY.buildSummaryRequest(basePayload, config);
   }
 
-  const topicKey = config.topicKey as string;
-  const evidenceUrl = config.evidenceUrl as string;
-  const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
-
-  return {
-    ...basePayload,
-    topics: [
-      {
-        topic: topicKey,
-        metrics: [
-          {
-            topic: topicKey,
-            window: primaryWindow,
-            score: config.score,
-            volume: config.volume,
-            acceleration: config.acceleration,
-          },
-        ],
-        evidence: [
-          {
-            event_id: `${config.requestId}-event-1`,
-            source: config.evidenceSource,
-            url: evidenceUrl,
-            title: config.evidenceTitle,
-            published_at: nowIso,
-            fetched_at: nowIso,
-            text_excerpt: config.evidenceExcerpt,
-          },
-        ],
-      },
-    ],
-  };
+  return EXPLICIT_TRIGGER_MODE_STRATEGY.buildSummaryRequest(basePayload, config);
 }
 
 interface FreshnessIssue {
@@ -480,8 +648,121 @@ interface FreshnessIssue {
   message: string;
 }
 
-async function checkDataFreshness(flags: Flags): Promise<FreshnessIssue[]> {
-  const issues: FreshnessIssue[] = [];
+const CONSUMER_LAG_CATEGORY = "consumer_lag";
+const DATABASE_CATEGORY = "database";
+const EXPECTED_CONSUMER_GROUPS = ["trends-processor", "persister"] as const;
+const MAX_LAG_MESSAGES = 100;
+const MAX_LAG_AGE_MS = 300_000;
+
+interface ConsumerLagRecord {
+  consumerGroup: string;
+  lagMessages: number | bigint;
+  updatedAt: Date;
+}
+
+interface ConsumerLagFreshnessContext {
+  lagRecords: readonly ConsumerLagRecord[];
+  nowMs: number;
+}
+
+interface ConsumerLagFreshnessCheck {
+  readonly name: string;
+  evaluate(context: ConsumerLagFreshnessContext): FreshnessIssue[];
+}
+
+const REQUIRE_CONSUMER_LAG_RECORDS_CHECK: ConsumerLagFreshnessCheck = {
+  name: "require-consumer-lag-records",
+  evaluate({ lagRecords }): FreshnessIssue[] {
+    if (lagRecords.length > 0) {
+      return [];
+    }
+
+    return [
+      {
+        category: CONSUMER_LAG_CATEGORY,
+        message: "No consumer lag records found for events.raw",
+      },
+    ];
+  },
+};
+
+const STALE_CONSUMER_LAG_RECORDS_CHECK: ConsumerLagFreshnessCheck = {
+  name: "stale-consumer-lag-records",
+  evaluate({ lagRecords, nowMs }): FreshnessIssue[] {
+    if (lagRecords.length === 0) {
+      return [];
+    }
+
+    const staleRecords = lagRecords.filter(
+      (record) => nowMs - record.updatedAt.getTime() > MAX_LAG_AGE_MS
+    );
+    if (staleRecords.length === 0) {
+      return [];
+    }
+
+    const groups = [...new Set(staleRecords.map((record) => record.consumerGroup))].join(", ");
+    return [
+      {
+        category: CONSUMER_LAG_CATEGORY,
+        message: `Consumer lag records are stale (>5 min old) for: ${groups}`,
+      },
+    ];
+  },
+};
+
+const CONSUMER_GROUP_LAG_BUDGET_CHECK: ConsumerLagFreshnessCheck = {
+  name: "consumer-group-lag-budget",
+  evaluate({ lagRecords }): FreshnessIssue[] {
+    if (lagRecords.length === 0) {
+      return [];
+    }
+
+    const issues: FreshnessIssue[] = [];
+    for (const groupId of EXPECTED_CONSUMER_GROUPS) {
+      const groupRecords = lagRecords.filter((record) => record.consumerGroup === groupId);
+      if (groupRecords.length === 0) {
+        issues.push({
+          category: CONSUMER_LAG_CATEGORY,
+          message: `Missing consumer lag records for ${groupId}`,
+        });
+        continue;
+      }
+
+      const totalLag = groupRecords.reduce(
+        (sum, record) => sum + Number(record.lagMessages),
+        0
+      );
+      if (totalLag > MAX_LAG_MESSAGES) {
+        issues.push({
+          category: CONSUMER_LAG_CATEGORY,
+          message: `${groupId} lag is ${totalLag} messages (threshold: ${MAX_LAG_MESSAGES})`,
+        });
+      }
+    }
+
+    return issues;
+  },
+};
+
+const CONSUMER_LAG_FRESHNESS_CHECKS: readonly ConsumerLagFreshnessCheck[] = [
+  REQUIRE_CONSUMER_LAG_RECORDS_CHECK,
+  STALE_CONSUMER_LAG_RECORDS_CHECK,
+  CONSUMER_GROUP_LAG_BUDGET_CHECK,
+];
+
+export function evaluateConsumerLagFreshness(
+  lagRecords: readonly ConsumerLagRecord[],
+  nowMs = Date.now()
+): FreshnessIssue[] {
+  const context: ConsumerLagFreshnessContext = {
+    lagRecords,
+    nowMs,
+  };
+
+  return CONSUMER_LAG_FRESHNESS_CHECKS.flatMap((check) => check.evaluate(context));
+}
+
+async function checkDataFreshness(flags: CliFlags): Promise<FreshnessIssue[]> {
   const databaseUrl = resolveTopicsDatabaseUrl(flags);
 
   const prisma = createPrismaClient({ databaseUrl });
@@ -489,67 +770,28 @@ async function checkDataFreshness(flags: Flags): Promise<FreshnessIssue[]> {
   try {
     await prisma.$connect();
 
-    // Check consumer lag
-    const MAX_LAG_MESSAGES = 100;
-    const MAX_LAG_AGE_MS = 300_000; // 5 minutes
-
     const lagRecords = await prisma.consumerLag.findMany({
       where: {
         topic: "events.raw",
-        consumerGroup: { in: ["trends-processor", "persister"] },
+        consumerGroup: { in: [...EXPECTED_CONSUMER_GROUPS] },
       },
     });
 
-    if (lagRecords.length === 0) {
-      issues.push({
-        category: "consumer_lag",
-        message: "No consumer lag records found for events.raw",
-      });
-    } else {
-      const now = Date.now();
-      const staleRecords = lagRecords.filter((r) => now - r.updatedAt.getTime() > MAX_LAG_AGE_MS);
-      if (staleRecords.length > 0) {
-        const groups = [...new Set(staleRecords.map((r) => r.consumerGroup))].join(", ");
-        issues.push({
-          category: "consumer_lag",
-          message: `Consumer lag records are stale (>5 min old) for: ${groups}`,
-        });
-      }
-
-      for (const groupId of ["trends-processor", "persister"] as const) {
-        const groupRecords = lagRecords.filter((r) => r.consumerGroup === groupId);
-        if (groupRecords.length === 0) {
-          issues.push({
-            category: "consumer_lag",
-            message: `Missing consumer lag records for ${groupId}`,
-          });
-          continue;
-        }
-
-        const totalLag = groupRecords.reduce((sum, r) => sum + Number(r.lagMessages), 0);
-        if (totalLag > MAX_LAG_MESSAGES) {
-          issues.push({
-            category: "consumer_lag",
-            message: `${groupId} lag is ${totalLag} messages (threshold: ${MAX_LAG_MESSAGES})`,
-          });
-        }
-      }
-    }
-
-    // Note: Collector heartbeat checking would require reading from collector.heartbeat Kafka topic
-    // which is more complex in a CLI tool. For MVP, we just check consumer lag.
-    // A full implementation could use kafkajs admin client to read recent heartbeat messages.
+    return evaluateConsumerLagFreshness(lagRecords);
   } catch (error) {
-    issues.push({
-      category: "database",
-      message: `Failed to query database: ${(error as Error).message}`,
-    });
+    return [
+      {
+        category: DATABASE_CATEGORY,
+        message: `Failed to query database: ${(error as Error).message}`,
+      },
+    ];
   } finally {
     await prisma.$disconnect();
   }
-
-  return issues;
 }
+
+// Note: Collector heartbeat checking would require reading from collector.heartbeat Kafka topic.
+// A future check strategy can extend CONSUMER_LAG_FRESHNESS_CHECKS without changing caller flow.
 
 interface BriefResult {
   request_id: string;
@@ -580,79 +822,6 @@ interface BriefResult {
     error_message: string;
     retryable: boolean;
   };
-}
-
-interface BriefResultWaiter {
-  consumer: ReturnType<Kafka["consumer"]>;
-  resultPromise: Promise<BriefResult>;
-}
-
-async function setupBriefResultConsumer(
-  kafka: Kafka,
-  requestId: string,
-  resultsTopic: string,
-  timeoutSeconds: number
-): Promise<BriefResultWaiter> {
-  const consumer = kafka.consumer({
-    groupId: `riops-brief-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-  });
-
-  await consumer.connect();
-  // Subscribe from beginning and use eachBatch with manual offset control
-  await consumer.subscribe({ topic: resultsTopic, fromBeginning: true });
-
-  const timeoutMs = timeoutSeconds * 1000;
-  const startTime = Date.now();
-
-  const resultPromise = new Promise<BriefResult>((resolve, reject) => {
-    const timeoutHandle = setTimeout(() => {
-      reject(new Error(`Timeout waiting for brief result after ${timeoutSeconds}s`));
-    }, timeoutMs);
-
-    void consumer.run({
-      eachMessage: async ({ message }) => {
-        if (!message.value) {
-          return;
-        }
-
-        try {
-          const result = JSON.parse(message.value.toString("utf-8")) as BriefResult;
-
-          // Only process messages for our specific request
-          if (result.request_id === requestId) {
-            clearTimeout(timeoutHandle);
-            resolve(result);
-            // Don't await stop() - just trigger it and let the promise resolution handle cleanup
-            void consumer.stop();
-          }
-        } catch (error) {
-          // Ignore parse errors for messages not matching our request
-        }
-
-        // Check if we've exceeded timeout (safety check)
-        if (Date.now() - startTime > timeoutMs) {
-          clearTimeout(timeoutHandle);
-          reject(new Error(`Timeout waiting for brief result after ${timeoutSeconds}s`));
-          void consumer.stop();
-        }
-      },
-    });
-  });
-
-  // Give the consumer a moment to start polling before returning
-  await new Promise((resolve) => setTimeout(resolve, 200));
-
-  return { consumer, resultPromise };
-}
-
-async function waitForBriefResult(
-  waiter: BriefResultWaiter
-): Promise<BriefResult> {
-  try {
-    return await waiter.resultPromise;
-  } finally {
-    await waiter.consumer.disconnect();
-  }
 }
 
 function formatBriefResult(result: BriefResult): string {
@@ -715,8 +884,9 @@ function formatBriefResult(result: BriefResult): string {
   return lines.join("\n");
 }
 
-export async function briefTrigger(flags: Flags): Promise<void> {
+export async function briefTrigger(flags: CliFlags): Promise<void> {
   const config = resolveConfig(flags);
+  const payload = buildSummaryRequest(config);
 
   if (config.warnings.length > 0) {
     for (const warning of config.warnings) {
@@ -726,21 +896,6 @@ export async function briefTrigger(flags: Flags): Promise<void> {
     // eslint-disable-next-line no-console
     console.warn("");
   }
-
-  // Check data freshness
-  const freshnessIssues = await checkDataFreshness(flags);
-  if (freshnessIssues.length > 0) {
-    // eslint-disable-next-line no-console
-    console.warn("⚠️  Data freshness warnings:");
-    for (const issue of freshnessIssues) {
-      // eslint-disable-next-line no-console
-      console.warn(`  [${issue.category}] ${issue.message}`);
-    }
-    // eslint-disable-next-line no-console
-    console.warn("Proceeding with brief request anyway...\n");
-  }
-
-  const payload = buildSummaryRequest(config);
 
   if (config.dryRun) {
     // eslint-disable-next-line no-console
@@ -760,22 +915,42 @@ export async function briefTrigger(flags: Flags): Promise<void> {
     return;
   }
 
+  // Check data freshness
+  const freshnessIssues = await checkDataFreshness(flags);
+  if (freshnessIssues.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn("⚠️  Data freshness warnings:");
+    for (const issue of freshnessIssues) {
+      // eslint-disable-next-line no-console
+      console.warn(`  [${issue.category}] ${issue.message}`);
+    }
+    // eslint-disable-next-line no-console
+    console.warn("Proceeding with brief request anyway...\n");
+  }
+
   const kafka = new Kafka({
     clientId: config.kafkaClientId,
     brokers: config.kafkaBrokers,
   });
 
   // Set up result consumer BEFORE publishing the request to avoid race condition
-  let waiter: BriefResultWaiter | undefined;
+  let waiter: RequestResultWaiter<BriefResult> | undefined;
   if (!config.noWait) {
     // eslint-disable-next-line no-console
     console.log(`⏳ Setting up result listener (timeout: ${config.timeoutSeconds}s)...`);
-    waiter = await setupBriefResultConsumer(
+    waiter = await setupRequestResultWaiter<BriefResult>({
       kafka,
-      config.requestId,
-      config.summaryResultsTopic,
-      config.timeoutSeconds
-    );
+      groupId: `riops-brief-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      topic: config.summaryResultsTopic,
+      requestId: config.requestId,
+      timeoutSeconds: config.timeoutSeconds,
+      timeoutErrorMessage: `Timeout waiting for brief result after ${config.timeoutSeconds}s`,
+      parseResult(rawValue): BriefResult | null {
+        return JSON.parse(rawValue) as BriefResult;
+      },
+      fromBeginning: true,
+      startupDelayMs: 200,
+    });
   }
 
   // Now publish the request
@@ -808,7 +983,7 @@ export async function briefTrigger(flags: Flags): Promise<void> {
 
   // Wait for the result
   try {
-    const result = await waitForBriefResult(waiter!);
+    const result = await waiter!.waitForResult();
 
     const formatted = formatBriefResult(result);
     // eslint-disable-next-line no-console
@@ -823,5 +998,9 @@ export async function briefTrigger(flags: Flags): Promise<void> {
     // eslint-disable-next-line no-console
     console.error(`Request ID: ${config.requestId}`);
     process.exit(1);
+  } finally {
+    if (waiter) {
+      await waiter.disconnect();
+    }
   }
 }

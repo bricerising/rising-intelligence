@@ -2,7 +2,8 @@ import type { Server } from "node:http";
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createInitializationResourceBuilder,
+  createStartupFacade,
+  createStartupResourceConnector,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
@@ -106,20 +107,21 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
   }
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<CollectorRuntimeContext> {
-    const resourceBuilder = createInitializationResourceBuilder();
+    const startup = createStartupFacade(logger);
+    const resources = createStartupResourceConnector(startup);
 
-    try {
+    return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resourceBuilder.create({
+      const healthServer = await resources.connect({
         name: "health-server",
-        create: () => this.dependencies.startHealthServer(healthContext, logger),
-        rollback: async (server) => this.dependencies.closeHealthServer(server),
-        rollbackErrorMessage: "Health server close failed during initialization rollback",
+        connect: () => this.dependencies.startHealthServer(healthContext, logger),
+        disconnect: (server) => this.dependencies.closeHealthServer(server),
+        rollbackAction: "close",
       });
 
-      const checkpointStore = await resourceBuilder.create({
+      const checkpointStore = await resources.connect({
         name: "checkpoint-store",
-        create: async () => {
+        connect: async () => {
           const store = this.dependencies.createCheckpointStore(
             config.CHECKPOINT_PATH,
             logger.child({ component: "checkpoint" })
@@ -127,10 +129,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
           await this.dependencies.initializeCheckpointStore(store);
           return store;
         },
-        rollback: async (store) => {
+        disconnect: async (store) => {
           this.dependencies.closeCheckpointStore(store);
         },
-        rollbackErrorMessage: "Checkpoint store close failed during initialization rollback",
+        rollbackAction: "close",
       });
       healthContext.checkpointsHealthy = true;
 
@@ -148,11 +150,11 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         throw error;
       }
 
-      const kafkaContext = await resourceBuilder.create({
+      const kafkaContext = await resources.connect({
         name: "kafka-producer",
-        create: async () => this.dependencies.createKafkaProducer(logger),
-        rollback: async (context) => this.dependencies.disconnectProducer(context.producer, logger),
-        rollbackErrorMessage: "Kafka producer disconnect failed during initialization rollback",
+        connect: () => this.dependencies.createKafkaProducer(logger),
+        disconnect: (context) => this.dependencies.disconnectProducer(context.producer, logger),
+        rollbackAction: "disconnect",
       });
       healthContext.kafkaHealthy = true;
 
@@ -202,15 +204,14 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
       }
 
       for (const adapter of adapters) {
-        await resourceBuilder.create({
+        await resources.connect({
           name: `adapter-${adapter.name}`,
-          create: async () => {
+          connect: async () => {
             await adapter.initialize();
             return adapter;
           },
-          rollback: async (initializedAdapter) => initializedAdapter.shutdown(),
-          rollbackErrorMessage:
-            `Adapter ${adapter.name} shutdown failed during initialization rollback`,
+          disconnect: (initializedAdapter) => initializedAdapter.shutdown(),
+          rollbackAction: "shutdown",
         });
         healthContext.sourceHealth.set(adapter.name, {
           status: "healthy",
@@ -231,10 +232,7 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         shutdownRequested: false,
         lastSeenCleanupAt: 0,
       };
-    } catch (error) {
-      await resourceBuilder.rollback(logger);
-      throw error;
-    }
+    });
   }
 }
 

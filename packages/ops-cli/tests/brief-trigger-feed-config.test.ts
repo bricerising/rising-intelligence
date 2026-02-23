@@ -51,7 +51,7 @@ wire:
       const body = payload.payload as Record<string, unknown>;
       const query = body.query as Record<string, unknown>;
       expect(query.topic_globs).toEqual(["market.pos", "payments.*", "custom.*"]);
-      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith("⚠️  Data freshness warnings:");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

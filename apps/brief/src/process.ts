@@ -1,12 +1,17 @@
 import { BriefStatus, type PrismaClient } from "@rising-intelligence/db";
 import type { Producer } from "kafkajs";
 import type { Redis } from "ioredis";
-import { serializeError } from "@rising-intelligence/shared";
+import {
+  buildFunctionDependencies,
+  serializeError,
+  type FunctionDependencyOverrides,
+} from "@rising-intelligence/shared";
 import type pino from "pino";
 import { z } from "zod";
 import {
   createBriefBudgetLedger,
   type BriefBudgetLedger,
+  type CreateBriefBudgetLedgerInput,
 } from "./budget-ledger.js";
 import type { Config } from "./config.js";
 import {
@@ -33,9 +38,13 @@ import {
 } from "./processing-errors.js";
 import {
   createBriefResultPublisher,
+  type CreateBriefResultPublisherInput,
   type BriefResultPublisher,
 } from "./publishing-facade.js";
-import { createQueryModeRequestResolver } from "./query-mode-request-facade.js";
+import {
+  createQueryModeRequestResolver,
+  type QueryModeRequestResolver,
+} from "./query-mode-request-facade.js";
 import {
   buildFailureBriefResultPayload,
   type BriefResultPayload,
@@ -62,7 +71,7 @@ import {
   type SignalCategory,
 } from "./internal-highlight-strategy.js";
 
-interface ProcessContext {
+export interface ProcessContext {
   config: Config;
   logger: pino.Logger;
   healthContext: HealthContext;
@@ -101,7 +110,6 @@ const LlmResponseSchema = z.object({
 type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
 type ParsedLlmResponse = z.infer<typeof LlmResponseSchema>;
 const groundingFacade = createSummaryRequestGroundingFacade();
-const queryModeRequestResolver = createQueryModeRequestResolver();
 
 interface SuccessResult {
   payload: {
@@ -130,6 +138,77 @@ interface SuccessResult {
     outputTokens: number;
     costUsd: number;
   };
+}
+
+export interface SummaryRequestProcessor {
+  processSummaryRequest(ctx: ProcessContext, request: ParsedSummaryRequest): Promise<void>;
+}
+
+interface SummaryRequestProcessorDependencies {
+  createBriefBudgetLedger(input: CreateBriefBudgetLedgerInput): BriefBudgetLedger;
+  createBriefResultPublisher(
+    input: CreateBriefResultPublisherInput
+  ): BriefResultPublisher<BriefResultPayload>;
+  createBriefResultStore(
+    prisma: PrismaClient,
+    healthContext: HealthContext
+  ): BriefResultStore;
+  createQueryModeRequestResolver(): QueryModeRequestResolver;
+}
+
+type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
+  SummaryRequestProcessorDependencies
+>;
+
+interface SummaryRequestRuntime {
+  logger: pino.Logger;
+  budgetLedger: BriefBudgetLedger;
+  publisher: BriefResultPublisher<BriefResultPayload>;
+  resultStore: BriefResultStore;
+  queryModeRequestResolver: QueryModeRequestResolver;
+  producedAt: Date;
+}
+
+const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
+  createBriefBudgetLedger,
+  createBriefResultPublisher(input): BriefResultPublisher<BriefResultPayload> {
+    return createBriefResultPublisher<BriefResultPayload>(input);
+  },
+  createBriefResultStore,
+  createQueryModeRequestResolver,
+};
+
+class SummaryRequestRuntimeFactory {
+  private readonly queryModeRequestResolver: QueryModeRequestResolver;
+
+  constructor(
+    private readonly dependencies: SummaryRequestProcessorDependencies
+  ) {
+    this.queryModeRequestResolver = dependencies.createQueryModeRequestResolver();
+  }
+
+  create(ctx: ProcessContext, request: ParsedSummaryRequest): SummaryRequestRuntime {
+    const logger = ctx.logger.child({ requestId: request.requestId });
+    return {
+      logger,
+      budgetLedger: this.dependencies.createBriefBudgetLedger({
+        prisma: ctx.prisma,
+        redis: ctx.redis,
+        logger,
+      }),
+      publisher: this.dependencies.createBriefResultPublisher({
+        producer: ctx.producer,
+        logger,
+        topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
+      }),
+      resultStore: this.dependencies.createBriefResultStore(
+        ctx.prisma,
+        ctx.healthContext
+      ),
+      queryModeRequestResolver: this.queryModeRequestResolver,
+      producedAt: new Date(),
+    };
+  }
 }
 
 function getBudgetDateKey(date: Date): string {
@@ -216,45 +295,69 @@ function getEvidenceHostname(url: string | null): string | null {
   }
 }
 
+interface PreferredCloudHostRule {
+  topicPrefix: string;
+  preferredHostSuffixes: readonly string[];
+}
+
+const PREFERRED_CLOUD_HOST_RULES: ReadonlyArray<PreferredCloudHostRule> = [
+  {
+    topicPrefix: "aws.",
+    preferredHostSuffixes: ["aws.amazon.com", "docs.aws.amazon.com"],
+  },
+  {
+    topicPrefix: "cloud.gcp",
+    preferredHostSuffixes: [
+      "cloud.google.com",
+      "docs.cloud.google.com",
+      "status.cloud.google.com",
+    ],
+  },
+  {
+    topicPrefix: "cloud.azure",
+    preferredHostSuffixes: ["azure.microsoft.com", "learn.microsoft.com"],
+  },
+  {
+    topicPrefix: "cloud.terraform",
+    preferredHostSuffixes: [
+      "hashicorp.com",
+      "terraform.io",
+      "aws.amazon.com",
+      "cloud.google.com",
+      "azure.microsoft.com",
+    ],
+  },
+];
+
+function resolvePreferredCloudHostRule(topic: string): PreferredCloudHostRule | null {
+  const normalizedTopic = normalizeTopicKey(topic);
+  for (const rule of PREFERRED_CLOUD_HOST_RULES) {
+    if (normalizedTopic.startsWith(rule.topicPrefix)) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+function hostnameMatchesAnySuffix(hostname: string, suffixes: readonly string[]): boolean {
+  return suffixes.some((suffix) => hostname.endsWith(suffix));
+}
+
 function isPreferredCloudHost(topic: string, hostname: string | null): boolean {
   if (!hostname) {
     return false;
   }
 
-  const normalizedTopic = normalizeTopicKey(topic);
-  if (normalizedTopic.startsWith("aws.")) {
-    return hostname.endsWith("aws.amazon.com") || hostname.endsWith("docs.aws.amazon.com");
+  const rule = resolvePreferredCloudHostRule(topic);
+  if (!rule) {
+    return false;
   }
-  if (normalizedTopic.startsWith("cloud.gcp")) {
-    return (
-      hostname.endsWith("cloud.google.com") ||
-      hostname.endsWith("docs.cloud.google.com") ||
-      hostname.endsWith("status.cloud.google.com")
-    );
-  }
-  if (normalizedTopic.startsWith("cloud.azure")) {
-    return hostname.endsWith("azure.microsoft.com") || hostname.endsWith("learn.microsoft.com");
-  }
-  if (normalizedTopic.startsWith("cloud.terraform")) {
-    return (
-      hostname.endsWith("hashicorp.com") ||
-      hostname.endsWith("terraform.io") ||
-      hostname.endsWith("aws.amazon.com") ||
-      hostname.endsWith("cloud.google.com") ||
-      hostname.endsWith("azure.microsoft.com")
-    );
-  }
-  return false;
+
+  return hostnameMatchesAnySuffix(hostname, rule.preferredHostSuffixes);
 }
 
 function hasPreferredCloudHostRule(topic: string): boolean {
-  const normalizedTopic = normalizeTopicKey(topic);
-  return (
-    normalizedTopic.startsWith("aws.") ||
-    normalizedTopic.startsWith("cloud.gcp") ||
-    normalizedTopic.startsWith("cloud.azure") ||
-    normalizedTopic.startsWith("cloud.terraform")
-  );
+  return resolvePreferredCloudHostRule(topic) !== null;
 }
 
 function isLowSignalTitle(value: string): boolean {
@@ -1259,199 +1362,266 @@ async function handleNonRetryableFailure(
   );
 }
 
-export async function processSummaryRequest(
-  ctx: ProcessContext,
-  request: ParsedSummaryRequest
-): Promise<void> {
-  const logger = ctx.logger.child({ requestId: request.requestId });
-  const budgetLedger = createBriefBudgetLedger({
-    prisma: ctx.prisma,
-    redis: ctx.redis,
-    logger,
-  });
-  const publisher = createBriefResultPublisher<BriefResultPayload>({
-    producer: ctx.producer,
-    logger,
-    topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
-  });
-  const resultStore = createBriefResultStore(ctx.prisma, ctx.healthContext);
-  const producedAt = new Date();
-  let existingResult: StoredBriefResult | null = null;
+type SummaryRequestFailureHandlerOutcome = "handled" | "rethrow";
 
-  try {
-    existingResult = await resultStore.load(request.requestId);
-  } catch (error) {
-    incrementError(ctx.healthContext, "idempotency_error");
-    logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
-    throw error;
+interface SummaryRequestFailureHandlingContext {
+  ctx: ProcessContext;
+  resultStore: BriefResultStore;
+  publisher: BriefResultPublisher<BriefResultPayload>;
+  requestId: string;
+  producedAt: Date;
+  logger: pino.Logger;
+  persistedCreated: boolean;
+}
+
+interface SummaryRequestFailureHandler {
+  readonly name: string;
+  canHandle(
+    error: unknown,
+    context: SummaryRequestFailureHandlingContext
+  ): boolean;
+  handle(
+    error: unknown,
+    context: SummaryRequestFailureHandlingContext
+  ): Promise<SummaryRequestFailureHandlerOutcome>;
+}
+
+const NON_RETRYABLE_SUMMARY_REQUEST_FAILURE_HANDLER: SummaryRequestFailureHandler = {
+  name: "non-retryable",
+  canHandle(error): boolean {
+    return error instanceof NonRetryableProcessingError;
+  },
+  async handle(error, context): Promise<SummaryRequestFailureHandlerOutcome> {
+    if (!(error instanceof NonRetryableProcessingError)) {
+      return "rethrow";
+    }
+
+    await handleNonRetryableFailure({
+      ctx: context.ctx,
+      resultStore: context.resultStore,
+      publisher: context.publisher,
+      requestId: context.requestId,
+      producedAt: context.producedAt,
+      error,
+      logger: context.logger,
+      logMessage: "Brief request failed non-retryable validation",
+    });
+    return "handled";
+  },
+};
+
+const PERSISTED_RESULT_SUMMARY_REQUEST_FAILURE_HANDLER: SummaryRequestFailureHandler = {
+  name: "persisted-result-publish",
+  canHandle(_error, context): boolean {
+    return context.persistedCreated;
+  },
+  async handle(error, context): Promise<SummaryRequestFailureHandlerOutcome> {
+    incrementError(context.ctx.healthContext, "publish_error");
+    context.logger.error(
+      { error: serializeError(error) },
+      "Persisted brief result but failed to publish; will retry from Kafka"
+    );
+    return "rethrow";
+  },
+};
+
+const RETRYABLE_LLM_SUMMARY_REQUEST_FAILURE_HANDLER: SummaryRequestFailureHandler = {
+  name: "retryable-llm",
+  canHandle(error): boolean {
+    return error instanceof LlmGenerationError;
+  },
+  async handle(error, context): Promise<SummaryRequestFailureHandlerOutcome> {
+    if (!(error instanceof LlmGenerationError)) {
+      return "rethrow";
+    }
+
+    const failureCode = classifyRetryableFailureCode(error);
+    incrementError(context.ctx.healthContext, failureCode);
+    incrementGeneration(context.ctx.healthContext, "failure");
+    context.logger.error(
+      { error: serializeError(error), failureCode },
+      "Failed to process summary request due to retryable LLM error"
+    );
+    await emitFailureResult(
+      context.ctx,
+      context.resultStore,
+      context.publisher,
+      context.requestId,
+      context.producedAt,
+      failureCode,
+      error.message,
+      true
+    );
+    return "handled";
+  },
+};
+
+const UNKNOWN_SUMMARY_REQUEST_FAILURE_HANDLER: SummaryRequestFailureHandler = {
+  name: "unknown",
+  canHandle(): boolean {
+    return true;
+  },
+  async handle(_error, context): Promise<SummaryRequestFailureHandlerOutcome> {
+    incrementError(
+      context.ctx.healthContext,
+      "generation_error"
+    );
+    incrementGeneration(context.ctx.healthContext, "failure");
+    context.logger.error({ error: serializeError(_error) }, "Failed to process summary request");
+    return "rethrow";
+  },
+};
+
+const SUMMARY_REQUEST_FAILURE_HANDLERS: readonly SummaryRequestFailureHandler[] = [
+  NON_RETRYABLE_SUMMARY_REQUEST_FAILURE_HANDLER,
+  PERSISTED_RESULT_SUMMARY_REQUEST_FAILURE_HANDLER,
+  RETRYABLE_LLM_SUMMARY_REQUEST_FAILURE_HANDLER,
+  UNKNOWN_SUMMARY_REQUEST_FAILURE_HANDLER,
+];
+
+async function handleSummaryRequestFailure(
+  error: unknown,
+  context: SummaryRequestFailureHandlingContext
+): Promise<SummaryRequestFailureHandlerOutcome> {
+  for (const handler of SUMMARY_REQUEST_FAILURE_HANDLERS) {
+    if (!handler.canHandle(error, context)) {
+      continue;
+    }
+    return handler.handle(error, context);
   }
 
-  if (existingResult) {
-    incrementDuplicatesSkipped(ctx.healthContext);
-    incrementGeneration(ctx.healthContext, "skipped");
+  return "rethrow";
+}
+
+class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
+  private readonly runtimeFactory: SummaryRequestRuntimeFactory;
+
+  constructor(dependencies: SummaryRequestProcessorDependencies) {
+    this.runtimeFactory = new SummaryRequestRuntimeFactory(dependencies);
+  }
+
+  async processSummaryRequest(
+    ctx: ProcessContext,
+    request: ParsedSummaryRequest
+  ): Promise<void> {
+    const runtime = this.runtimeFactory.create(ctx, request);
+    const {
+      logger,
+      budgetLedger,
+      publisher,
+      resultStore,
+      queryModeRequestResolver,
+      producedAt,
+    } = runtime;
+    let existingResult: StoredBriefResult | null = null;
+
     try {
-      await publisher.publishResult(request.requestId, existingResult.payload);
-      logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
-      return;
+      existingResult = await resultStore.load(request.requestId);
     } catch (error) {
-      incrementError(ctx.healthContext, "publish_error");
-      logger.error(
-        { error: serializeError(error) },
-        "Failed to republish persisted brief result for duplicate request"
-      );
+      incrementError(ctx.healthContext, "idempotency_error");
+      logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
       throw error;
     }
-  }
 
-  let requestForGeneration: ParsedSummaryRequest;
-  try {
-    requestForGeneration = await queryModeRequestResolver.resolve(ctx, request, logger);
-  } catch (error) {
-    if (error instanceof NonRetryableProcessingError) {
-      await handleNonRetryableFailure({
+    if (existingResult) {
+      incrementDuplicatesSkipped(ctx.healthContext);
+      incrementGeneration(ctx.healthContext, "skipped");
+      try {
+        await publisher.publishResult(request.requestId, existingResult.payload);
+        logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
+        return;
+      } catch (error) {
+        incrementError(ctx.healthContext, "publish_error");
+        logger.error(
+          { error: serializeError(error) },
+          "Failed to republish persisted brief result for duplicate request"
+        );
+        throw error;
+      }
+    }
+
+    let requestForGeneration: ParsedSummaryRequest;
+    try {
+      requestForGeneration = await queryModeRequestResolver.resolve(ctx, request, logger);
+    } catch (error) {
+      if (error instanceof NonRetryableProcessingError) {
+        await handleNonRetryableFailure({
+          ctx,
+          resultStore,
+          publisher,
+          requestId: request.requestId,
+          producedAt,
+          error,
+          logger,
+          logMessage: "Summary request failed non-retryable pre-processing",
+        });
+        return;
+      }
+
+      incrementError(ctx.healthContext, "generation_error");
+      incrementGeneration(ctx.healthContext, "failure");
+      logger.error({ error: serializeError(error) }, "Failed to resolve summary request");
+      throw error;
+    }
+
+    const dateKey = getBudgetDateKey(producedAt);
+    const dailyBudgetUsd = requestForGeneration.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
+    const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(requestForGeneration));
+    let budgetReserved = false;
+    let spentBudgetUsd = 0;
+    let reservedCostUsd = estimatedCostUsd;
+
+    try {
+      const reservation = await budgetLedger.reserve({
+        dateKey,
+        dailyBudgetUsd,
+        amountUsd: reservedCostUsd,
+      });
+      budgetReserved = reservation.reserved;
+      spentBudgetUsd = reservation.spentUsd;
+      ctx.healthContext.redisHealthy = true;
+      setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+    } catch (error) {
+      ctx.healthContext.redisHealthy = false;
+      incrementError(ctx.healthContext, "redis_error");
+      logger.error({ error: serializeError(error) }, "Failed to reserve daily budget");
+      throw error;
+    }
+
+    if (!budgetReserved) {
+      incrementBudgetExceeded(ctx.healthContext);
+      incrementGeneration(ctx.healthContext, "skipped");
+      await emitFailureResult(
         ctx,
         resultStore,
         publisher,
-        requestId: request.requestId,
-        producedAt,
-        error,
-        logger,
-        logMessage: "Summary request failed non-retryable pre-processing",
-      });
-      return;
-    }
-
-    incrementError(ctx.healthContext, "generation_error");
-    incrementGeneration(ctx.healthContext, "failure");
-    logger.error({ error: serializeError(error) }, "Failed to resolve summary request");
-    throw error;
-  }
-
-  const dateKey = getBudgetDateKey(producedAt);
-  const dailyBudgetUsd = requestForGeneration.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
-  const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(requestForGeneration));
-  let budgetReserved = false;
-  let spentBudgetUsd = 0;
-  let reservedCostUsd = estimatedCostUsd;
-
-  try {
-    const reservation = await budgetLedger.reserve({
-      dateKey,
-      dailyBudgetUsd,
-      amountUsd: reservedCostUsd,
-    });
-    budgetReserved = reservation.reserved;
-    spentBudgetUsd = reservation.spentUsd;
-    ctx.healthContext.redisHealthy = true;
-    setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
-  } catch (error) {
-    ctx.healthContext.redisHealthy = false;
-    incrementError(ctx.healthContext, "redis_error");
-    logger.error({ error: serializeError(error) }, "Failed to reserve daily budget");
-    throw error;
-  }
-
-  if (!budgetReserved) {
-    incrementBudgetExceeded(ctx.healthContext);
-    incrementGeneration(ctx.healthContext, "skipped");
-    await emitFailureResult(
-      ctx,
-      resultStore,
-      publisher,
-      request.requestId,
-      producedAt,
-      "budget_exceeded",
-      "Daily brief budget exceeded",
-      false
-    );
-    logger.info(
-      {
-        spentBudgetUsd,
-        reservedCostUsd,
-        dailyBudgetUsd,
-      },
-      "Skipped summary request due to budget limit"
-    );
-    return;
-  }
-
-  let persistedCreated = false;
-  try {
-    const successResult = await buildSuccessResult(
-      ctx,
-      requestForGeneration,
-      producedAt,
-      estimatedCostUsd
-    );
-    const persisted = await resultStore.persist(successResult.payload, BriefStatus.success);
-    if (persisted === "duplicate") {
-      await rollbackBudgetReservation(
-        ctx,
-        budgetLedger,
-        logger,
-        dateKey,
-        reservedCostUsd,
-        dailyBudgetUsd
-      );
-      budgetReserved = false;
-      incrementDuplicatesSkipped(ctx.healthContext);
-      incrementGeneration(ctx.healthContext, "skipped");
-      const republishedStatus = await republishPersistedResult(
-        resultStore,
         request.requestId,
-        publisher
+        producedAt,
+        "budget_exceeded",
+        "Daily brief budget exceeded",
+        false
       );
-      if (!republishedStatus) {
-        throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
-      }
-      logger.info({ status: republishedStatus }, "Detected duplicate during persist and republished stored result");
+      logger.info(
+        {
+          spentBudgetUsd,
+          reservedCostUsd,
+          dailyBudgetUsd,
+        },
+        "Skipped summary request due to budget limit"
+      );
       return;
     }
-    persistedCreated = true;
 
-    const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
-    if (costDeltaUsd !== 0) {
-      try {
-        spentBudgetUsd = await budgetLedger.settle({
-          dateKey,
-          deltaUsd: costDeltaUsd,
-        });
-        reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
-        ctx.healthContext.redisHealthy = true;
-      } catch (error) {
-        ctx.healthContext.redisHealthy = false;
-        incrementError(ctx.healthContext, "redis_error");
-        logger.warn(
-          {
-            costDeltaUsd,
-            error: serializeError(error),
-          },
-          "Failed to settle reserved budget to final brief cost"
-        );
-      }
-    }
-
-    await publisher.publishResult(request.requestId, successResult.payload);
-
-    incrementGeneration(ctx.healthContext, "success");
-    incrementLlmCostUsd(ctx.healthContext, successResult.metrics.costUsd);
-    incrementLlmTokens(ctx.healthContext, "input", successResult.metrics.inputTokens);
-    incrementLlmTokens(ctx.healthContext, "output", successResult.metrics.outputTokens);
-    observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
-    observeCitationsCount(ctx.healthContext, successResult.metrics.citationsCount);
-
-    setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
-    logger.info(
-      {
-        topicCount: successResult.metrics.highlightsCount,
-        citationsCount: successResult.metrics.citationsCount,
-        costUsd: successResult.metrics.costUsd,
-      },
-      "Summary request processed"
-    );
-  } catch (error) {
-    if (budgetReserved && !persistedCreated) {
-      try {
+    let persistedCreated = false;
+    try {
+      const successResult = await buildSuccessResult(
+        ctx,
+        requestForGeneration,
+        producedAt,
+        estimatedCostUsd
+      );
+      const persisted = await resultStore.persist(successResult.payload, BriefStatus.success);
+      if (persisted === "duplicate") {
         await rollbackBudgetReservation(
           ctx,
           budgetLedger,
@@ -1461,67 +1631,118 @@ export async function processSummaryRequest(
           dailyBudgetUsd
         );
         budgetReserved = false;
-      } catch (rollbackError) {
-        ctx.healthContext.redisHealthy = false;
-        incrementError(ctx.healthContext, "redis_error");
-        logger.error(
-          { error: serializeError(rollbackError) },
-          "Failed to roll back reserved brief budget"
+        incrementDuplicatesSkipped(ctx.healthContext);
+        incrementGeneration(ctx.healthContext, "skipped");
+        const republishedStatus = await republishPersistedResult(
+          resultStore,
+          request.requestId,
+          publisher
         );
-        throw rollbackError;
+        if (!republishedStatus) {
+          throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
+        }
+        logger.info({ status: republishedStatus }, "Detected duplicate during persist and republished stored result");
+        return;
       }
-    }
+      persistedCreated = true;
 
-    if (error instanceof NonRetryableProcessingError) {
-      await handleNonRetryableFailure({
+      const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
+      if (costDeltaUsd !== 0) {
+        try {
+          spentBudgetUsd = await budgetLedger.settle({
+            dateKey,
+            deltaUsd: costDeltaUsd,
+          });
+          reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
+          ctx.healthContext.redisHealthy = true;
+        } catch (error) {
+          ctx.healthContext.redisHealthy = false;
+          incrementError(ctx.healthContext, "redis_error");
+          logger.warn(
+            {
+              costDeltaUsd,
+              error: serializeError(error),
+            },
+            "Failed to settle reserved budget to final brief cost"
+          );
+        }
+      }
+
+      await publisher.publishResult(request.requestId, successResult.payload);
+
+      incrementGeneration(ctx.healthContext, "success");
+      incrementLlmCostUsd(ctx.healthContext, successResult.metrics.costUsd);
+      incrementLlmTokens(ctx.healthContext, "input", successResult.metrics.inputTokens);
+      incrementLlmTokens(ctx.healthContext, "output", successResult.metrics.outputTokens);
+      observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
+      observeCitationsCount(ctx.healthContext, successResult.metrics.citationsCount);
+
+      setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+      logger.info(
+        {
+          topicCount: successResult.metrics.highlightsCount,
+          citationsCount: successResult.metrics.citationsCount,
+          costUsd: successResult.metrics.costUsd,
+        },
+        "Summary request processed"
+      );
+    } catch (error) {
+      if (budgetReserved && !persistedCreated) {
+        try {
+          await rollbackBudgetReservation(
+            ctx,
+            budgetLedger,
+            logger,
+            dateKey,
+            reservedCostUsd,
+            dailyBudgetUsd
+          );
+          budgetReserved = false;
+        } catch (rollbackError) {
+          ctx.healthContext.redisHealthy = false;
+          incrementError(ctx.healthContext, "redis_error");
+          logger.error(
+            { error: serializeError(rollbackError) },
+            "Failed to roll back reserved brief budget"
+          );
+          throw rollbackError;
+        }
+      }
+
+      const failureOutcome = await handleSummaryRequestFailure(error, {
         ctx,
         resultStore,
         publisher,
         requestId: request.requestId,
         producedAt,
-        error,
         logger,
-        logMessage: "Brief request failed non-retryable validation",
+        persistedCreated,
       });
-      return;
-    }
+      if (failureOutcome === "handled") {
+        return;
+      }
 
-    if (persistedCreated) {
-      incrementError(ctx.healthContext, "publish_error");
-      logger.error(
-        { error: serializeError(error) },
-        "Persisted brief result but failed to publish; will retry from Kafka"
-      );
       throw error;
     }
-
-    if (error instanceof LlmGenerationError) {
-      const failureCode = classifyRetryableFailureCode(error);
-      incrementError(ctx.healthContext, failureCode);
-      incrementGeneration(ctx.healthContext, "failure");
-      logger.error(
-        { error: serializeError(error), failureCode },
-        "Failed to process summary request due to retryable LLM error"
-      );
-      await emitFailureResult(
-        ctx,
-        resultStore,
-        publisher,
-        request.requestId,
-        producedAt,
-        failureCode,
-        error.message,
-        true
-      );
-      return;
-    }
-
-    incrementError(
-      ctx.healthContext,
-      "generation_error"
-    );
-    incrementGeneration(ctx.healthContext, "failure");
-    logger.error({ error: serializeError(error) }, "Failed to process summary request");
-    throw error;
   }
+}
+
+export function createSummaryRequestProcessor(
+  overrides: SummaryRequestProcessorDependencyOverrides = {}
+): SummaryRequestProcessor {
+  const dependencies = buildFunctionDependencies(
+    "Summary request processor dependency",
+    DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES,
+    overrides
+  );
+  return new DefaultSummaryRequestProcessor(dependencies);
+}
+
+const DEFAULT_SUMMARY_REQUEST_PROCESSOR = createSummaryRequestProcessor();
+
+export async function processSummaryRequest(
+  ctx: ProcessContext,
+  request: ParsedSummaryRequest
+): Promise<void> {
+  await DEFAULT_SUMMARY_REQUEST_PROCESSOR.processSummaryRequest(ctx, request);
 }

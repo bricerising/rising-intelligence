@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
+  createConventionalLazyCommandDefinition,
   createDefaultCommandRegistry,
   createLazyCommandDefinition,
+  toConventionalLazyCommandExportName,
+  toConventionalLazyCommandModulePath,
 } from "../src/command-registry.js";
 
 describe("CommandRegistry", () => {
@@ -82,6 +85,66 @@ describe("CommandRegistry", () => {
     ).toThrow(/duplicate cli command alias/i);
   });
 
+  it("normalizes command group/command aliases and lookup tokens", () => {
+    const run = vi.fn(async () => {});
+    const registry = new CommandRegistry([
+      {
+        group: " kafka ",
+        command: " topics ",
+        aliases: ["  kafka:list  "],
+        summary: "List Kafka topics",
+        run,
+      },
+    ]);
+
+    const canonical = registry.resolve("kafka", "topics");
+    const twoTokenSpaced = registry.resolveInput([" kafka ", " topics "]);
+    const alias = registry.resolve("kafka", "list");
+    const aliasSpaced = registry.resolveInput(["  kafka:list  "]);
+
+    expect(canonical).not.toBeNull();
+    expect(twoTokenSpaced).toBe(canonical);
+    expect(alias).toBe(canonical);
+    expect(aliasSpaced).toBe(canonical);
+    expect(canonical?.aliases).toEqual(["kafka:topics", "kafka:list"]);
+  });
+
+  it("throws when group, command, or aliases are empty after trimming", () => {
+    expect(() =>
+      new CommandRegistry([
+        {
+          group: " ",
+          command: "topics",
+          summary: "List Kafka topics",
+          run: async () => {},
+        },
+      ])
+    ).toThrow(/command group cannot be empty/i);
+
+    expect(() =>
+      new CommandRegistry([
+        {
+          group: "kafka",
+          command: " ",
+          summary: "List Kafka topics",
+          run: async () => {},
+        },
+      ])
+    ).toThrow(/command command cannot be empty/i);
+
+    expect(() =>
+      new CommandRegistry([
+        {
+          group: "kafka",
+          command: "topics",
+          aliases: ["  "],
+          summary: "List Kafka topics",
+          run: async () => {},
+        },
+      ])
+    ).toThrow(/command alias cannot be empty/i);
+  });
+
   it("creates lazy command definitions that resolve and invoke module handlers", async () => {
     const run = vi.fn(async () => {});
     const command = createLazyCommandDefinition({
@@ -110,6 +173,47 @@ describe("CommandRegistry", () => {
     await expect(command.run({})).rejects.toThrow(
       /invalid command module for topics:list/i
     );
+  });
+
+  it("normalizes lazy command identifiers before executing handlers", async () => {
+    const command = createLazyCommandDefinition({
+      group: " topics ",
+      command: " list ",
+      summary: "List topics",
+      loadModule: async () => ({ notAFunction: "nope" }),
+      exportName: "topicsList",
+    });
+
+    await expect(command.run({})).rejects.toThrow(
+      /invalid command module for topics:list/i
+    );
+  });
+
+  it("derives conventional lazy command module path and export names", () => {
+    expect(
+      toConventionalLazyCommandModulePath(" schema-registry ", " publish-protos ")
+    ).toBe("./commands/schema-registry/publish-protos.js");
+    expect(
+      toConventionalLazyCommandExportName(" schema-registry ", " publish-protos ")
+    ).toBe("schemaRegistryPublishProtos");
+    expect(toConventionalLazyCommandExportName("e2e", "brief-run")).toBe("e2eBriefRun");
+  });
+
+  it("allows conventional lazy command definitions to override module conventions", async () => {
+    const command = createConventionalLazyCommandDefinition({
+      group: "custom",
+      command: "run",
+      summary: "Custom command",
+      exportName: "customRun",
+      modulePath:
+        "data:text/javascript,export const customRun = async (flags) => { globalThis.__riCustomRunFlags = flags; }",
+    });
+
+    await command.run({ dryRun: true });
+    expect((globalThis as Record<string, unknown>).__riCustomRunFlags).toEqual({
+      dryRun: true,
+    });
+    delete (globalThis as Record<string, unknown>).__riCustomRunFlags;
   });
 
   it("registers topics retag in the default command registry", () => {

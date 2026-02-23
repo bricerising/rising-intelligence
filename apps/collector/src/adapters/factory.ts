@@ -3,15 +3,22 @@ import {
   buildFunctionDependencies,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
-import type { Config } from "../config.js";
 import type { CheckpointStore } from "../checkpoint.js";
+import type { Config } from "../config.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
-import type { SourceAdapter } from "../types.js";
 import type { MarketFilterProfile } from "../market-filters.js";
-import { createHackerNewsAdapter } from "./hackernews.js";
-import { createLobstersAdapter } from "./lobsters.js";
+import type { SourceAdapter } from "../types.js";
+import {
+  createHackerNewsAdapter,
+  type CreateHackerNewsAdapterInput,
+} from "./hackernews.js";
+import {
+  createLobstersAdapter,
+  type CreateLobstersAdapterInput,
+} from "./lobsters.js";
 import {
   createRSSAdapter,
+  type CreateRSSAdapterInput,
   type RSSFeedErrorReport,
 } from "./rss.js";
 
@@ -61,8 +68,6 @@ export interface CollectorAdapterBuildResult {
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
 }
 
-interface AdapterFactoryContext extends BuildCollectorAdaptersInput {}
-
 type AdapterEnabledPredicate = (config: CollectorAdapterFactoryConfig) => boolean;
 
 interface AdapterConstructors {
@@ -88,10 +93,7 @@ interface AdapterDefinition<Name extends AdapterName> {
 interface ImplementedAdapterDefinition
   extends AdapterDefinition<ImplementedAdapterName> {
   readonly kind: "implemented";
-  create(
-    ctx: AdapterFactoryContext,
-    constructors: AdapterConstructors
-  ): SourceAdapter;
+  create(input: BuildCollectorAdaptersInput, constructors: AdapterConstructors): SourceAdapter;
 }
 
 interface UnsupportedAdapterDefinition
@@ -102,6 +104,49 @@ interface UnsupportedAdapterDefinition
 type AdapterDefinitionItem =
   | ImplementedAdapterDefinition
   | UnsupportedAdapterDefinition;
+
+type BuildImplementedAdapter = ImplementedAdapterDefinition["create"];
+
+class CollectorAdapterDefinitionBuilder {
+  private readonly definitions: AdapterDefinitionItem[] = [];
+  private readonly registeredNames = new Set<AdapterName>();
+
+  implemented(
+    name: ImplementedAdapterName,
+    isEnabled: AdapterEnabledPredicate,
+    create: BuildImplementedAdapter
+  ): this {
+    this.registerName(name);
+    this.definitions.push({
+      kind: "implemented",
+      name,
+      isEnabled,
+      create,
+    });
+    return this;
+  }
+
+  unsupported(name: UnsupportedAdapterName, isEnabled: AdapterEnabledPredicate): this {
+    this.registerName(name);
+    this.definitions.push({
+      kind: "unsupported",
+      name,
+      isEnabled,
+    });
+    return this;
+  }
+
+  build(): ReadonlyArray<AdapterDefinitionItem> {
+    return [...this.definitions];
+  }
+
+  private registerName(name: AdapterName): void {
+    if (this.registeredNames.has(name)) {
+      throw new Error(`Collector adapter definition "${name}" is already registered`);
+    }
+    this.registeredNames.add(name);
+  }
+}
 
 function parseCsvValues(value: string): string[] {
   const values = new Set<string>();
@@ -114,103 +159,99 @@ function parseCsvValues(value: string): string[] {
   return [...values];
 }
 
-function createImplementedAdapterDefinition(
-  name: ImplementedAdapterName,
-  isEnabled: AdapterEnabledPredicate,
-  create: ImplementedAdapterDefinition["create"]
-): ImplementedAdapterDefinition {
-  return {
-    kind: "implemented",
-    name,
-    isEnabled,
-    create,
-  };
-}
-
-function createUnsupportedAdapterDefinition(
-  name: UnsupportedAdapterName,
-  isEnabled: AdapterEnabledPredicate
-): UnsupportedAdapterDefinition {
-  return {
-    kind: "unsupported",
-    name,
-    isEnabled,
-  };
-}
-
 function createAdapterLogger(logger: Logger, adapter: AdapterName): Logger {
   return logger.child({ adapter });
 }
 
-function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
-  return [
-    createImplementedAdapterDefinition(
-      "rss",
-      (config) => config.RSS_ENABLED,
-      (
-        {
-          config,
-          checkpointStore,
-          logger,
-          contentFetcherConfig,
-          marketFilterProfiles,
-          onRssFeedError,
-        },
-        constructors
-      ) => {
-        const adapterInput = {
-          feedsConfigPath: config.FEEDS_CONFIG_PATH,
-          pollIntervalMs: config.RSS_POLL_INTERVAL_SECONDS * 1000,
-          checkpoints: checkpointStore,
-          logger: createAdapterLogger(logger, "rss"),
-          contentFetcherConfig,
-          marketFilterProfiles,
-          edgarFormsAllowlist: parseCsvValues(config.EDGAR_FORMS_ALLOWLIST),
-          edgarFetchDetailMetadata: config.EDGAR_FETCH_DETAIL_METADATA,
-          edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,
-          edgarPollIntervalSeconds: config.EDGAR_POLL_INTERVAL_SECONDS,
-          edgarPollJitterRatio: config.EDGAR_POLL_JITTER_RATIO,
-          secUserAgent: config.SEC_USER_AGENT,
-        };
+function createRssAdapterInput(input: BuildCollectorAdaptersInput): CreateRSSAdapterInput {
+  const {
+    config,
+    checkpointStore,
+    logger,
+    contentFetcherConfig,
+    marketFilterProfiles,
+  } = input;
 
-        return constructors.createRSSAdapter(
-          onRssFeedError
-            ? { ...adapterInput, onFeedError: onRssFeedError }
-            : adapterInput
-        );
-      }
-    ),
-    createImplementedAdapterDefinition(
-      "hackernews",
-      (config) => config.HN_ENABLED,
-      ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createHackerNewsAdapter({
-          mode: config.HN_MODE,
-          pollIntervalMs: config.HN_POLL_INTERVAL_SECONDS * 1000,
-          maxItems: config.HN_MAX_ITEMS_PER_POLL,
-          checkpoints: checkpointStore,
-          logger: createAdapterLogger(logger, "hackernews"),
-          contentFetcherConfig,
-        })
-    ),
-    createImplementedAdapterDefinition(
-      "lobsters",
-      (config) => config.LOBSTERS_ENABLED,
-      ({ config, checkpointStore, logger, contentFetcherConfig }, constructors) =>
-        constructors.createLobstersAdapter({
-          pollIntervalMs: config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
-          maxItems: config.LOBSTERS_MAX_ITEMS_PER_POLL,
-          checkpoints: checkpointStore,
-          logger: createAdapterLogger(logger, "lobsters"),
-          contentFetcherConfig,
-        })
-    ),
-    createUnsupportedAdapterDefinition("reddit", (config) => config.REDDIT_ENABLED),
-    createUnsupportedAdapterDefinition("bluesky", (config) => config.BLUESKY_ENABLED),
-    createUnsupportedAdapterDefinition("mastodon", (config) => config.MASTODON_ENABLED),
-    createUnsupportedAdapterDefinition("github", (config) => config.GITHUB_ENABLED),
-  ];
+  return {
+    feedsConfigPath: config.FEEDS_CONFIG_PATH,
+    pollIntervalMs: config.RSS_POLL_INTERVAL_SECONDS * 1000,
+    checkpoints: checkpointStore,
+    logger: createAdapterLogger(logger, "rss"),
+    contentFetcherConfig,
+    marketFilterProfiles,
+    edgarFormsAllowlist: parseCsvValues(config.EDGAR_FORMS_ALLOWLIST),
+    edgarFetchDetailMetadata: config.EDGAR_FETCH_DETAIL_METADATA,
+    edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,
+    edgarPollIntervalSeconds: config.EDGAR_POLL_INTERVAL_SECONDS,
+    edgarPollJitterRatio: config.EDGAR_POLL_JITTER_RATIO,
+    secUserAgent: config.SEC_USER_AGENT,
+  };
 }
+
+function withOptionalRssFeedError(
+  input: CreateRSSAdapterInput,
+  onRssFeedError?: (report: RSSFeedErrorReport) => void
+): CreateRSSAdapterInput {
+  if (!onRssFeedError) {
+    return input;
+  }
+
+  return {
+    ...input,
+    onFeedError: onRssFeedError,
+  };
+}
+
+function createHackerNewsAdapterInput(
+  input: BuildCollectorAdaptersInput
+): CreateHackerNewsAdapterInput {
+  const { config, checkpointStore, logger, contentFetcherConfig } = input;
+
+  return {
+    mode: config.HN_MODE,
+    pollIntervalMs: config.HN_POLL_INTERVAL_SECONDS * 1000,
+    maxItems: config.HN_MAX_ITEMS_PER_POLL,
+    checkpoints: checkpointStore,
+    logger: createAdapterLogger(logger, "hackernews"),
+    contentFetcherConfig,
+  };
+}
+
+function createLobstersAdapterInput(
+  input: BuildCollectorAdaptersInput
+): CreateLobstersAdapterInput {
+  const { config, checkpointStore, logger, contentFetcherConfig } = input;
+
+  return {
+    pollIntervalMs: config.LOBSTERS_POLL_INTERVAL_SECONDS * 1000,
+    maxItems: config.LOBSTERS_MAX_ITEMS_PER_POLL,
+    checkpoints: checkpointStore,
+    logger: createAdapterLogger(logger, "lobsters"),
+    contentFetcherConfig,
+  };
+}
+
+function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
+  return new CollectorAdapterDefinitionBuilder()
+    .implemented("rss", (config) => config.RSS_ENABLED, (input, constructors) =>
+      constructors.createRSSAdapter(
+        withOptionalRssFeedError(createRssAdapterInput(input), input.onRssFeedError)
+      )
+    )
+    .implemented("hackernews", (config) => config.HN_ENABLED, (input, constructors) =>
+      constructors.createHackerNewsAdapter(createHackerNewsAdapterInput(input))
+    )
+    .implemented("lobsters", (config) => config.LOBSTERS_ENABLED, (input, constructors) =>
+      constructors.createLobstersAdapter(createLobstersAdapterInput(input))
+    )
+    .unsupported("reddit", (config) => config.REDDIT_ENABLED)
+    .unsupported("bluesky", (config) => config.BLUESKY_ENABLED)
+    .unsupported("mastodon", (config) => config.MASTODON_ENABLED)
+    .unsupported("github", (config) => config.GITHUB_ENABLED)
+    .build();
+}
+
+const DEFAULT_ADAPTER_DEFINITIONS = createAdapterDefinitions();
 
 export class CollectorAdapterFactory {
   private readonly constructors: AdapterConstructors;
@@ -222,7 +263,7 @@ export class CollectorAdapterFactory {
       DEFAULT_ADAPTER_CONSTRUCTORS,
       constructors
     );
-    this.definitions = createAdapterDefinitions();
+    this.definitions = DEFAULT_ADAPTER_DEFINITIONS;
   }
 
   build(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult {

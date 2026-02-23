@@ -5,6 +5,10 @@ import { getEnvString } from "@rising-intelligence/shared";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
 import { parsePositiveIntegerStrict } from "../../lib/number.js";
+import {
+  setupRequestResultWaiter,
+  type RequestResultWaiter,
+} from "./result-waiter.js";
 
 const execFile = promisify(execFileCallback);
 const DEFAULT_BRIEF_HEALTH_URL = "http://localhost:3005/health";
@@ -77,11 +81,6 @@ interface BriefResultPayload {
     error_message: string;
     retryable: boolean;
   };
-}
-
-interface ResultWaiter {
-  consumer: ReturnType<Kafka["consumer"]>;
-  waitForResult: () => Promise<BriefResultPayload>;
 }
 
 function parseTopicGlobs(rawValue: string): string[] {
@@ -175,48 +174,6 @@ async function checkBriefHealth(url: string): Promise<DiagnoseOutput["checks"]["
       error: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-async function setupResultWaiter(
-  kafka: Kafka,
-  topic: string,
-  requestId: string,
-  timeoutSeconds: number
-): Promise<ResultWaiter> {
-  const consumer = kafka.consumer({
-    groupId: `riops-brief-diagnose-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  });
-  await consumer.connect();
-  await consumer.subscribe({ topic, fromBeginning: true });
-
-  const waitForResult = async () =>
-    new Promise<BriefResultPayload>((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        reject(new Error(`Timed out waiting for summary result after ${timeoutSeconds}s`));
-      }, timeoutSeconds * 1000);
-
-      void consumer.run({
-        eachMessage: async ({ message }) => {
-          if (!message.value) {
-            return;
-          }
-          let parsed: BriefResultPayload | null = null;
-          try {
-            parsed = JSON.parse(message.value.toString("utf-8")) as BriefResultPayload;
-          } catch {
-            parsed = null;
-          }
-          if (parsed?.request_id !== requestId) {
-            return;
-          }
-          clearTimeout(timeoutHandle);
-          resolve(parsed);
-          void consumer.stop();
-        },
-      });
-    });
-
-  return { consumer, waitForResult };
 }
 
 async function computeLag(
@@ -336,7 +293,7 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
     brokers: config.kafkaBrokers,
   });
   const admin = kafka.admin();
-  let waiter: ResultWaiter | null = null;
+  let waiter: RequestResultWaiter<BriefResultPayload> | null = null;
 
   try {
     await admin.connect();
@@ -355,12 +312,19 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
 
     diagnosis.checks.lag.push(await computeLag(admin, "brief-generator", config.summaryRequestsTopic));
 
-    waiter = await setupResultWaiter(
+    waiter = await setupRequestResultWaiter<BriefResultPayload>({
       kafka,
-      config.summaryResultsTopic,
-      config.requestId,
-      config.timeoutSeconds
-    );
+      groupId: `riops-brief-diagnose-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      topic: config.summaryResultsTopic,
+      requestId: config.requestId,
+      timeoutSeconds: config.timeoutSeconds,
+      timeoutErrorMessage:
+        `Timed out waiting for summary result after ${config.timeoutSeconds}s`,
+      parseResult(rawValue): BriefResultPayload | null {
+        return JSON.parse(rawValue) as BriefResultPayload;
+      },
+      fromBeginning: true,
+    });
 
     if (!config.skipTrigger) {
       await publishDiagnosticRequest(kafka, config, payload);
@@ -390,7 +354,7 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
   } finally {
     if (waiter) {
       try {
-        await waiter.consumer.disconnect();
+        await waiter.disconnect();
       } catch {
         // Ignore consumer cleanup failures while reporting diagnosis output.
       }

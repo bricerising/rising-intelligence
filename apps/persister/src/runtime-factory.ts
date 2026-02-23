@@ -6,7 +6,8 @@ import {
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createInitializationResourceBuilder,
+  createStartupFacade,
+  createStartupResourceConnector,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type { Redis } from "ioredis";
@@ -77,45 +78,46 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
   ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<PersisterContext> {
-    const resourceBuilder = createInitializationResourceBuilder();
+    const startup = createStartupFacade(logger);
+    const resources = createStartupResourceConnector(startup);
 
-    try {
+    return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resourceBuilder.create({
+      const healthServer = await resources.connect({
         name: "health-server",
-        create: () => this.dependencies.startHealthServer(healthContext, logger),
-        rollback: async (server) => this.dependencies.closeHealthServer(server),
-        rollbackErrorMessage: "Health server close failed during initialization rollback",
+        connect: () => this.dependencies.startHealthServer(healthContext, logger),
+        disconnect: (server) => this.dependencies.closeHealthServer(server),
+        rollbackAction: "close",
       });
 
-      const prisma = await resourceBuilder.create({
+      const prisma = await resources.connect({
         name: "postgres",
-        create: async () => this.dependencies.createPrismaClient(config),
-        rollback: async (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
-        rollbackErrorMessage: "Postgres disconnect failed during initialization rollback",
+        connect: () => this.dependencies.createPrismaClient(config),
+        disconnect: (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
+        rollbackAction: "disconnect",
       });
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resourceBuilder.create({
+      const redis = await resources.connect({
         name: "redis",
-        create: async () =>
+        connect: () =>
           this.dependencies.createRedisClient(
             config,
             logger.child({ component: "redis" })
           ),
-        rollback: async (redisClient) => this.dependencies.disconnectRedis(redisClient),
-        rollbackErrorMessage: "Redis disconnect failed during initialization rollback",
+        disconnect: (redisClient) => this.dependencies.disconnectRedis(redisClient),
+        rollbackAction: "disconnect",
       });
       healthContext.redisHealthy = true;
 
-      const kafkaContext = await resourceBuilder.create({
+      const kafkaContext = await resources.connect({
         name: "kafka-consumer",
-        create: async () =>
+        connect: () =>
           this.dependencies.createKafkaConsumer(logger.child({ component: "kafka" })),
-        rollback: async (consumerContext) =>
+        disconnect: (consumerContext) =>
           this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
-        rollbackErrorMessage: "Kafka disconnect failed during initialization rollback",
+        rollbackAction: "disconnect",
       });
       await kafkaContext.consumer.subscribe({
         topic: config.KAFKA_TOPIC_RAW_EVENTS,
@@ -135,10 +137,7 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
         circuitBreaker: this.dependencies.createCircuitBreaker(config),
         lagWriteTimestamps: new Map(),
       };
-    } catch (error) {
-      await resourceBuilder.rollback(logger);
-      throw error;
-    }
+    });
   }
 }
 

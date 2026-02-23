@@ -315,7 +315,7 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
         topic: parsedTopic,
         metrics: (topic.metrics ?? []).map((metric) => ({
           topic: metric.topic?.trim() || parsedTopic,
-          window: metric.window ? parseTrendWindow(metric.window) : 0,
+          window: metric.window !== undefined ? parseTrendWindow(metric.window) : 0,
           score: metric.score ?? 0,
           volume: metric.volume ?? 0,
           acceleration: metric.acceleration ?? 0,
