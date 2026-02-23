@@ -42,15 +42,39 @@ function createConfig(overrides: Partial<Config> = {}): Config {
 }
 
 function createLogger() {
-  const logger = {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn(),
-  } as any;
+  const createMockLogger = () =>
+    ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    }) as any;
 
-  logger.child.mockReturnValue(logger);
-  return logger;
+  const logger = createMockLogger();
+  const childLoggers = new Map<string, any>();
+
+  logger.child.mockImplementation((bindings: { component?: unknown }) => {
+    const component = String(bindings.component);
+    const existing = childLoggers.get(component);
+    if (existing) {
+      return existing;
+    }
+
+    const childLogger = createMockLogger();
+    childLogger.child.mockReturnValue(childLogger);
+    childLoggers.set(component, childLogger);
+    return childLogger;
+  });
+
+  return Object.assign(logger, {
+    childFor(component: string) {
+      const childLogger = childLoggers.get(component);
+      if (!childLogger) {
+        throw new Error(`Expected logger child for component "${component}"`);
+      }
+      return childLogger;
+    },
+  });
 }
 
 function createDependencies(
@@ -108,14 +132,14 @@ describe("createBriefRuntimeFactory", () => {
 
   it("uses default dependencies when an override is explicitly undefined", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const setup = createDependencies();
     const factory = createBriefRuntimeFactory({
       ...setup.dependencies,
       createHealthContext: undefined,
     });
 
-    const ctx = await factory.createRuntime(config, logger);
+    const ctx = await factory.createRuntime(config, loggerHarness);
 
     expect(ctx.healthContext).not.toBe(setup.healthContext);
     expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
@@ -123,7 +147,7 @@ describe("createBriefRuntimeFactory", () => {
 
   it("creates a runtime context with healthy dependencies and topic subscriptions", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const {
       dependencies,
       healthContext,
@@ -136,10 +160,10 @@ describe("createBriefRuntimeFactory", () => {
     } = createDependencies();
     const factory = createBriefRuntimeFactory(dependencies);
 
-    const ctx = await factory.createRuntime(config, logger);
+    const ctx = await factory.createRuntime(config, loggerHarness);
 
     expect(ctx.config).toBe(config);
-    expect(ctx.logger).toBe(logger);
+    expect(ctx.logger).toBe(loggerHarness);
     expect(ctx.healthContext).toBe(healthContext);
     expect(ctx.healthServer).toBe(healthServer);
     expect(ctx.prisma).toBe(prisma);
@@ -148,18 +172,26 @@ describe("createBriefRuntimeFactory", () => {
     expect(ctx.kafkaProducerContext).toBe(kafkaProducerContext);
 
     expect(dependencies.createHealthContext).toHaveBeenCalledWith(config.LLM_DAILY_BUDGET_USD);
-    expect(dependencies.startHealthServer).toHaveBeenCalledWith(healthContext, logger);
+    expect(dependencies.startHealthServer).toHaveBeenCalledWith(healthContext, loggerHarness);
     expect(dependencies.setBudgetRemainingUsd).toHaveBeenCalledWith(
       healthContext,
       config.LLM_DAILY_BUDGET_USD
     );
     expect(dependencies.createPrismaClient).toHaveBeenCalledWith(config);
-    expect(dependencies.createRedisClient).toHaveBeenCalledWith(config, logger);
-    expect(dependencies.createKafkaConsumer).toHaveBeenCalledWith(logger);
-    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(logger);
+    expect(dependencies.createRedisClient).toHaveBeenCalledWith(
+      config,
+      loggerHarness.childFor("redis")
+    );
+    expect(dependencies.createKafkaConsumer).toHaveBeenCalledWith(
+      loggerHarness.childFor("kafka-consumer")
+    );
+    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(
+      loggerHarness.childFor("kafka-producer")
+    );
 
-    expect(logger.child).toHaveBeenCalledWith({ component: "redis" });
-    expect(logger.child).toHaveBeenCalledWith({ component: "kafka-producer" });
+    expect(loggerHarness.child).toHaveBeenCalledWith({ component: "redis" });
+    expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-consumer" });
+    expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-producer" });
 
     expect(kafkaConsumer.subscribe).toHaveBeenCalledWith({
       topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
@@ -173,7 +205,7 @@ describe("createBriefRuntimeFactory", () => {
 
   it("rolls back already-created resources in reverse order when initialization fails", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const cleanupOrder: string[] = [];
     const setup = createDependencies({
       createKafkaProducer: vi.fn(async () => {
@@ -194,7 +226,7 @@ describe("createBriefRuntimeFactory", () => {
     });
     const factory = createBriefRuntimeFactory(setup.dependencies);
 
-    await expect(factory.createRuntime(config, logger)).rejects.toThrow("producer failed");
+    await expect(factory.createRuntime(config, loggerHarness)).rejects.toThrow("producer failed");
 
     expect(cleanupOrder).toEqual([
       "kafka-consumer",

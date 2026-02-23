@@ -175,6 +175,9 @@ async function fetchHtml(
  * Extract article content from HTML using Readability
  */
 function extractContent(html: string, url: string): ArticleContent {
+  // Ensure JSDOM resources are released after each parse to avoid long-lived heap growth.
+  let dom: JSDOM | null = null;
+
   try {
     // Create a virtual console that suppresses CSS parsing warnings
     const virtualConsole = new VirtualConsole();
@@ -182,7 +185,7 @@ function extractContent(html: string, url: string): ArticleContent {
       // Suppress errors (mostly CSS parsing warnings from parse5)
     });
 
-    const dom = new JSDOM(html, { url, virtualConsole });
+    dom = new JSDOM(html, { url, virtualConsole });
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
 
@@ -208,6 +211,8 @@ function extractContent(html: string, url: string): ArticleContent {
       htmlLength: html.length,
       success: false,
     };
+  } finally {
+    dom?.window.close();
   }
 }
 
@@ -274,25 +279,28 @@ class ReadabilityArticleContentFetcher implements ArticleContentFetcher {
   }
 }
 
-interface FetchGuardDecision {
-  allowed: boolean;
-  blockedMessage: string;
+type FetchGuardDecision =
+  | { allowed: true }
+  | { allowed: false; blockedMessage: string };
+
+interface FetchGuard {
+  evaluate(url: string): FetchGuardDecision;
 }
 
-type FetchGuard = (url: string) => FetchGuardDecision;
-
-class GuardedArticleContentFetcherProxy implements ArticleContentFetcher {
+class GuardChainArticleContentFetcherProxy implements ArticleContentFetcher {
   constructor(
     private readonly delegate: ArticleContentFetcher,
     private readonly logger: Logger,
-    private readonly guard: FetchGuard
+    private readonly guards: readonly FetchGuard[]
   ) {}
 
   async fetch(url: string): Promise<ArticleContent | null> {
-    const decision = this.guard(url);
-    if (!decision.allowed) {
-      this.logger.debug({ url }, decision.blockedMessage);
-      return null;
+    for (const guard of this.guards) {
+      const decision = guard.evaluate(url);
+      if (!decision.allowed) {
+        this.logger.debug({ url }, decision.blockedMessage);
+        return null;
+      }
     }
 
     return this.delegate.fetch(url);
@@ -311,10 +319,6 @@ class DomainRateLimitedArticleContentFetcherProxy implements ArticleContentFetch
   }
 }
 
-type ArticleContentFetcherDecorator = (
-  delegate: ArticleContentFetcher
-) => ArticleContentFetcher;
-
 export interface CreateArticleContentFetcherDependencies {
   safetyFacade?: UrlSafetyFacade;
   fetchHtml?: (
@@ -332,14 +336,92 @@ function createDefaultDomainRequestLimiter(domainDelayMs: number): DomainRequest
   return new InMemoryDomainRequestLimiter(domainDelayMs);
 }
 
-function composeArticleContentFetcher(
-  baseFetcher: ArticleContentFetcher,
-  decorators: readonly ArticleContentFetcherDecorator[]
-): ArticleContentFetcher {
-  return decorators.reduce(
-    (delegate, decorate) => decorate(delegate),
-    baseFetcher
-  );
+interface ResolvedCreateArticleContentFetcherDependencies {
+  safetyFacade: UrlSafetyFacade;
+  fetchHtml: (url: string, timeoutMs: number, userAgent: string) => Promise<string>;
+  extractContent: (html: string, url: string) => ArticleContent;
+  createDomainRequestLimiter: (domainDelayMs: number) => DomainRequestLimiter;
+}
+
+function resolveCreateArticleContentFetcherDependencies(
+  dependencies: CreateArticleContentFetcherDependencies
+): ResolvedCreateArticleContentFetcherDependencies {
+  return {
+    safetyFacade: dependencies.safetyFacade ?? DEFAULT_URL_SAFETY_FACADE,
+    fetchHtml: dependencies.fetchHtml ?? fetchHtml,
+    extractContent: dependencies.extractContent ?? extractContent,
+    createDomainRequestLimiter:
+      dependencies.createDomainRequestLimiter ?? createDefaultDomainRequestLimiter,
+  };
+}
+
+class ArticleContentFetcherBuilder {
+  private readonly guards: FetchGuard[] = [];
+  private domainRequestLimiter: DomainRequestLimiter | null = null;
+
+  constructor(
+    private readonly baseFetcher: ArticleContentFetcher,
+    private readonly logger: Logger
+  ) {}
+
+  withGuard(guard: FetchGuard): this {
+    this.guards.push(guard);
+    return this;
+  }
+
+  withDomainRateLimiter(domainRequestLimiter: DomainRequestLimiter): this {
+    this.domainRequestLimiter = domainRequestLimiter;
+    return this;
+  }
+
+  build(): ArticleContentFetcher {
+    let fetcher: ArticleContentFetcher = this.baseFetcher;
+
+    if (this.domainRequestLimiter) {
+      fetcher = new DomainRateLimitedArticleContentFetcherProxy(
+        fetcher,
+        this.domainRequestLimiter
+      );
+    }
+
+    if (this.guards.length > 0) {
+      fetcher = new GuardChainArticleContentFetcherProxy(
+        fetcher,
+        this.logger,
+        [...this.guards]
+      );
+    }
+
+    return fetcher;
+  }
+}
+
+function createUrlSafetyGuard(safetyFacade: UrlSafetyFacade): FetchGuard {
+  return {
+    evaluate(url) {
+      if (safetyFacade.isAllowedFetchUrl(url)) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        blockedMessage: "Skipping disallowed fetch URL",
+      };
+    },
+  };
+}
+
+function createBlockedDomainGuard(blockedDomains: Set<string>): FetchGuard {
+  return {
+    evaluate(url) {
+      if (!isDomainBlocked(url, blockedDomains)) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        blockedMessage: "Skipping blocked domain",
+      };
+    },
+  };
 }
 
 function createReadabilityContentFetcher(
@@ -347,41 +429,20 @@ function createReadabilityContentFetcher(
   logger: Logger,
   dependencies: CreateArticleContentFetcherDependencies
 ): ArticleContentFetcher {
-  const safetyFacade = dependencies.safetyFacade ?? DEFAULT_URL_SAFETY_FACADE;
+  const resolvedDependencies = resolveCreateArticleContentFetcherDependencies(dependencies);
   const coreFetcher = new ReadabilityArticleContentFetcher(config, logger, {
-    fetchHtml: dependencies.fetchHtml ?? fetchHtml,
-    extractContent: dependencies.extractContent ?? extractContent,
+    fetchHtml: resolvedDependencies.fetchHtml,
+    extractContent: resolvedDependencies.extractContent,
   });
-  const domainRequestLimiter = (
-    dependencies.createDomainRequestLimiter ?? createDefaultDomainRequestLimiter
-  )(config.domainDelayMs);
-  const decorators: ArticleContentFetcherDecorator[] = [
-    (delegate) => new DomainRateLimitedArticleContentFetcherProxy(
-      delegate,
-      domainRequestLimiter
-    ),
-    (delegate) => new GuardedArticleContentFetcherProxy(
-      delegate,
-      logger,
-      (url) => ({
-        allowed: !isDomainBlocked(url, config.blockedDomains),
-        blockedMessage: "Skipping blocked domain",
-      })
-    ),
-    (delegate) => new GuardedArticleContentFetcherProxy(
-      delegate,
-      logger,
-      (url) => ({
-        allowed: safetyFacade.isAllowedFetchUrl(url),
-        blockedMessage: "Skipping disallowed fetch URL",
-      })
-    ),
-  ];
-
-  return composeArticleContentFetcher(
-    coreFetcher,
-    decorators
+  const domainRequestLimiter = resolvedDependencies.createDomainRequestLimiter(
+    config.domainDelayMs
   );
+
+  return new ArticleContentFetcherBuilder(coreFetcher, logger)
+    .withDomainRateLimiter(domainRequestLimiter)
+    .withGuard(createUrlSafetyGuard(resolvedDependencies.safetyFacade))
+    .withGuard(createBlockedDomainGuard(config.blockedDomains))
+    .build();
 }
 
 export function createArticleContentFetcher(

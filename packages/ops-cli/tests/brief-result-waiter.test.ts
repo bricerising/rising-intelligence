@@ -47,6 +47,69 @@ function parseTestResult(rawValue: string): TestResultPayload | null {
   return JSON.parse(rawValue) as TestResultPayload;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutHandle = setTimeout(() => {
+      reject(new Error(`Promise did not settle within ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutHandle);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutHandle);
+        reject(error);
+      }
+    );
+  });
+}
+
+class StopWithinHandlerConsumer {
+  private eachMessage: EachMessageHandler | null = null;
+  private handlingMessage = false;
+  private releaseStop: (() => void) | null = null;
+
+  readonly connect = vi.fn(async () => undefined);
+  readonly subscribe = vi.fn(async () => undefined);
+  readonly disconnect = vi.fn(async () => undefined);
+
+  readonly stop = vi.fn(async () => {
+    if (!this.handlingMessage) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.releaseStop = resolve;
+    });
+  });
+
+  readonly run = vi.fn(
+    async (input: { eachMessage(payload: { message: { value: Buffer | null } }): Promise<void> }) => {
+      this.eachMessage = input.eachMessage;
+    }
+  );
+
+  async emitRaw(rawValue: string | null): Promise<void> {
+    if (!this.eachMessage) {
+      throw new Error("Consumer has not started");
+    }
+
+    this.handlingMessage = true;
+    try {
+      await this.eachMessage({
+        message: {
+          value: rawValue === null ? null : Buffer.from(rawValue, "utf-8"),
+        },
+      });
+    } finally {
+      this.handlingMessage = false;
+      this.releaseStop?.();
+      this.releaseStop = null;
+    }
+  }
+}
+
 describe("setupRequestResultWaiter", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -127,5 +190,32 @@ describe("setupRequestResultWaiter", () => {
     });
 
     await expect(waiter.waitForResult()).rejects.toThrow("consumer run failed");
+  });
+
+  it("does not hang when stop() waits for eachMessage to return", async () => {
+    const consumer = new StopWithinHandlerConsumer();
+    const waiter = await setupRequestResultWaiter<TestResultPayload>({
+      kafka: createKafkaStub(consumer),
+      groupId: "test-group",
+      topic: "summary.results",
+      requestId: "target-request",
+      timeoutSeconds: 5,
+      timeoutErrorMessage: "timeout",
+      parseResult: parseTestResult,
+    });
+
+    const waitPromise = waiter.waitForResult();
+    const emitPromise = consumer.emitRaw(
+      JSON.stringify({ request_id: "target-request", produced_at: "now" })
+    );
+
+    await expect(waitPromise).resolves.toEqual({
+      request_id: "target-request",
+      produced_at: "now",
+    });
+    await expect(withTimeout(emitPromise, 200)).resolves.toBeUndefined();
+
+    await waiter.disconnect();
+    expect(consumer.disconnect).toHaveBeenCalledTimes(1);
   });
 });

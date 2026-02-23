@@ -2,8 +2,8 @@ import type { Server } from "node:http";
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createStartupFacade,
-  createStartupResourceConnector,
+  createComponentLoggerFactory,
+  createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type pino from "pino";
@@ -36,6 +36,7 @@ import { loadAllowlist, type CompiledAllowlist } from "./topics/extractor.js";
 import type { SourceAdapter } from "./types.js";
 
 type KafkaProducer = KafkaProducerContext["producer"];
+type RuntimeLoggerComponent = "checkpoint";
 
 export interface CollectorRuntimeFactoryDependencies {
   createHealthContext(): HealthContext;
@@ -98,33 +99,29 @@ const DEFAULT_DEPENDENCIES: CollectorRuntimeFactoryDependencies = {
 };
 
 class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
-  private readonly adapterFactory: CollectorAdapterFactory;
-
   constructor(
     private readonly dependencies: CollectorRuntimeFactoryDependencies
-  ) {
-    this.adapterFactory = dependencies.createCollectorAdapterFactory();
-  }
+  ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<CollectorRuntimeContext> {
-    const startup = createStartupFacade(logger);
-    const resources = createStartupResourceConnector(startup);
+    const { startup, resources } = createRuntimeCompositionRoot(logger);
+    const adapterFactory = this.dependencies.createCollectorAdapterFactory();
+    const componentLoggers =
+      createComponentLoggerFactory<RuntimeLoggerComponent>(logger);
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connect({
-        name: "health-server",
-        connect: () => this.dependencies.startHealthServer(healthContext, logger),
-        disconnect: (server) => this.dependencies.closeHealthServer(server),
-        rollbackAction: "close",
-      });
+      const healthServer = await resources.connectHealthServer(
+        () => this.dependencies.startHealthServer(healthContext, logger),
+        (server) => this.dependencies.closeHealthServer(server)
+      );
 
       const checkpointStore = await resources.connect({
         name: "checkpoint-store",
         connect: async () => {
           const store = this.dependencies.createCheckpointStore(
             config.CHECKPOINT_PATH,
-            logger.child({ component: "checkpoint" })
+            componentLoggers.create("checkpoint")
           );
           await this.dependencies.initializeCheckpointStore(store);
           return store;
@@ -150,12 +147,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         throw error;
       }
 
-      const kafkaContext = await resources.connect({
-        name: "kafka-producer",
-        connect: () => this.dependencies.createKafkaProducer(logger),
-        disconnect: (context) => this.dependencies.disconnectProducer(context.producer, logger),
-        rollbackAction: "disconnect",
-      });
+      const kafkaContext = await resources.connectKafkaProducer(
+        () => this.dependencies.createKafkaProducer(logger),
+        (context) => this.dependencies.disconnectProducer(context.producer, logger)
+      );
       healthContext.kafkaHealthy = true;
 
       let marketFilterProfiles: MarketFilterProfile[];
@@ -181,7 +176,7 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         "Content fetcher configuration loaded"
       );
 
-      const { adapters, unsupportedEnabledAdapters } = this.adapterFactory.build({
+      const { adapters, unsupportedEnabledAdapters } = adapterFactory.build({
         config,
         checkpointStore,
         logger,

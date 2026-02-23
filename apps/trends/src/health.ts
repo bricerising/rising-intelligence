@@ -8,7 +8,6 @@ import {
   createHistogram,
   observeHistogram,
   formatHistogram,
-  formatMetricLabels,
   getMaxConsumerLag,
   type HealthHandlers,
 } from "@rising-intelligence/shared";
@@ -19,6 +18,112 @@ const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
 const BRIEF_TRIGGER_TYPES = ["daily", "threshold"] as const;
 export type BriefTriggerType = (typeof BRIEF_TRIGGER_TYPES)[number];
 
+export interface TopicWindowMetricEntry {
+  topic: string;
+  window: TrendWindow;
+  value: number;
+}
+
+export interface TopicWindowMetrics {
+  set(topic: string, window: TrendWindow, volume: number, score: number): void;
+  clear(window: TrendWindow): void;
+  getVolume(topic: string, window: TrendWindow): number | undefined;
+  getScore(topic: string, window: TrendWindow): number | undefined;
+  volumeEntries(): Iterable<TopicWindowMetricEntry>;
+  scoreEntries(): Iterable<TopicWindowMetricEntry>;
+  volumeCount(): number;
+  scoreCount(): number;
+}
+
+type TopicWindowMetricMap = Map<TrendWindow, Map<string, number>>;
+
+function getOrCreateWindowTopicMap(
+  metrics: TopicWindowMetricMap,
+  window: TrendWindow
+): Map<string, number> {
+  const existing = metrics.get(window);
+  if (existing) {
+    return existing;
+  }
+
+  const created = new Map<string, number>();
+  metrics.set(window, created);
+  return created;
+}
+
+function getWindowTopicMetric(
+  metrics: TopicWindowMetricMap,
+  topic: string,
+  window: TrendWindow
+): number | undefined {
+  return metrics.get(window)?.get(topic);
+}
+
+function clearWindowTopicMetric(metrics: TopicWindowMetricMap, window: TrendWindow): void {
+  metrics.delete(window);
+}
+
+function countWindowTopicMetrics(metrics: TopicWindowMetricMap): number {
+  let count = 0;
+  for (const topicMetrics of metrics.values()) {
+    count += topicMetrics.size;
+  }
+  return count;
+}
+
+function* iterateWindowTopicMetrics(
+  metrics: TopicWindowMetricMap
+): Iterable<TopicWindowMetricEntry> {
+  for (const [window, topics] of metrics) {
+    for (const [topic, value] of topics) {
+      yield { topic, window, value };
+    }
+  }
+}
+
+class InMemoryTopicWindowMetrics implements TopicWindowMetrics {
+  private readonly topicVolumeByWindow: TopicWindowMetricMap = new Map();
+  private readonly topicScoreByWindow: TopicWindowMetricMap = new Map();
+
+  set(topic: string, window: TrendWindow, volume: number, score: number): void {
+    getOrCreateWindowTopicMap(this.topicVolumeByWindow, window).set(topic, volume);
+    getOrCreateWindowTopicMap(this.topicScoreByWindow, window).set(topic, score);
+  }
+
+  clear(window: TrendWindow): void {
+    clearWindowTopicMetric(this.topicVolumeByWindow, window);
+    clearWindowTopicMetric(this.topicScoreByWindow, window);
+  }
+
+  getVolume(topic: string, window: TrendWindow): number | undefined {
+    return getWindowTopicMetric(this.topicVolumeByWindow, topic, window);
+  }
+
+  getScore(topic: string, window: TrendWindow): number | undefined {
+    return getWindowTopicMetric(this.topicScoreByWindow, topic, window);
+  }
+
+  volumeEntries(): Iterable<TopicWindowMetricEntry> {
+    return iterateWindowTopicMetrics(this.topicVolumeByWindow);
+  }
+
+  scoreEntries(): Iterable<TopicWindowMetricEntry> {
+    return iterateWindowTopicMetrics(this.topicScoreByWindow);
+  }
+
+  volumeCount(): number {
+    return countWindowTopicMetrics(this.topicVolumeByWindow);
+  }
+
+  scoreCount(): number {
+    return countWindowTopicMetrics(this.topicScoreByWindow);
+  }
+}
+
+function createTopicWindowMetrics(): TopicWindowMetrics {
+  return new InMemoryTopicWindowMetrics();
+}
+
 export interface Metrics {
   eventsProcessed: number;
   duplicatesSkipped: number;
@@ -27,8 +132,7 @@ export interface Metrics {
   briefSkippedStaleData: number;
   errors: Map<string, number>;
   consumerLag: Map<number, bigint>;
-  topicVolume: Map<string, number>;
-  topicScore: Map<string, number>;
+  topicMetrics: TopicWindowMetrics;
   snapshotDurationSeconds: Map<TrendWindow, HistogramState>;
   baselineComputeDurationSeconds: HistogramState;
 }
@@ -66,18 +170,6 @@ export interface HealthStatus {
   last_event_at?: string;
 }
 
-function makeTopicWindowKey(topic: string, window: TrendWindow): string {
-  return `${topic}|${window}`;
-}
-
-function parseTopicWindowKey(value: string): { topic: string; window: TrendWindow } {
-  const [topic, window] = value.split("|");
-  return {
-    topic,
-    window: window as TrendWindow,
-  };
-}
-
 export function createMetrics(): Metrics {
   return {
     eventsProcessed: 0,
@@ -87,8 +179,7 @@ export function createMetrics(): Metrics {
     briefSkippedStaleData: 0,
     errors: new Map(),
     consumerLag: new Map(),
-    topicVolume: new Map(),
-    topicScore: new Map(),
+    topicMetrics: createTopicWindowMetrics(),
     snapshotDurationSeconds: new Map([
       ["15m", createHistogram(DURATION_BUCKETS_SECONDS)],
       ["60m", createHistogram(DURATION_BUCKETS_SECONDS)],
@@ -145,16 +236,7 @@ export function setConsumerLag(ctx: HealthContext, partition: number, lag: bigin
 }
 
 export function clearTopicMetrics(ctx: HealthContext, window: TrendWindow): void {
-  const keys = [...ctx.metrics.topicVolume.keys()];
-  for (const key of keys) {
-    const parsed = parseTopicWindowKey(key);
-    if (parsed.window !== window) {
-      continue;
-    }
-
-    ctx.metrics.topicVolume.delete(key);
-    ctx.metrics.topicScore.delete(key);
-  }
+  ctx.metrics.topicMetrics.clear(window);
 }
 
 export function setTopicMetrics(
@@ -164,9 +246,7 @@ export function setTopicMetrics(
   volume: number,
   score: number
 ): void {
-  const key = makeTopicWindowKey(topic, window);
-  ctx.metrics.topicVolume.set(key, volume);
-  ctx.metrics.topicScore.set(key, score);
+  ctx.metrics.topicMetrics.set(topic, window, volume, score);
 }
 
 export function observeSnapshotDuration(
@@ -260,19 +340,17 @@ export function formatMetrics(ctx: HealthContext): string {
 
   lines.push("# HELP ri_trends_topic_volume Current topic volume by window");
   lines.push("# TYPE ri_trends_topic_volume gauge");
-  for (const [key, volume] of ctx.metrics.topicVolume) {
-    const parsed = parseTopicWindowKey(key);
+  for (const { topic, window, value } of ctx.metrics.topicMetrics.volumeEntries()) {
     lines.push(
-      `ri_trends_topic_volume{topic="${quoteMetricLabelValue(parsed.topic)}",window="${parsed.window}"} ${volume}`
+      `ri_trends_topic_volume{topic="${quoteMetricLabelValue(topic)}",window="${window}"} ${value}`
     );
   }
 
   lines.push("# HELP ri_trends_topic_score Current topic score by window");
   lines.push("# TYPE ri_trends_topic_score gauge");
-  for (const [key, score] of ctx.metrics.topicScore) {
-    const parsed = parseTopicWindowKey(key);
+  for (const { topic, window, value } of ctx.metrics.topicMetrics.scoreEntries()) {
     lines.push(
-      `ri_trends_topic_score{topic="${quoteMetricLabelValue(parsed.topic)}",window="${parsed.window}"} ${score}`
+      `ri_trends_topic_score{topic="${quoteMetricLabelValue(topic)}",window="${window}"} ${value}`
     );
   }
 

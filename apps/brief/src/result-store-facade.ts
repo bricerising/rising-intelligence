@@ -4,6 +4,7 @@ import {
   parseBriefResultPayload,
   type BriefResultPayload,
 } from "./result-payload-adapter.js";
+import { createPostgresHealthProxy } from "./postgres-health-proxy.js";
 
 export type PersistBriefResultOutcome = "created" | "duplicate";
 
@@ -69,44 +70,13 @@ class PrismaBriefResultStore implements BriefResultStore {
   }
 }
 
-/**
- * Proxy that keeps Postgres health status aligned with brief-result store I/O.
- */
-class HealthTrackedBriefResultStoreProxy implements BriefResultStore {
-  constructor(
-    private readonly next: BriefResultStore,
-    private readonly healthContext: HealthContext
-  ) {}
-
-  async load(requestId: string): Promise<StoredBriefResult | null> {
-    return this.withPostgresHealth(() => this.next.load(requestId));
-  }
-
-  async persist(
-    payload: BriefResultPayload,
-    status: BriefStatus
-  ): Promise<PersistBriefResultOutcome> {
-    return this.withPostgresHealth(() => this.next.persist(payload, status));
-  }
-
-  private async withPostgresHealth<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      const result = await operation();
-      this.healthContext.postgresHealthy = true;
-      return result;
-    } catch (error) {
-      this.healthContext.postgresHealthy = false;
-      throw error;
-    }
-  }
-}
-
 export function createBriefResultStore(
   prisma: PrismaClient,
   healthContext: HealthContext
 ): BriefResultStore {
-  return new HealthTrackedBriefResultStoreProxy(
+  return createPostgresHealthProxy(
     new PrismaBriefResultStore(prisma),
-    healthContext
+    healthContext,
+    ["load", "persist"]
   );
 }

@@ -13,7 +13,12 @@ import {
   type QueryModeRawEvent,
 } from "./query-mode-selection.js";
 import { compileTopicGlobMatchers } from "./topic-glob.js";
-import type { ParsedSummaryRequest, ParsedSummaryTopic } from "./types.js";
+import type {
+  EvidenceStrategy,
+  ParsedSummaryRequest,
+  ParsedSummaryTopic,
+} from "./types.js";
+import { createPostgresHealthProxy } from "./postgres-health-proxy.js";
 
 const TREND_WINDOW_60M_PROTO = 2;
 const DEFAULT_QUERY_TOPIC_GLOBS = ["*"];
@@ -31,6 +36,103 @@ export interface QueryModeRequestResolver {
     request: ParsedSummaryRequest,
     logger: Logger
   ): Promise<ParsedSummaryRequest>;
+}
+
+interface TrendSnapshotRecord {
+  generatedAt: Date;
+  snapshot: Prisma.JsonValue;
+}
+
+interface QueryModeStorage {
+  loadTrendSnapshots(
+    lookbackStart: Date,
+    requestedAt: Date
+  ): Promise<TrendSnapshotRecord[]>;
+  loadRawEvents(
+    topicKeys: readonly string[],
+    lookbackStart: Date,
+    requestedAt: Date
+  ): Promise<QueryModeRawEvent[]>;
+}
+
+class PrismaQueryModeStorageAdapter implements QueryModeStorage {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async loadTrendSnapshots(
+    lookbackStart: Date,
+    requestedAt: Date
+  ): Promise<TrendSnapshotRecord[]> {
+    return this.prisma.briefTrendSnapshot.findMany({
+      where: {
+        window: TrendWindow.WINDOW_60M,
+        generatedAt: {
+          gte: lookbackStart,
+          lte: requestedAt,
+        },
+      },
+      orderBy: {
+        generatedAt: "desc",
+      },
+      select: {
+        generatedAt: true,
+        snapshot: true,
+      },
+    });
+  }
+
+  async loadRawEvents(
+    topicKeys: readonly string[],
+    lookbackStart: Date,
+    requestedAt: Date
+  ): Promise<QueryModeRawEvent[]> {
+    const fetchedEvents = await this.prisma.rawEvent.findMany({
+      where: {
+        topics: {
+          hasSome: [...topicKeys],
+        },
+        publishedAt: {
+          gte: lookbackStart,
+          lte: requestedAt,
+        },
+        url: {
+          not: null,
+        },
+      },
+      orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }],
+      select: {
+        eventId: true,
+        source: true,
+        url: true,
+        title: true,
+        publishedAt: true,
+        fetchedAt: true,
+        text: true,
+        topics: true,
+        engagementScore: true,
+      },
+    });
+
+    const events: QueryModeRawEvent[] = [];
+    for (const event of fetchedEvents) {
+      if (event.url === null) {
+        continue;
+      }
+
+      events.push({
+        ...event,
+        url: event.url,
+      });
+    }
+    return events;
+  }
+}
+
+function createQueryModeStorage(ctx: QueryModeRequestResolverContext): QueryModeStorage {
+  return createPostgresHealthProxy(
+    new PrismaQueryModeStorageAdapter(ctx.prisma),
+    ctx.healthContext,
+    ["loadTrendSnapshots", "loadRawEvents"]
+  );
 }
 
 function isQueryModeRequest(request: ParsedSummaryRequest): boolean {
@@ -75,7 +177,8 @@ function resolveMaxTopics(request: ParsedSummaryRequest): number {
 
 function resolveMaxEventsPerTopic(config: Config, request: ParsedSummaryRequest): number {
   const budgetCap = request.budget?.maxEvidencePerTopic;
-  const requested = request.query?.maxEventsPerTopic ?? budgetCap ?? config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC;
+  const requested =
+    request.query?.maxEventsPerTopic ?? budgetCap ?? config.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC;
   if (!Number.isInteger(requested) || requested <= 0) {
     throw new NonRetryableProcessingError(
       `Invalid query.max_events_per_topic: ${requested}`,
@@ -91,23 +194,54 @@ function resolveMaxEventsPerTopic(config: Config, request: ParsedSummaryRequest)
   return Math.max(1, resolved);
 }
 
-async function loadRankedTopics(
-  ctx: QueryModeRequestResolverContext,
-  request: ParsedSummaryRequest,
-  lookbackDays: number,
-  lookbackStart: Date,
-  topicGlobs: string[],
-  maxTopics: number,
-  logger: Logger
-): Promise<{
+function resolveEvidenceStrategy(request: ParsedSummaryRequest): EvidenceStrategy {
+  return request.query?.evidenceStrategy ?? "diversity";
+}
+
+interface ResolvedQueryModeParameters {
+  lookbackDays: number;
+  topicGlobs: string[];
+  maxTopics: number;
+  maxEventsPerTopic: number;
+  evidenceStrategy: EvidenceStrategy;
+  lookbackStart: Date;
+}
+
+function resolveQueryModeParameters(
+  config: Config,
+  request: ParsedSummaryRequest
+): ResolvedQueryModeParameters {
+  const lookbackDays = resolveLookbackDays(config, request);
+  const lookbackStart = new Date(
+    request.requestedAt.getTime() - lookbackDays * 24 * 60 * 60 * 1000
+  );
+
+  return {
+    lookbackDays,
+    topicGlobs: resolveTopicGlobs(request),
+    maxTopics: resolveMaxTopics(request),
+    maxEventsPerTopic: resolveMaxEventsPerTopic(config, request),
+    evidenceStrategy: resolveEvidenceStrategy(request),
+    lookbackStart,
+  };
+}
+
+interface RankedTopicSelection {
   rankedTopics: ReturnType<typeof rankTopicsFromSnapshots>;
   selectedRankedTopics: ReturnType<typeof rankTopicsFromSnapshots>;
   selectedTopLevelTopicGroups: Set<string>;
   coverageWarnings: string[];
-}> {
+}
+
+async function loadRankedTopics(
+  storage: QueryModeStorage,
+  request: ParsedSummaryRequest,
+  parameters: ResolvedQueryModeParameters,
+  logger: Logger
+): Promise<RankedTopicSelection> {
   let topicMatchers: RegExp[];
   try {
-    topicMatchers = compileTopicGlobMatchers(topicGlobs);
+    topicMatchers = compileTopicGlobMatchers(parameters.topicGlobs);
   } catch (error) {
     throw new NonRetryableProcessingError(
       `Invalid topic glob filter: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -115,33 +249,17 @@ async function loadRankedTopics(
     );
   }
 
-  let snapshots: Array<{ generatedAt: Date; snapshot: Prisma.JsonValue }>;
-  try {
-    snapshots = await ctx.prisma.briefTrendSnapshot.findMany({
-      where: {
-        window: TrendWindow.WINDOW_60M,
-        generatedAt: {
-          gte: lookbackStart,
-          lte: request.requestedAt,
-        },
-      },
-      orderBy: {
-        generatedAt: "desc",
-      },
-      select: {
-        generatedAt: true,
-        snapshot: true,
-      },
-    });
-    ctx.healthContext.postgresHealthy = true;
-  } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
-    throw error;
-  }
+  const snapshots = await storage.loadTrendSnapshots(
+    parameters.lookbackStart,
+    request.requestedAt
+  );
 
   const coverageWarnings: string[] = [];
   if (snapshots.length === 0) {
-    logger.warn({ lookbackDays }, "No trend snapshots found in lookback window");
+    logger.warn(
+      { lookbackDays: parameters.lookbackDays },
+      "No trend snapshots found in lookback window"
+    );
     coverageWarnings.push("No trend data available for the requested lookback period.");
   }
 
@@ -150,14 +268,20 @@ async function loadRankedTopics(
     request.requestedAt,
     topicMatchers
   );
-  const selectedTopLevelTopicGroups = selectTopLevelTopicGroups(rankedTopics, maxTopics);
+  const selectedTopLevelTopicGroups = selectTopLevelTopicGroups(
+    rankedTopics,
+    parameters.maxTopics
+  );
   const selectedRankedTopics = rankedTopics.filter((rankedTopic) =>
     selectedTopLevelTopicGroups.has(getTopLevelTopicGroup(rankedTopic.topic))
   );
 
   if (selectedRankedTopics.length === 0) {
     logger.warn(
-      { topicGlobCount: topicGlobs.length, lookbackDays },
+      {
+        topicGlobCount: parameters.topicGlobs.length,
+        lookbackDays: parameters.lookbackDays,
+      },
       "No topics matched query filters"
     );
     throw toNoCoverageError(
@@ -175,56 +299,24 @@ async function loadRankedTopics(
   };
 }
 
-async function hydrateTopics(
-  ctx: QueryModeRequestResolverContext,
-  request: ParsedSummaryRequest,
-  selectedRankedTopics: ReturnType<typeof rankTopicsFromSnapshots>,
-  lookbackStart: Date,
-  maxEventsPerTopic: number
-): Promise<{
+interface HydratedTopicSelection {
   topicsWithEvidence: ParsedSummaryTopic[];
   hydratedTopics: ParsedSummaryTopic[];
   relevanceFilteredByTopic: Map<string, number>;
-}> {
-  const evidenceStrategy = request.query?.evidenceStrategy ?? "diversity";
-  const rankedTopicKeys = new Set(selectedRankedTopics.map((topic) => topic.topic));
-  let allEvents: QueryModeRawEvent[];
+}
 
-  try {
-    const fetchedEvents = await ctx.prisma.rawEvent.findMany({
-      where: {
-        topics: {
-          hasSome: [...rankedTopicKeys],
-        },
-        publishedAt: {
-          gte: lookbackStart,
-          lte: request.requestedAt,
-        },
-        url: {
-          not: null,
-        },
-      },
-      orderBy: [{ publishedAt: "desc" }, { fetchedAt: "desc" }],
-      select: {
-        eventId: true,
-        source: true,
-        url: true,
-        title: true,
-        publishedAt: true,
-        fetchedAt: true,
-        text: true,
-        topics: true,
-        engagementScore: true,
-      },
-    });
-    allEvents = fetchedEvents.filter((event): event is (typeof fetchedEvents)[number] & { url: string } => {
-      return event.url !== null;
-    });
-    ctx.healthContext.postgresHealthy = true;
-  } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
-    throw error;
-  }
+async function hydrateTopics(
+  storage: QueryModeStorage,
+  request: ParsedSummaryRequest,
+  selectedRankedTopics: ReturnType<typeof rankTopicsFromSnapshots>,
+  parameters: ResolvedQueryModeParameters
+): Promise<HydratedTopicSelection> {
+  const rankedTopicKeys = new Set(selectedRankedTopics.map((topic) => topic.topic));
+  const allEvents = await storage.loadRawEvents(
+    [...rankedTopicKeys],
+    parameters.lookbackStart,
+    request.requestedAt
+  );
 
   const eventsByTopic = new Map<string, typeof allEvents>();
   const relevanceFilteredByTopic = new Map<string, number>();
@@ -234,7 +326,10 @@ async function hydrateTopics(
         continue;
       }
       if (!isEventRelevantToTopic(event, topicKey)) {
-        relevanceFilteredByTopic.set(topicKey, (relevanceFilteredByTopic.get(topicKey) ?? 0) + 1);
+        relevanceFilteredByTopic.set(
+          topicKey,
+          (relevanceFilteredByTopic.get(topicKey) ?? 0) + 1
+        );
         continue;
       }
 
@@ -249,7 +344,11 @@ async function hydrateTopics(
 
   const hydratedTopics: ParsedSummaryTopic[] = selectedRankedTopics.map((rankedTopic) => {
     const topicEvents = eventsByTopic.get(rankedTopic.topic) ?? [];
-    const selectedEvents = selectEvidence(topicEvents, evidenceStrategy, maxEventsPerTopic);
+    const selectedEvents = selectEvidence(
+      topicEvents,
+      parameters.evidenceStrategy,
+      parameters.maxEventsPerTopic
+    );
 
     return {
       topic: rankedTopic.topic,
@@ -281,129 +380,225 @@ async function hydrateTopics(
   };
 }
 
-function summarizeCoverageWarnings(
-  rankedTopics: ReturnType<typeof rankTopicsFromSnapshots>,
-  selectedRankedTopics: ReturnType<typeof rankTopicsFromSnapshots>,
-  hydratedTopics: ParsedSummaryTopic[],
-  topicsWithEvidence: ParsedSummaryTopic[],
-  relevanceFilteredByTopic: Map<string, number>,
-  maxTopics: number,
-  coverageWarnings: string[]
-): { warnings: string[]; relevanceFilteredCount: number } {
-  const warnings = [...coverageWarnings];
-
-  if (selectedRankedTopics.length < rankedTopics.length) {
-    const excludedByTopLevelCap = rankedTopics.length - selectedRankedTopics.length;
-    warnings.push(
-      `${excludedByTopLevelCap} subtopic(s) were excluded by top-level topic cap (${maxTopics}).`
-    );
-  }
-
-  if (topicsWithEvidence.length < hydratedTopics.length) {
-    const missingTopicCount = hydratedTopics.length - topicsWithEvidence.length;
-    warnings.push(
-      `${missingTopicCount} ranked topic(s) were excluded due to missing grounded evidence.`
-    );
-  }
-
-  const relevanceFilteredCount = [...relevanceFilteredByTopic.values()].reduce(
+function countRelevanceFilteredEvents(
+  relevanceFilteredByTopic: Map<string, number>
+): number {
+  return [...relevanceFilteredByTopic.values()].reduce(
     (count, filtered) => count + filtered,
     0
   );
-  if (relevanceFilteredCount > 0) {
-    warnings.push(
-      `${relevanceFilteredCount} candidate event(s) were excluded by topic relevance checks.`
+}
+
+interface CoverageWarningRuleContext {
+  rankedTopicCount: number;
+  selectedRankedTopicCount: number;
+  hydratedTopicCount: number;
+  topicsWithEvidenceCount: number;
+  relevanceFilteredCount: number;
+  maxTopics: number;
+}
+
+interface CoverageWarningRule {
+  readonly name: string;
+  build(context: CoverageWarningRuleContext): string | null;
+}
+
+const TOP_LEVEL_TOPIC_CAP_WARNING_RULE: CoverageWarningRule = {
+  name: "top-level-cap",
+  build(context): string | null {
+    if (context.selectedRankedTopicCount >= context.rankedTopicCount) {
+      return null;
+    }
+
+    const excludedByTopLevelCap =
+      context.rankedTopicCount - context.selectedRankedTopicCount;
+    return `${excludedByTopLevelCap} subtopic(s) were excluded by top-level topic cap (${context.maxTopics}).`;
+  },
+};
+
+const MISSING_EVIDENCE_WARNING_RULE: CoverageWarningRule = {
+  name: "missing-evidence",
+  build(context): string | null {
+    if (context.topicsWithEvidenceCount >= context.hydratedTopicCount) {
+      return null;
+    }
+
+    const missingTopicCount =
+      context.hydratedTopicCount - context.topicsWithEvidenceCount;
+    return `${missingTopicCount} ranked topic(s) were excluded due to missing grounded evidence.`;
+  },
+};
+
+const RELEVANCE_FILTER_WARNING_RULE: CoverageWarningRule = {
+  name: "relevance-filter",
+  build(context): string | null {
+    if (context.relevanceFilteredCount <= 0) {
+      return null;
+    }
+
+    return `${context.relevanceFilteredCount} candidate event(s) were excluded by topic relevance checks.`;
+  },
+};
+
+const COVERAGE_WARNING_RULES: readonly CoverageWarningRule[] = [
+  TOP_LEVEL_TOPIC_CAP_WARNING_RULE,
+  MISSING_EVIDENCE_WARNING_RULE,
+  RELEVANCE_FILTER_WARNING_RULE,
+];
+
+function summarizeCoverageWarnings(
+  baseCoverageWarnings: readonly string[],
+  context: CoverageWarningRuleContext
+): string[] {
+  const warnings = [...baseCoverageWarnings];
+
+  for (const rule of COVERAGE_WARNING_RULES) {
+    const warning = rule.build(context);
+    if (warning) {
+      warnings.push(warning);
+    }
+  }
+
+  return warnings;
+}
+
+interface QueryModeRequestResolutionStrategyInput {
+  ctx: QueryModeRequestResolverContext;
+  request: ParsedSummaryRequest;
+  logger: Logger;
+}
+
+interface QueryModeRequestResolutionStrategy {
+  readonly name: string;
+  canResolve(request: ParsedSummaryRequest): boolean;
+  resolve(input: QueryModeRequestResolutionStrategyInput): Promise<ParsedSummaryRequest>;
+}
+
+const PASSTHROUGH_REQUEST_RESOLUTION_STRATEGY: QueryModeRequestResolutionStrategy = {
+  name: "passthrough",
+  canResolve(request): boolean {
+    return !isQueryModeRequest(request);
+  },
+  async resolve({ request }): Promise<ParsedSummaryRequest> {
+    return request;
+  },
+};
+
+async function resolveQueryModeRequest(
+  input: QueryModeRequestResolutionStrategyInput
+): Promise<ParsedSummaryRequest> {
+  const { ctx, request, logger } = input;
+  const storage = createQueryModeStorage(ctx);
+  const parameters = resolveQueryModeParameters(ctx.config, request);
+
+  const rankedTopicSelection = await loadRankedTopics(
+    storage,
+    request,
+    parameters,
+    logger
+  );
+
+  const hydratedTopicSelection = await hydrateTopics(
+    storage,
+    request,
+    rankedTopicSelection.selectedRankedTopics,
+    parameters
+  );
+
+  if (hydratedTopicSelection.topicsWithEvidence.length === 0) {
+    logger.warn(
+      {
+        rankedTopicCount: rankedTopicSelection.selectedRankedTopics.length,
+        lookbackDays: parameters.lookbackDays,
+      },
+      "No evidence found for any ranked topics"
+    );
+    throw toNoCoverageError(
+      "No recent activity was found for matched topics in the lookback window."
     );
   }
 
+  const relevanceFilteredCount = countRelevanceFilteredEvents(
+    hydratedTopicSelection.relevanceFilteredByTopic
+  );
+
+  const coverageWarnings = summarizeCoverageWarnings(
+    rankedTopicSelection.coverageWarnings,
+    {
+      rankedTopicCount: rankedTopicSelection.rankedTopics.length,
+      selectedRankedTopicCount: rankedTopicSelection.selectedRankedTopics.length,
+      hydratedTopicCount: hydratedTopicSelection.hydratedTopics.length,
+      topicsWithEvidenceCount: hydratedTopicSelection.topicsWithEvidence.length,
+      relevanceFilteredCount,
+      maxTopics: parameters.maxTopics,
+    }
+  );
+
+  logger.info(
+    {
+      lookbackDays: parameters.lookbackDays,
+      topicGlobCount: parameters.topicGlobs.length,
+      candidateTopicCount: rankedTopicSelection.rankedTopics.length,
+      rankedTopicCount: rankedTopicSelection.selectedRankedTopics.length,
+      selectedTopLevelTopicCount:
+        rankedTopicSelection.selectedTopLevelTopicGroups.size,
+      selectedTopicCount: hydratedTopicSelection.topicsWithEvidence.length,
+      maxEventsPerTopic: parameters.maxEventsPerTopic,
+      coverageWarningCount: coverageWarnings.length,
+      relevanceFilteredCount,
+    },
+    "Resolved query-mode summary request using trend snapshots and raw events"
+  );
+
   return {
-    warnings,
-    relevanceFilteredCount,
+    ...request,
+    windows: [TREND_WINDOW_60M_PROTO],
+    query: {
+      lookbackDays: parameters.lookbackDays,
+      topicGlobs: parameters.topicGlobs,
+      maxEventsPerTopic: parameters.maxEventsPerTopic,
+      evidenceStrategy: parameters.evidenceStrategy,
+    },
+    topics: hydratedTopicSelection.topicsWithEvidence,
+    coverageWarnings,
   };
 }
 
+const QUERY_MODE_REQUEST_RESOLUTION_STRATEGY: QueryModeRequestResolutionStrategy = {
+  name: "query-mode",
+  canResolve: isQueryModeRequest,
+  resolve: resolveQueryModeRequest,
+};
+
+const DEFAULT_QUERY_MODE_REQUEST_RESOLUTION_STRATEGIES: readonly QueryModeRequestResolutionStrategy[] = [
+  PASSTHROUGH_REQUEST_RESOLUTION_STRATEGY,
+  QUERY_MODE_REQUEST_RESOLUTION_STRATEGY,
+];
+
 class PrismaQueryModeRequestResolverFacade implements QueryModeRequestResolver {
+  constructor(
+    private readonly resolutionStrategies: readonly QueryModeRequestResolutionStrategy[] =
+      DEFAULT_QUERY_MODE_REQUEST_RESOLUTION_STRATEGIES
+  ) {}
+
   async resolve(
     ctx: QueryModeRequestResolverContext,
     request: ParsedSummaryRequest,
     logger: Logger
   ): Promise<ParsedSummaryRequest> {
-    if (!isQueryModeRequest(request)) {
-      return request;
+    for (const strategy of this.resolutionStrategies) {
+      if (!strategy.canResolve(request)) {
+        continue;
+      }
+
+      return strategy.resolve({
+        ctx,
+        request,
+        logger,
+      });
     }
 
-    const lookbackDays = resolveLookbackDays(ctx.config, request);
-    const topicGlobs = resolveTopicGlobs(request);
-    const maxTopics = resolveMaxTopics(request);
-    const maxEventsPerTopic = resolveMaxEventsPerTopic(ctx.config, request);
-    const lookbackStart = new Date(request.requestedAt.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
-
-    const {
-      rankedTopics,
-      selectedRankedTopics,
-      selectedTopLevelTopicGroups,
-      coverageWarnings,
-    } = await loadRankedTopics(
-      ctx,
-      request,
-      lookbackDays,
-      lookbackStart,
-      topicGlobs,
-      maxTopics,
-      logger
-    );
-
-    const {
-      topicsWithEvidence,
-      hydratedTopics,
-      relevanceFilteredByTopic,
-    } = await hydrateTopics(ctx, request, selectedRankedTopics, lookbackStart, maxEventsPerTopic);
-
-    if (topicsWithEvidence.length === 0) {
-      logger.warn(
-        { rankedTopicCount: selectedRankedTopics.length, lookbackDays },
-        "No evidence found for any ranked topics"
-      );
-      throw toNoCoverageError("No recent activity was found for matched topics in the lookback window.");
-    }
-
-    const coverageSummary = summarizeCoverageWarnings(
-      rankedTopics,
-      selectedRankedTopics,
-      hydratedTopics,
-      topicsWithEvidence,
-      relevanceFilteredByTopic,
-      maxTopics,
-      coverageWarnings
-    );
-
-    logger.info(
-      {
-        lookbackDays,
-        topicGlobCount: topicGlobs.length,
-        candidateTopicCount: rankedTopics.length,
-        rankedTopicCount: selectedRankedTopics.length,
-        selectedTopLevelTopicCount: selectedTopLevelTopicGroups.size,
-        selectedTopicCount: topicsWithEvidence.length,
-        maxEventsPerTopic,
-        coverageWarningCount: coverageSummary.warnings.length,
-        relevanceFilteredCount: coverageSummary.relevanceFilteredCount,
-      },
-      "Resolved query-mode summary request using trend snapshots and raw events"
-    );
-
-    return {
-      ...request,
-      windows: [TREND_WINDOW_60M_PROTO],
-      query: {
-        lookbackDays,
-        topicGlobs,
-        maxEventsPerTopic,
-        evidenceStrategy: request.query?.evidenceStrategy ?? "diversity",
-      },
-      topics: topicsWithEvidence,
-      coverageWarnings: coverageSummary.warnings,
-    };
+    throw new Error("No query-mode request resolution strategy matched request");
   }
 }
 

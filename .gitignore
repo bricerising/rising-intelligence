@@ -78,3 +78,87 @@ yarn-error.log*
 pnpm-debug.log*
 .turbo/
 .cache/
+
+/target
+.codanna/
+.codanna/index/
+.codanna-test-local/
+.fastembed_cache
+.logs/
+
+# Build artifacts
+*.rcgu.o
+*.rmeta
+
+# IDE
+.idea/
+.vscode/
+
+# Tree-sitter development
+/contributing/tree-sitter/grammars/
+/contributing/tree-sitter/node_modules/
+/contributing/tree-sitter/build/
+/contributing/tree-sitter/target/
+/contributing/tree-sitter/.cache/
+/contributing/tree-sitter/.env
+
+# Rust (additional)
+.cargo/config.toml
+**/target/
+*.rlib
+*.d
+
+# Node.js
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# Common build outputs
+dist/
+**/dist/
+build/
+**/build/
+out/
+**/out/
+coverage/
+.nyc_output/
+
+# Logs, caches, temp
+*.log
+logs/
+**/.cache/
+cache/
+tmp/
+temp/
+
+# Environment files
+.env
+.env.*
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+._*
+
+# Editor artifacts
+*.swp
+*.swo
+*.bak
+*.tmp
+# Generated index files
+index.db
+index.db-*
+index.scip
+vendors/fastembed-rs
+
+/scripts/*
+!/scripts/
+!/scripts/install.sh
+!/scripts/install.ps1
+docs/

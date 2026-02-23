@@ -80,6 +80,20 @@ export interface ProcessContext {
   producer: Producer;
 }
 
+interface RequestScopedProcessContext extends ProcessContext {
+  logger: pino.Logger;
+}
+
+function createRequestScopedProcessContext(
+  ctx: ProcessContext,
+  requestId: string
+): RequestScopedProcessContext {
+  return {
+    ...ctx,
+    logger: ctx.logger.child({ requestId }),
+  };
+}
+
 const LlmHighlightSchema = z.object({
   topic: z.string().min(1),
   what_happened: z.string().min(1),
@@ -161,6 +175,7 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
+  requestContext: RequestScopedProcessContext;
   logger: pino.Logger;
   budgetLedger: BriefBudgetLedger;
   publisher: BriefResultPublisher<BriefResultPayload>;
@@ -188,22 +203,24 @@ class SummaryRequestRuntimeFactory {
   }
 
   create(ctx: ProcessContext, request: ParsedSummaryRequest): SummaryRequestRuntime {
-    const logger = ctx.logger.child({ requestId: request.requestId });
+    const requestContext = createRequestScopedProcessContext(ctx, request.requestId);
+    const logger = requestContext.logger;
     return {
+      requestContext,
       logger,
       budgetLedger: this.dependencies.createBriefBudgetLedger({
-        prisma: ctx.prisma,
-        redis: ctx.redis,
+        prisma: requestContext.prisma,
+        redis: requestContext.redis,
         logger,
       }),
       publisher: this.dependencies.createBriefResultPublisher({
-        producer: ctx.producer,
+        producer: requestContext.producer,
         logger,
-        topic: ctx.config.KAFKA_TOPIC_SUMMARY_RESULTS,
+        topic: requestContext.config.KAFKA_TOPIC_SUMMARY_RESULTS,
       }),
       resultStore: this.dependencies.createBriefResultStore(
-        ctx.prisma,
-        ctx.healthContext
+        requestContext.prisma,
+        requestContext.healthContext
       ),
       queryModeRequestResolver: this.queryModeRequestResolver,
       producedAt: new Date(),
@@ -976,7 +993,7 @@ function enforceGroundedHighlights(
 }
 
 interface BuildSuccessResultInput {
-  ctx: ProcessContext;
+  ctx: RequestScopedProcessContext;
   request: ParsedSummaryRequest;
   producedAt: Date;
   estimatedCostUsd: number;
@@ -1227,29 +1244,28 @@ const LLM_PROVIDER_STRATEGIES: Record<LlmProvider, LlmProviderStrategy> = {
   },
 };
 
-function resolveLlmProvider(ctx: ProcessContext, request: ParsedSummaryRequest): LlmProvider {
-  return request.llmProvider ?? ctx.config.LLM_PROVIDER;
+interface SummaryRequestGenerationFacade {
+  buildSuccessResult(input: BuildSuccessResultInput): Promise<SuccessResult>;
 }
 
-async function buildSuccessResult(
-  ctx: ProcessContext,
-  request: ParsedSummaryRequest,
-  producedAt: Date,
-  estimatedCostUsd: number
-): Promise<SuccessResult> {
-  const llmProvider = resolveLlmProvider(ctx, request);
-  const strategy = LLM_PROVIDER_STRATEGIES[llmProvider];
-  if (!strategy) {
-    throw new LlmGenerationError(`Unsupported LLM provider: ${llmProvider}`);
+class DefaultSummaryRequestGenerationFacade implements SummaryRequestGenerationFacade {
+  constructor(
+    private readonly llmProviderStrategies: Record<LlmProvider, LlmProviderStrategy>
+  ) {}
+
+  async buildSuccessResult(input: BuildSuccessResultInput): Promise<SuccessResult> {
+    const llmProvider = input.request.llmProvider ?? input.ctx.config.LLM_PROVIDER;
+    const strategy = this.llmProviderStrategies[llmProvider];
+    if (!strategy) {
+      throw new LlmGenerationError(`Unsupported LLM provider: ${llmProvider}`);
+    }
+
+    return strategy.build(input);
   }
-
-  return strategy.build({
-    ctx,
-    request,
-    producedAt,
-    estimatedCostUsd,
-  });
 }
+
+const SUMMARY_REQUEST_GENERATION_FACADE: SummaryRequestGenerationFacade =
+  new DefaultSummaryRequestGenerationFacade(LLM_PROVIDER_STRATEGIES);
 
 async function republishPersistedResult(
   resultStore: BriefResultStore,
@@ -1506,6 +1522,7 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
   ): Promise<void> {
     const runtime = this.runtimeFactory.create(ctx, request);
     const {
+      requestContext,
       logger,
       budgetLedger,
       publisher,
@@ -1518,20 +1535,20 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
     try {
       existingResult = await resultStore.load(request.requestId);
     } catch (error) {
-      incrementError(ctx.healthContext, "idempotency_error");
+      incrementError(requestContext.healthContext, "idempotency_error");
       logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
       throw error;
     }
 
     if (existingResult) {
-      incrementDuplicatesSkipped(ctx.healthContext);
-      incrementGeneration(ctx.healthContext, "skipped");
+      incrementDuplicatesSkipped(requestContext.healthContext);
+      incrementGeneration(requestContext.healthContext, "skipped");
       try {
         await publisher.publishResult(request.requestId, existingResult.payload);
         logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
         return;
       } catch (error) {
-        incrementError(ctx.healthContext, "publish_error");
+        incrementError(requestContext.healthContext, "publish_error");
         logger.error(
           { error: serializeError(error) },
           "Failed to republish persisted brief result for duplicate request"
@@ -1542,11 +1559,11 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
 
     let requestForGeneration: ParsedSummaryRequest;
     try {
-      requestForGeneration = await queryModeRequestResolver.resolve(ctx, request, logger);
+      requestForGeneration = await queryModeRequestResolver.resolve(requestContext, request, logger);
     } catch (error) {
       if (error instanceof NonRetryableProcessingError) {
         await handleNonRetryableFailure({
-          ctx,
+          ctx: requestContext,
           resultStore,
           publisher,
           requestId: request.requestId,
@@ -1558,14 +1575,15 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
         return;
       }
 
-      incrementError(ctx.healthContext, "generation_error");
-      incrementGeneration(ctx.healthContext, "failure");
+      incrementError(requestContext.healthContext, "generation_error");
+      incrementGeneration(requestContext.healthContext, "failure");
       logger.error({ error: serializeError(error) }, "Failed to resolve summary request");
       throw error;
     }
 
     const dateKey = getBudgetDateKey(producedAt);
-    const dailyBudgetUsd = requestForGeneration.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
+    const dailyBudgetUsd =
+      requestForGeneration.budget?.dailyBudgetUsd ?? requestContext.config.LLM_DAILY_BUDGET_USD;
     const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(requestForGeneration));
     let budgetReserved = false;
     let spentBudgetUsd = 0;
@@ -1579,20 +1597,23 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       });
       budgetReserved = reservation.reserved;
       spentBudgetUsd = reservation.spentUsd;
-      ctx.healthContext.redisHealthy = true;
-      setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+      requestContext.healthContext.redisHealthy = true;
+      setBudgetRemainingUsd(
+        requestContext.healthContext,
+        Math.max(0, dailyBudgetUsd - spentBudgetUsd)
+      );
     } catch (error) {
-      ctx.healthContext.redisHealthy = false;
-      incrementError(ctx.healthContext, "redis_error");
+      requestContext.healthContext.redisHealthy = false;
+      incrementError(requestContext.healthContext, "redis_error");
       logger.error({ error: serializeError(error) }, "Failed to reserve daily budget");
       throw error;
     }
 
     if (!budgetReserved) {
-      incrementBudgetExceeded(ctx.healthContext);
-      incrementGeneration(ctx.healthContext, "skipped");
+      incrementBudgetExceeded(requestContext.healthContext);
+      incrementGeneration(requestContext.healthContext, "skipped");
       await emitFailureResult(
-        ctx,
+        requestContext,
         resultStore,
         publisher,
         request.requestId,
@@ -1614,16 +1635,16 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
 
     let persistedCreated = false;
     try {
-      const successResult = await buildSuccessResult(
-        ctx,
-        requestForGeneration,
+      const successResult = await SUMMARY_REQUEST_GENERATION_FACADE.buildSuccessResult({
+        ctx: requestContext,
+        request: requestForGeneration,
         producedAt,
-        estimatedCostUsd
-      );
+        estimatedCostUsd,
+      });
       const persisted = await resultStore.persist(successResult.payload, BriefStatus.success);
       if (persisted === "duplicate") {
         await rollbackBudgetReservation(
-          ctx,
+          requestContext,
           budgetLedger,
           logger,
           dateKey,
@@ -1631,8 +1652,8 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
           dailyBudgetUsd
         );
         budgetReserved = false;
-        incrementDuplicatesSkipped(ctx.healthContext);
-        incrementGeneration(ctx.healthContext, "skipped");
+        incrementDuplicatesSkipped(requestContext.healthContext);
+        incrementGeneration(requestContext.healthContext, "skipped");
         const republishedStatus = await republishPersistedResult(
           resultStore,
           request.requestId,
@@ -1654,10 +1675,10 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
             deltaUsd: costDeltaUsd,
           });
           reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
-          ctx.healthContext.redisHealthy = true;
+          requestContext.healthContext.redisHealthy = true;
         } catch (error) {
-          ctx.healthContext.redisHealthy = false;
-          incrementError(ctx.healthContext, "redis_error");
+          requestContext.healthContext.redisHealthy = false;
+          incrementError(requestContext.healthContext, "redis_error");
           logger.warn(
             {
               costDeltaUsd,
@@ -1670,14 +1691,17 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
 
       await publisher.publishResult(request.requestId, successResult.payload);
 
-      incrementGeneration(ctx.healthContext, "success");
-      incrementLlmCostUsd(ctx.healthContext, successResult.metrics.costUsd);
-      incrementLlmTokens(ctx.healthContext, "input", successResult.metrics.inputTokens);
-      incrementLlmTokens(ctx.healthContext, "output", successResult.metrics.outputTokens);
-      observeHighlightsCount(ctx.healthContext, successResult.metrics.highlightsCount);
-      observeCitationsCount(ctx.healthContext, successResult.metrics.citationsCount);
+      incrementGeneration(requestContext.healthContext, "success");
+      incrementLlmCostUsd(requestContext.healthContext, successResult.metrics.costUsd);
+      incrementLlmTokens(requestContext.healthContext, "input", successResult.metrics.inputTokens);
+      incrementLlmTokens(requestContext.healthContext, "output", successResult.metrics.outputTokens);
+      observeHighlightsCount(requestContext.healthContext, successResult.metrics.highlightsCount);
+      observeCitationsCount(requestContext.healthContext, successResult.metrics.citationsCount);
 
-      setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+      setBudgetRemainingUsd(
+        requestContext.healthContext,
+        Math.max(0, dailyBudgetUsd - spentBudgetUsd)
+      );
       logger.info(
         {
           topicCount: successResult.metrics.highlightsCount,
@@ -1690,7 +1714,7 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       if (budgetReserved && !persistedCreated) {
         try {
           await rollbackBudgetReservation(
-            ctx,
+            requestContext,
             budgetLedger,
             logger,
             dateKey,
@@ -1699,8 +1723,8 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
           );
           budgetReserved = false;
         } catch (rollbackError) {
-          ctx.healthContext.redisHealthy = false;
-          incrementError(ctx.healthContext, "redis_error");
+          requestContext.healthContext.redisHealthy = false;
+          incrementError(requestContext.healthContext, "redis_error");
           logger.error(
             { error: serializeError(rollbackError) },
             "Failed to roll back reserved brief budget"
@@ -1710,7 +1734,7 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       }
 
       const failureOutcome = await handleSummaryRequestFailure(error, {
-        ctx,
+        ctx: requestContext,
         resultStore,
         publisher,
         requestId: request.requestId,

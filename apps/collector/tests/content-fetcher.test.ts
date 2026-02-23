@@ -196,6 +196,46 @@ describe("content fetcher URL safety", () => {
     expect(extractContent).toHaveBeenCalledWith("<html />", "https://example.com/article");
   });
 
+  it("short-circuits guards before domain throttling for blocked URLs", async () => {
+    const logger = createTestLogger();
+    const wait = vi.fn(async (_url: string) => undefined);
+    const createDomainRequestLimiter = vi.fn(() => ({ wait }));
+    const fetchHtml = vi.fn(async () => "<html />");
+    const extractContent = vi.fn(() => ({
+      success: true,
+      text: "x".repeat(250),
+      title: "t",
+      htmlLength: 7,
+    }));
+    const fetcher = createArticleContentFetcher(
+      {
+        ...contentFetcherConfig,
+        blockedDomains: new Set(["example.com"]),
+      },
+      logger,
+      {
+        safetyFacade: {
+          isAllowedFetchUrl: () => true,
+        },
+        createDomainRequestLimiter,
+        fetchHtml,
+        extractContent,
+      }
+    );
+
+    const result = await fetcher.fetch("https://sub.example.com/article");
+
+    expect(result).toBeNull();
+    expect(createDomainRequestLimiter).toHaveBeenCalledWith(0);
+    expect(wait).not.toHaveBeenCalled();
+    expect(fetchHtml).not.toHaveBeenCalled();
+    expect(extractContent).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      { url: "https://sub.example.com/article" },
+      "Skipping blocked domain"
+    );
+  });
+
   it("serializes concurrent fetches for the same domain", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-02-11T00:00:00.000Z"));

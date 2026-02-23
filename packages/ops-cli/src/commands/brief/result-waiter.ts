@@ -67,8 +67,19 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
 
   let settled = false;
   let timeoutHandle: NodeJS.Timeout | null = null;
+  let stopPromise: Promise<void> | null = null;
   let resolveResult: ((result: TResult) => void) | undefined;
   let rejectResult: ((error: unknown) => void) | undefined;
+
+  const requestStop = (): Promise<void> => {
+    if (!stopPromise) {
+      stopPromise = consumer.stop().catch((error) => {
+        settleFailure(error);
+        throw error;
+      });
+    }
+    return stopPromise;
+  };
 
   const settleSuccess = (result: TResult): void => {
     if (settled) {
@@ -101,7 +112,7 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
 
   timeoutHandle = setTimeout(() => {
     settleFailure(new Error(input.timeoutErrorMessage));
-    void consumer.stop().catch(() => undefined);
+    void requestStop().catch(() => undefined);
   }, input.timeoutSeconds * 1000);
 
   const runPromise = consumer.run({
@@ -116,7 +127,8 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
       }
 
       settleSuccess(result);
-      await consumer.stop();
+      // Avoid awaiting stop() inside eachMessage; KafkaJS may wait for handler completion.
+      void requestStop().catch(() => undefined);
     },
   });
 
@@ -134,7 +146,7 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
     },
     async disconnect(): Promise<void> {
       try {
-        await consumer.stop();
+        await requestStop();
       } catch {
         // Consumer may already be stopped; swallow cleanup errors for caller simplicity.
       }

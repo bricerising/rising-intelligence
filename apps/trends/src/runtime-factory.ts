@@ -1,13 +1,13 @@
 import type { Server } from "node:http";
 import {
-  createConnectedPrismaClient,
+  createPrismaRuntimeDependencies,
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createStartupFacade,
-  createStartupResourceConnector,
+  createComponentLoggerFactory,
+  createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type { Redis } from "ioredis";
@@ -37,6 +37,7 @@ import type { TrendsContext } from "./process.js";
 
 type KafkaConsumer = KafkaConsumerContext["consumer"];
 type KafkaProducer = KafkaProducerContext["producer"];
+type RuntimeLoggerComponent = "redis" | "kafka-consumer" | "kafka-producer";
 
 export interface TrendsRuntimeFactoryDependencies {
   createHealthContext(): HealthContext;
@@ -67,14 +68,17 @@ export interface TrendsRuntimeFactory {
 
 type DependencyOverrides = FunctionDependencyOverrides<TrendsRuntimeFactoryDependencies>;
 
+const DEFAULT_PRISMA_RUNTIME_DEPENDENCIES =
+  createPrismaRuntimeDependencies<Config>({
+    getDatabaseUrl(config): string {
+      return config.DATABASE_URL;
+    },
+  });
+
 const DEFAULT_DEPENDENCIES: TrendsRuntimeFactoryDependencies = {
+  ...DEFAULT_PRISMA_RUNTIME_DEPENDENCIES,
   createHealthContext,
   startHealthServer,
-  async createPrismaClient(config): Promise<PrismaClient> {
-    return createConnectedPrismaClient({
-      databaseUrl: config.DATABASE_URL,
-    });
-  },
   createRedisClient(config, logger): Promise<Redis> {
     return createRedisConnection(config.REDIS_URL, logger);
   },
@@ -84,9 +88,6 @@ const DEFAULT_DEPENDENCIES: TrendsRuntimeFactoryDependencies = {
   disconnectKafkaConsumer,
   disconnectKafkaProducer,
   disconnectRedis,
-  closePrismaClient(prisma): Promise<void> {
-    return prisma.$disconnect();
-  },
   closeHealthServer: closeServer,
 };
 
@@ -96,53 +97,46 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
   ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<TrendsRuntimeContext> {
-    const startup = createStartupFacade(logger);
-    const resources = createStartupResourceConnector(startup);
+    const { startup, resources } = createRuntimeCompositionRoot(logger);
+    const componentLoggers =
+      createComponentLoggerFactory<RuntimeLoggerComponent>(logger);
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connect({
-        name: "health-server",
-        connect: () => this.dependencies.startHealthServer(healthContext, logger),
-        disconnect: (server) => this.dependencies.closeHealthServer(server),
-        rollbackAction: "close",
-      });
+      const healthServer = await resources.connectHealthServer(
+        () => this.dependencies.startHealthServer(healthContext, logger),
+        (server) => this.dependencies.closeHealthServer(server)
+      );
 
-      const prisma = await resources.connect({
-        name: "postgres",
-        connect: () => this.dependencies.createPrismaClient(config),
-        disconnect: (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
-        rollbackAction: "disconnect",
-      });
+      const prisma = await resources.connectPostgres(
+        () => this.dependencies.createPrismaClient(config),
+        (prismaClient) => this.dependencies.closePrismaClient(prismaClient)
+      );
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resources.connect({
-        name: "redis",
-        connect: () =>
+      const redis = await resources.connectRedis(
+        () =>
           this.dependencies.createRedisClient(
             config,
-            logger.child({ component: "redis" })
+            componentLoggers.create("redis")
           ),
-        disconnect: (redisClient) => this.dependencies.disconnectRedis(redisClient, logger),
-        rollbackAction: "disconnect",
-      });
+        (redisClient) => this.dependencies.disconnectRedis(redisClient, logger)
+      );
       healthContext.redisHealthy = true;
 
       const allowlist = this.dependencies.loadAllowlist(config.TOPICS_ALLOWLIST_PATH);
       healthContext.allowlistHealthy = true;
       logger.info({ topicCount: allowlist.topics.length }, "Topics allowlist loaded");
 
-      const kafkaConsumerContext = await resources.connect({
-        name: "kafka-consumer",
-        connect: () =>
+      const kafkaConsumerContext = await resources.connectKafkaConsumer(
+        () =>
           this.dependencies.createKafkaConsumer(
-            logger.child({ component: "kafka-consumer" })
+            componentLoggers.create("kafka-consumer")
           ),
-        disconnect: (consumerContext) =>
-          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
-        rollbackAction: "disconnect",
-      });
+        (consumerContext) =>
+          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
+      );
       await kafkaConsumerContext.consumer.subscribe({
         topic: config.KAFKA_TOPIC_RAW_EVENTS,
         fromBeginning: false,
@@ -152,16 +146,14 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
         fromBeginning: false,
       });
 
-      const kafkaProducerContext = await resources.connect({
-        name: "kafka-producer",
-        connect: () =>
+      const kafkaProducerContext = await resources.connectKafkaProducer(
+        () =>
           this.dependencies.createKafkaProducer(
-            logger.child({ component: "kafka-producer" })
+            componentLoggers.create("kafka-producer")
           ),
-        disconnect: (producerContext) =>
-          this.dependencies.disconnectKafkaProducer(producerContext.producer, logger),
-        rollbackAction: "disconnect",
-      });
+        (producerContext) =>
+          this.dependencies.disconnectKafkaProducer(producerContext.producer, logger)
+      );
       healthContext.kafkaHealthy = true;
 
       logger.info(

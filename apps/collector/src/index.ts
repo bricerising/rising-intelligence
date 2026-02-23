@@ -6,21 +6,17 @@ import {
   createServiceBootstrap,
   BackoffManager,
   sleep,
-  isRateLimitError,
-  isTransientError,
 } from "@rising-intelligence/shared";
 import { getConfig } from "./config.js";
 import {
   disconnectProducer,
 } from "./kafka/producer.js";
 import {
-  type CollectorErrorType,
-  incrementEventsFailed,
   observePollDuration,
   observePollItemsCount,
   incrementCheckpointUpdated,
-  incrementRateLimitBackoff,
 } from "./health.js";
+import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
 import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
 import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
 import { createCollectorPublisher } from "./publishing-facade.js";
@@ -33,24 +29,19 @@ type CollectorContext = CollectorRuntimeContext;
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createCollectorRuntimeFactory();
+const SHUTDOWN_SLEEP_CHUNK_MS = 1_000;
 
-function mapUnknownErrorType(error: unknown): CollectorErrorType {
-  if (!(error instanceof Error)) {
-    return "parse_error";
-  }
+async function sleepUntilNextPoll(
+  ctx: CollectorContext,
+  pollIntervalMs: number
+): Promise<void> {
+  let remainingMs = pollIntervalMs;
 
-  const normalized = error.message.toLowerCase();
-  if (normalized.includes("kafka")) {
-    return "kafka_error";
+  while (remainingMs > 0 && !ctx.shutdownRequested) {
+    const waitMs = Math.min(remainingMs, SHUTDOWN_SLEEP_CHUNK_MS);
+    await sleep(waitMs);
+    remainingMs -= waitMs;
   }
-  if (
-    normalized.includes("auth")
-    || normalized.includes("unauthorized")
-    || normalized.includes("forbidden")
-  ) {
-    return "auth_error";
-  }
-  return "parse_error";
 }
 
 async function initializeCollector(): Promise<CollectorContext> {
@@ -71,6 +62,7 @@ async function runAdapter(
     logger: adapterLogger,
   });
   const backoff = new BackoffManager(adapter.name, adapterLogger);
+  const errorPolicy = createAdapterErrorPolicy();
   const eventProcessor = createCollectorEventProcessor({
     adapterName: adapter.name,
     adapterSource: adapter.source,
@@ -137,10 +129,10 @@ async function runAdapter(
       backoff.reset();
 
       if (ctx.shutdownRequested) break;
-      await sleep(adapter.pollIntervalMs);
+      await sleepUntilNextPoll(ctx, adapter.pollIntervalMs);
 
     } catch (error) {
-      adapterLogger.error({ error }, "Adapter error");
+      adapterLogger.error({ error: serializeError(error) }, "Adapter error");
 
       const lastSuccessfulPollAt = healthContext.sourceHealth.get(adapter.name)?.last_poll_at;
 
@@ -166,21 +158,11 @@ async function runAdapter(
       }
 
       if (ctx.shutdownRequested) break;
-      if (isRateLimitError(error)) {
-        incrementEventsFailed(healthContext, adapter.source, "rate_limit");
-        incrementRateLimitBackoff(healthContext, adapter.source);
-        await backoff.waitRateLimit();
-      } else if (isTransientError(error)) {
-        incrementEventsFailed(healthContext, adapter.source, "network_error");
-        await backoff.waitTransient();
-      } else {
-        incrementEventsFailed(
-          healthContext,
-          adapter.source,
-          mapUnknownErrorType(error)
-        );
-        await backoff.waitTransient();
-      }
+      await errorPolicy.handle(error, {
+        healthContext,
+        adapterSource: adapter.source,
+        backoff,
+      });
     }
   }
 }

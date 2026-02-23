@@ -1,13 +1,13 @@
 import type { Server } from "node:http";
 import {
-  createConnectedPrismaClient,
+  createPrismaRuntimeDependencies,
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
   createFunctionDependencyFactory,
   closeServer,
-  createStartupFacade,
-  createStartupResourceConnector,
+  createComponentLoggerFactory,
+  createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared";
 import type { Redis } from "ioredis";
@@ -28,6 +28,7 @@ import { createRedisClient, disconnectRedis } from "./redis.js";
 import type { PersisterContext } from "./process.js";
 
 type KafkaConsumer = KafkaConsumerContext["consumer"];
+type RuntimeLoggerComponent = "redis" | "kafka";
 
 export interface PersisterRuntimeFactoryDependencies {
   createHealthContext(): HealthContext;
@@ -48,14 +49,17 @@ export interface PersisterRuntimeFactory {
 
 type DependencyOverrides = FunctionDependencyOverrides<PersisterRuntimeFactoryDependencies>;
 
+const DEFAULT_PRISMA_RUNTIME_DEPENDENCIES =
+  createPrismaRuntimeDependencies<Config>({
+    getDatabaseUrl(config): string {
+      return config.DATABASE_URL;
+    },
+  });
+
 const DEFAULT_DEPENDENCIES: PersisterRuntimeFactoryDependencies = {
+  ...DEFAULT_PRISMA_RUNTIME_DEPENDENCIES,
   createHealthContext,
   startHealthServer,
-  async createPrismaClient(config): Promise<PrismaClient> {
-    return createConnectedPrismaClient({
-      databaseUrl: config.DATABASE_URL,
-    });
-  },
   createRedisClient,
   createKafkaConsumer,
   createCircuitBreaker(config): PostgresCircuitBreaker {
@@ -66,9 +70,6 @@ const DEFAULT_DEPENDENCIES: PersisterRuntimeFactoryDependencies = {
   },
   disconnectKafkaConsumer,
   disconnectRedis,
-  closePrismaClient(prisma): Promise<void> {
-    return prisma.$disconnect();
-  },
   closeHealthServer: closeServer,
 };
 
@@ -78,47 +79,42 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
   ) {}
 
   async createRuntime(config: Config, logger: pino.Logger): Promise<PersisterContext> {
-    const startup = createStartupFacade(logger);
-    const resources = createStartupResourceConnector(startup);
+    const { startup, resources } = createRuntimeCompositionRoot(logger);
+    const componentLoggers =
+      createComponentLoggerFactory<RuntimeLoggerComponent>(logger);
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connect({
-        name: "health-server",
-        connect: () => this.dependencies.startHealthServer(healthContext, logger),
-        disconnect: (server) => this.dependencies.closeHealthServer(server),
-        rollbackAction: "close",
-      });
+      const healthServer = await resources.connectHealthServer(
+        () => this.dependencies.startHealthServer(healthContext, logger),
+        (server) => this.dependencies.closeHealthServer(server)
+      );
 
-      const prisma = await resources.connect({
-        name: "postgres",
-        connect: () => this.dependencies.createPrismaClient(config),
-        disconnect: (prismaClient) => this.dependencies.closePrismaClient(prismaClient),
-        rollbackAction: "disconnect",
-      });
+      const prisma = await resources.connectPostgres(
+        () => this.dependencies.createPrismaClient(config),
+        (prismaClient) => this.dependencies.closePrismaClient(prismaClient)
+      );
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resources.connect({
-        name: "redis",
-        connect: () =>
+      const redis = await resources.connectRedis(
+        () =>
           this.dependencies.createRedisClient(
             config,
-            logger.child({ component: "redis" })
+            componentLoggers.create("redis")
           ),
-        disconnect: (redisClient) => this.dependencies.disconnectRedis(redisClient),
-        rollbackAction: "disconnect",
-      });
+        (redisClient) => this.dependencies.disconnectRedis(redisClient)
+      );
       healthContext.redisHealthy = true;
 
-      const kafkaContext = await resources.connect({
-        name: "kafka-consumer",
-        connect: () =>
-          this.dependencies.createKafkaConsumer(logger.child({ component: "kafka" })),
-        disconnect: (consumerContext) =>
-          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger),
-        rollbackAction: "disconnect",
-      });
+      const kafkaContext = await resources.connectKafkaConsumer(
+        () =>
+          this.dependencies.createKafkaConsumer(
+            componentLoggers.create("kafka")
+          ),
+        (consumerContext) =>
+          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
+      );
       await kafkaContext.consumer.subscribe({
         topic: config.KAFKA_TOPIC_RAW_EVENTS,
         fromBeginning: false,

@@ -68,5 +68,20 @@ describe("Backoff error classification", () => {
     const nested = new Error("outer", { cause: new Error("socket hang up") });
     expect(isTransientError(nested)).toBe(true);
   });
-});
 
+  it("classifies nested non-Error causes by status code", () => {
+    const nestedRateLimit = new Error("outer", { cause: { status: 429 } });
+    const nestedTransient = new Error("outer", { cause: { status: 502 } });
+
+    expect(isRateLimitError(nestedRateLimit)).toBe(true);
+    expect(isTransientError(nestedTransient)).toBe(true);
+  });
+
+  it("does not recurse forever when causes are cyclic", () => {
+    const cyclic = new Error("cyclic");
+    (cyclic as Error & { cause?: unknown }).cause = cyclic;
+
+    expect(isRateLimitError(cyclic)).toBe(false);
+    expect(isTransientError(cyclic)).toBe(false);
+  });
+});

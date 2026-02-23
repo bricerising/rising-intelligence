@@ -91,8 +91,8 @@ describe("trends snapshot publishing", () => {
 
     expect(prisma.trendSnapshot.create).toHaveBeenCalledOnce();
     expect(healthContext.metrics.snapshotPublished.get("15m")).toBe(1);
-    expect(healthContext.metrics.topicVolume.get("aws.bedrock|15m")).toBe(8);
-    expect(healthContext.metrics.topicScore.get("aws.bedrock|15m")).toBe(32);
+    expect(healthContext.metrics.topicMetrics.getVolume("aws.bedrock", "15m")).toBe(8);
+    expect(healthContext.metrics.topicMetrics.getScore("aws.bedrock", "15m")).toBe(32);
     expect(healthContext.metrics.baselineComputeDurationSeconds.count).toBe(1);
 
     expect(pipeline.set).toHaveBeenCalledWith("prev:15m:aws.bedrock", "8");

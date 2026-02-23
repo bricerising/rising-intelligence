@@ -210,6 +210,29 @@ describe("processSummaryRequest", () => {
     );
   });
 
+  it("adapts process context to a request-scoped logger before resolving requests", async () => {
+    const childLogger = makeLogger();
+    const rootLogger = makeLogger();
+    rootLogger.child.mockReturnValue(childLogger);
+
+    const resolver = {
+      resolve: vi.fn(async (_ctx: unknown, summaryRequest: ParsedSummaryRequest) => summaryRequest),
+    };
+
+    const processor = createSummaryRequestProcessor({
+      createQueryModeRequestResolver: () => resolver as any,
+    });
+
+    const ctx = makeContext({ logger: rootLogger });
+    await processor.processSummaryRequest(ctx, makeRequest());
+
+    expect(rootLogger.child).toHaveBeenCalledWith({ requestId: "req-1" });
+    expect(resolver.resolve).toHaveBeenCalledOnce();
+    expect(resolver.resolve.mock.calls[0][0]).not.toBe(ctx);
+    expect(resolver.resolve.mock.calls[0][0].logger).toBe(childLogger);
+    expect(resolver.resolve.mock.calls[0][2]).toBe(childLogger);
+  });
+
   it("persists and publishes a successful brief result", async () => {
     const ctx = makeContext();
 

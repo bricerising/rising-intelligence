@@ -233,6 +233,30 @@ describe("Topic Extraction", () => {
       expect(topics).toContain("data.kafka");
     });
 
+    it("should match data.kafka for repeated Kafka mentions with technical context", () => {
+      const topics = extractTopics(
+        {
+          title: "Kafka adoption update",
+          text: "Kafka usage increased as teams expanded Kafka clusters and producers.",
+          url: "https://example.com/kafka-adoption",
+        },
+        allowlist
+      );
+      expect(topics).toContain("data.kafka");
+    });
+
+    it("should NOT match data.kafka for a single non-technical Kafka surname mention", () => {
+      const topics = extractTopics(
+        {
+          title: "Media interview roundup",
+          text: "Analyst Peter Kafka discussed creator economy trends.",
+          url: "https://example.com/media-roundup",
+        },
+        allowlist
+      );
+      expect(topics).not.toContain("data.kafka");
+    });
+
     it("should NOT match observability.opentelemetry for hotel text", () => {
       const topics = extractTopics(
         {
@@ -251,6 +275,18 @@ describe("Topic Extraction", () => {
           title: "OTEL collector rollout",
           text: "Engineers added OTEL traces, metrics, and exporter settings in production.",
           url: "https://example.com/otel-rollout",
+        },
+        allowlist
+      );
+      expect(topics).toContain("observability.opentelemetry");
+    });
+
+    it("should match observability.opentelemetry for explicit OpenTelemetry mentions", () => {
+      const topics = extractTopics(
+        {
+          title: "OpenTelemetry adoption report",
+          text: "Teams documented OpenTelemetry rollout planning across services.",
+          url: "https://example.com/otel-adoption",
         },
         allowlist
       );

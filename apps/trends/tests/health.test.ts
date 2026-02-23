@@ -201,9 +201,10 @@ describe("trends health", () => {
 
       clearTopicMetrics(ctx, "15m");
 
-      expect(ctx.metrics.topicVolume.size).toBe(1);
-      expect(ctx.metrics.topicScore.size).toBe(1);
-      expect(ctx.metrics.topicVolume.has("aws.bedrock|60m")).toBe(true);
+      expect(ctx.metrics.topicMetrics.volumeCount()).toBe(1);
+      expect(ctx.metrics.topicMetrics.scoreCount()).toBe(1);
+      expect(ctx.metrics.topicMetrics.getVolume("aws.bedrock", "60m")).toBe(30);
+      expect(ctx.metrics.topicMetrics.getScore("aws.bedrock", "60m")).toBe(50);
     });
   });
 
@@ -259,6 +260,14 @@ describe("trends health", () => {
 
       const output = formatMetrics(ctx);
       expect(output).toContain('error_type="quote\\"in\\"label"');
+    });
+
+    it("retains topic names that contain window separator characters", () => {
+      setTopicMetrics(ctx, "aws|bedrock", "15m", 2, 3);
+
+      const output = formatMetrics(ctx);
+      expect(output).toContain('ri_trends_topic_volume{topic="aws|bedrock",window="15m"} 2');
+      expect(output).toContain('ri_trends_topic_score{topic="aws|bedrock",window="15m"} 3');
     });
 
     it("includes histogram buckets", () => {

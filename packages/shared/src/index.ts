@@ -34,6 +34,7 @@ export * from "./runtime/logger.js";
 export * from "./runtime/pipeline.js";
 export * from "./runtime/raw-event.js";
 export * from "./runtime/raw-event-enrichment.js";
+export * from "./runtime/runtime-resource-facade.js";
 export * from "./runtime/secrets.js";
 export * from "./runtime/service-bootstrap.js";
 export * from "./runtime/source.js";

@@ -56,15 +56,39 @@ function createConfig(overrides: Partial<Config> = {}): Config {
 }
 
 function createLogger() {
-  const logger = {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn(),
-  } as any;
+  const createMockLogger = () =>
+    ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    }) as any;
 
-  logger.child.mockReturnValue(logger);
-  return logger;
+  const logger = createMockLogger();
+  const childLoggers = new Map<string, any>();
+
+  logger.child.mockImplementation((bindings: { component?: unknown }) => {
+    const component = String(bindings.component);
+    const existing = childLoggers.get(component);
+    if (existing) {
+      return existing;
+    }
+
+    const childLogger = createMockLogger();
+    childLogger.child.mockReturnValue(childLogger);
+    childLoggers.set(component, childLogger);
+    return childLogger;
+  });
+
+  return Object.assign(logger, {
+    childFor(component: string) {
+      const childLogger = childLoggers.get(component);
+      if (!childLogger) {
+        throw new Error(`Expected logger child for component "${component}"`);
+      }
+      return childLogger;
+    },
+  });
 }
 
 function createSourceAdapter(
@@ -164,14 +188,14 @@ describe("createCollectorRuntimeFactory", () => {
 
   it("uses default dependencies when an override is explicitly undefined", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const setup = createDependencies();
     const factory = createCollectorRuntimeFactory({
       ...setup.dependencies,
       createHealthContext: undefined,
     });
 
-    const ctx = await factory.createRuntime(config, logger);
+    const ctx = await factory.createRuntime(config, loggerHarness);
 
     expect(ctx.healthContext).not.toBe(setup.healthContext);
     expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
@@ -179,7 +203,7 @@ describe("createCollectorRuntimeFactory", () => {
 
   it("creates a runtime context with healthy dependencies and initialized adapters", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const {
       dependencies,
       healthContext,
@@ -201,10 +225,10 @@ describe("createCollectorRuntimeFactory", () => {
     dependencies.createCollectorAdapterFactory = vi.fn(() => configuredAdapterFactory);
     const factory = createCollectorRuntimeFactory(dependencies);
 
-    const ctx = await factory.createRuntime(config, logger);
+    const ctx = await factory.createRuntime(config, loggerHarness);
 
     expect(ctx.config).toBe(config);
-    expect(ctx.logger).toBe(logger);
+    expect(ctx.logger).toBe(loggerHarness);
     expect(ctx.healthContext).toBe(healthContext);
     expect(ctx.healthServer).toBe(healthServer);
     expect(ctx.checkpointStore).toBe(checkpointStore);
@@ -215,10 +239,13 @@ describe("createCollectorRuntimeFactory", () => {
     expect(ctx.shutdownRequested).toBe(false);
     expect(ctx.lastSeenCleanupAt).toBe(0);
 
-    expect(dependencies.createCheckpointStore).toHaveBeenCalledWith(config.CHECKPOINT_PATH, logger);
+    expect(dependencies.createCheckpointStore).toHaveBeenCalledWith(
+      config.CHECKPOINT_PATH,
+      loggerHarness.childFor("checkpoint")
+    );
     expect(dependencies.initializeCheckpointStore).toHaveBeenCalledWith(checkpointStore);
     expect(dependencies.loadAllowlist).toHaveBeenCalledWith(config.TOPICS_ALLOWLIST_PATH);
-    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(logger);
+    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(loggerHarness);
     expect(dependencies.loadMarketFilterProfiles).toHaveBeenCalledWith(config.MARKET_FILTERS_DIR);
     expect(dependencies.getEnvironment).toHaveBeenCalledTimes(1);
     expect(dependencies.createContentFetcherConfig).toHaveBeenCalledWith(environment);
@@ -226,15 +253,15 @@ describe("createCollectorRuntimeFactory", () => {
     expect(configuredAdapterFactory.build).toHaveBeenCalledWith({
       config,
       checkpointStore,
-      logger,
+      logger: loggerHarness,
       contentFetcherConfig,
       marketFilterProfiles,
       onRssFeedError: expect.any(Function),
     });
 
     expect(adapters[0].initialize).toHaveBeenCalledTimes(1);
-    expect(logger.child).toHaveBeenCalledWith({ component: "checkpoint" });
-    expect(logger.warn).toHaveBeenCalledWith(
+    expect(loggerHarness.child).toHaveBeenCalledWith({ component: "checkpoint" });
+    expect(loggerHarness.warn).toHaveBeenCalledWith(
       { unsupportedAdapters: ["reddit"] },
       "Adapter flags enabled without implementation in this collector build"
     );
@@ -246,7 +273,7 @@ describe("createCollectorRuntimeFactory", () => {
 
   it("rolls back initialized resources in reverse order when adapter initialization fails", async () => {
     const config = createConfig();
-    const logger = createLogger();
+    const loggerHarness = createLogger();
     const cleanupOrder: string[] = [];
     const adapterOne = createSourceAdapter("rss", "rss", {
       shutdown: vi.fn(async () => {
@@ -278,7 +305,7 @@ describe("createCollectorRuntimeFactory", () => {
     setup.dependencies.createCollectorAdapterFactory = vi.fn(() => failingAdapterFactory);
     const factory = createCollectorRuntimeFactory(setup.dependencies);
 
-    await expect(factory.createRuntime(config, logger)).rejects.toThrow("adapter init failed");
+    await expect(factory.createRuntime(config, loggerHarness)).rejects.toThrow("adapter init failed");
 
     expect(cleanupOrder).toEqual([
       "adapter-rss",

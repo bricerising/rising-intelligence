@@ -8,6 +8,11 @@ export {
   type PrismaClientFactoryInput,
 } from "./client.js";
 export { upsertConsumerLag, type ConsumerLagUpdate } from "./consumer-lag.js";
+export {
+  createPrismaRuntimeDependencies,
+  type PrismaRuntimeDependencies,
+  type PrismaRuntimeDependencyFactoryInput,
+} from "./runtime-dependencies.js";
 
 // Re-export generated types for convenience
 export type {

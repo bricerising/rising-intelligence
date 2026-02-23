@@ -74,42 +74,128 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function isRateLimitError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (message.includes("429") || message.includes("rate limit")) {
-      return true;
-    }
-    if ("cause" in error && error.cause instanceof Error) {
-      return isRateLimitError(error.cause);
-    }
+interface ErrorClassificationHandler {
+  readonly name: string;
+  matches(candidate: unknown): boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function getStatusCode(candidate: unknown): number | null {
+  if (!isRecord(candidate) || !("status" in candidate)) {
+    return null;
   }
-  if (error && typeof error === "object" && "status" in error) {
-    return (error as { status: number }).status === 429;
+  const status = candidate.status;
+  if (typeof status !== "number" || !Number.isFinite(status)) {
+    return null;
+  }
+  return status;
+}
+
+function getErrorMessage(candidate: unknown): string | null {
+  if (!(candidate instanceof Error)) {
+    return null;
+  }
+
+  return candidate.message.toLowerCase();
+}
+
+function includesAnyTerm(value: string | null, terms: readonly string[]): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return terms.some((term) => value.includes(term));
+}
+
+function getCause(candidate: unknown): unknown {
+  if (!isRecord(candidate) || !("cause" in candidate)) {
+    return undefined;
+  }
+  return candidate.cause;
+}
+
+function iterateCandidates(error: unknown): Iterable<unknown> {
+  const candidates: unknown[] = [];
+  const visitedObjects = new Set<object>();
+  let current: unknown = error;
+
+  while (current !== undefined) {
+    candidates.push(current);
+
+    if (!isRecord(current)) {
+      break;
+    }
+
+    if (visitedObjects.has(current)) {
+      break;
+    }
+    visitedObjects.add(current);
+
+    current = getCause(current);
+  }
+
+  return candidates;
+}
+
+function classifyError(
+  error: unknown,
+  handlers: readonly ErrorClassificationHandler[]
+): boolean {
+  for (const candidate of iterateCandidates(error)) {
+    for (const handler of handlers) {
+      if (handler.matches(candidate)) {
+        return true;
+      }
+    }
   }
   return false;
 }
 
+const RATE_LIMIT_HANDLERS: readonly ErrorClassificationHandler[] = [
+  {
+    name: "status_429",
+    matches(candidate): boolean {
+      return getStatusCode(candidate) === 429;
+    },
+  },
+  {
+    name: "message_rate_limit",
+    matches(candidate): boolean {
+      return includesAnyTerm(getErrorMessage(candidate), ["429", "rate limit"]);
+    },
+  },
+];
+
+const TRANSIENT_HANDLERS: readonly ErrorClassificationHandler[] = [
+  {
+    name: "status_5xx",
+    matches(candidate): boolean {
+      const status = getStatusCode(candidate);
+      return status !== null && status >= 500 && status < 600;
+    },
+  },
+  {
+    name: "message_network_transient",
+    matches(candidate): boolean {
+      return includesAnyTerm(getErrorMessage(candidate), [
+        "econnrefused",
+        "enotfound",
+        "etimedout",
+        "econnreset",
+        "socket hang up",
+        "network",
+      ]);
+    },
+  },
+];
+
+export function isRateLimitError(error: unknown): boolean {
+  return classifyError(error, RATE_LIMIT_HANDLERS);
+}
+
 export function isTransientError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (
-      message.includes("econnrefused") ||
-      message.includes("enotfound") ||
-      message.includes("etimedout") ||
-      message.includes("econnreset") ||
-      message.includes("socket hang up") ||
-      message.includes("network")
-    ) {
-      return true;
-    }
-    if ("cause" in error && error.cause instanceof Error) {
-      return isTransientError(error.cause);
-    }
-  }
-  if (error && typeof error === "object" && "status" in error) {
-    const status = (error as { status: number }).status;
-    return status >= 500 && status < 600;
-  }
-  return false;
+  return classifyError(error, TRANSIENT_HANDLERS);
 }

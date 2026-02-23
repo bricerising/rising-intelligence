@@ -133,6 +133,13 @@ const OTEL_TECHNICAL_PATTERNS = [
   /\b(prometheus|grafana|tempo|jaeger)\b/,
 ] as const;
 
+type TopicRelevanceDecision = "allow" | "deny" | "next";
+
+interface TopicRelevanceRule<RuleContext> {
+  readonly name: string;
+  evaluate(context: RuleContext): TopicRelevanceDecision;
+}
+
 function escapeRegexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -151,54 +158,168 @@ function hasAnyPattern(content: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(content));
 }
 
-function isKafkaTopicRelevant(context: MatcherEvaluationContext): boolean {
-  const content = `${context.lowerTitle} ${context.lowerText}`.trim();
-  if (content.length === 0) {
-    return false;
+function evaluateTopicRelevanceRules<RuleContext>(
+  rules: readonly TopicRelevanceRule<RuleContext>[],
+  context: RuleContext,
+  fallbackDecision: boolean
+): boolean {
+  for (const rule of rules) {
+    const decision = rule.evaluate(context);
+    if (decision === "next") {
+      continue;
+    }
+    return decision === "allow";
   }
-
-  if (hasWholeWord(content, "redpanda")) {
-    return true;
-  }
-  if (hasWholeWord(content, "apache kafka")) {
-    return true;
-  }
-
-  const kafkaCount = countWholeWord(content, "kafka");
-  if (kafkaCount === 0) {
-    return false;
-  }
-
-  const hasTechnicalSignals = hasAnyPattern(content, KAFKA_TECHNICAL_PATTERNS);
-  if (hasWholeWord(content, "peter kafka") && !hasTechnicalSignals) {
-    return false;
-  }
-  if (hasWholeWord(content, "kafkaesque") && !hasTechnicalSignals) {
-    return false;
-  }
-  if (context.lowerUrl.includes("techmeme.com") && !hasTechnicalSignals) {
-    return false;
-  }
-
-  if (hasTechnicalSignals) {
-    return true;
-  }
-
-  return kafkaCount >= 2 && !hasWholeWord(content, "peter kafka");
+  return fallbackDecision;
 }
 
-function isOpenTelemetryTopicRelevant(context: MatcherEvaluationContext): boolean {
+interface KafkaTopicRelevanceContext {
+  content: string;
+  lowerUrl: string;
+  kafkaCount: number;
+  hasTechnicalSignals: boolean;
+  hasRedpanda: boolean;
+  hasApacheKafka: boolean;
+  hasPeterKafka: boolean;
+  hasKafkaesque: boolean;
+}
+
+function createKafkaTopicRelevanceContext(
+  context: MatcherEvaluationContext
+): KafkaTopicRelevanceContext {
   const content = `${context.lowerTitle} ${context.lowerText}`.trim();
-  if (content.length === 0) {
-    return false;
-  }
-  if (hasWholeWord(content, "opentelemetry")) {
-    return true;
-  }
-  if (!hasWholeWord(content, "otel")) {
-    return false;
-  }
-  return hasAnyPattern(content, OTEL_TECHNICAL_PATTERNS);
+  return {
+    content,
+    lowerUrl: context.lowerUrl,
+    kafkaCount: countWholeWord(content, "kafka"),
+    hasTechnicalSignals: hasAnyPattern(content, KAFKA_TECHNICAL_PATTERNS),
+    hasRedpanda: hasWholeWord(content, "redpanda"),
+    hasApacheKafka: hasWholeWord(content, "apache kafka"),
+    hasPeterKafka: hasWholeWord(content, "peter kafka"),
+    hasKafkaesque: hasWholeWord(content, "kafkaesque"),
+  };
+}
+
+const KAFKA_TOPIC_RELEVANCE_RULES: readonly TopicRelevanceRule<KafkaTopicRelevanceContext>[] = [
+  {
+    name: "empty_content",
+    evaluate(context): TopicRelevanceDecision {
+      return context.content.length === 0 ? "deny" : "next";
+    },
+  },
+  {
+    name: "explicit_kafka_terms",
+    evaluate(context): TopicRelevanceDecision {
+      return context.hasRedpanda || context.hasApacheKafka ? "allow" : "next";
+    },
+  },
+  {
+    name: "missing_kafka_term",
+    evaluate(context): TopicRelevanceDecision {
+      return context.kafkaCount === 0 ? "deny" : "next";
+    },
+  },
+  {
+    name: "peter_kafka_without_technical_context",
+    evaluate(context): TopicRelevanceDecision {
+      if (!context.hasPeterKafka || context.hasTechnicalSignals) {
+        return "next";
+      }
+      return "deny";
+    },
+  },
+  {
+    name: "kafkaesque_without_technical_context",
+    evaluate(context): TopicRelevanceDecision {
+      if (!context.hasKafkaesque || context.hasTechnicalSignals) {
+        return "next";
+      }
+      return "deny";
+    },
+  },
+  {
+    name: "techmeme_without_technical_context",
+    evaluate(context): TopicRelevanceDecision {
+      if (!context.lowerUrl.includes("techmeme.com") || context.hasTechnicalSignals) {
+        return "next";
+      }
+      return "deny";
+    },
+  },
+  {
+    name: "technical_signal_match",
+    evaluate(context): TopicRelevanceDecision {
+      return context.hasTechnicalSignals ? "allow" : "next";
+    },
+  },
+  {
+    name: "multiple_kafka_mentions_fallback",
+    evaluate(context): TopicRelevanceDecision {
+      return context.kafkaCount >= 2 && !context.hasPeterKafka ? "allow" : "deny";
+    },
+  },
+];
+
+function isKafkaTopicRelevant(context: MatcherEvaluationContext): boolean {
+  return evaluateTopicRelevanceRules(
+    KAFKA_TOPIC_RELEVANCE_RULES,
+    createKafkaTopicRelevanceContext(context),
+    false
+  );
+}
+
+interface OpenTelemetryTopicRelevanceContext {
+  content: string;
+  hasOpenTelemetry: boolean;
+  hasOtel: boolean;
+  hasTechnicalSignals: boolean;
+}
+
+function createOpenTelemetryTopicRelevanceContext(
+  context: MatcherEvaluationContext
+): OpenTelemetryTopicRelevanceContext {
+  const content = `${context.lowerTitle} ${context.lowerText}`.trim();
+  return {
+    content,
+    hasOpenTelemetry: hasWholeWord(content, "opentelemetry"),
+    hasOtel: hasWholeWord(content, "otel"),
+    hasTechnicalSignals: hasAnyPattern(content, OTEL_TECHNICAL_PATTERNS),
+  };
+}
+
+const OPEN_TELEMETRY_TOPIC_RELEVANCE_RULES: readonly TopicRelevanceRule<OpenTelemetryTopicRelevanceContext>[] = [
+  {
+    name: "empty_content",
+    evaluate(context): TopicRelevanceDecision {
+      return context.content.length === 0 ? "deny" : "next";
+    },
+  },
+  {
+    name: "explicit_opentelemetry_term",
+    evaluate(context): TopicRelevanceDecision {
+      return context.hasOpenTelemetry ? "allow" : "next";
+    },
+  },
+  {
+    name: "missing_otel_term",
+    evaluate(context): TopicRelevanceDecision {
+      return context.hasOtel ? "next" : "deny";
+    },
+  },
+  {
+    name: "otel_technical_signal_match",
+    evaluate(context): TopicRelevanceDecision {
+      return context.hasTechnicalSignals ? "allow" : "deny";
+    },
+  },
+];
+
+function isOpenTelemetryTopicRelevant(context: MatcherEvaluationContext): boolean {
+  return evaluateTopicRelevanceRules(
+    OPEN_TELEMETRY_TOPIC_RELEVANCE_RULES,
+    createOpenTelemetryTopicRelevanceContext(context),
+    false
+  );
 }
 
 type TopicRelevanceStrategy = (context: MatcherEvaluationContext) => boolean;

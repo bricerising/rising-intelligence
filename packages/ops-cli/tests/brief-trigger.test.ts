@@ -70,6 +70,22 @@ describe("brief trigger mode handling", () => {
     ).rejects.toThrow(/TREND_WINDOW_60M/);
   });
 
+  it("rejects malformed window tokens instead of coercing them", async () => {
+    await expect(
+      briefTrigger({
+        "dry-run": true,
+        windows: "2,2.5",
+      })
+    ).rejects.toThrow(/Invalid window value '2.5'/);
+
+    await expect(
+      briefTrigger({
+        "dry-run": true,
+        windows: "2x,2",
+      })
+    ).rejects.toThrow(/Invalid window value '2x'/);
+  });
+
   it("builds explicit mode payload without query fields", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
