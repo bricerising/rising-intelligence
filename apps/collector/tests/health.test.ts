@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createHealthHandler } from "@rising-intelligence/shared";
+import { createHealthHandler } from "@rising-intelligence/shared/http";
 import {
   createHealthContext,
   createHandlers,

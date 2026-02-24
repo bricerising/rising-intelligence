@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConsumerConnection, ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { CompiledAllowlist } from "../src/allowlist.js";
 import type { Config } from "../src/config.js";
 import { createHealthContext } from "../src/health.js";
@@ -102,6 +103,21 @@ function createAllowlist(): CompiledAllowlist {
   };
 }
 
+function createMockConsumerConnection(): ConsumerConnection {
+  return {
+    consume: vi.fn(async () => undefined),
+    disconnect: vi.fn(async () => undefined),
+  };
+}
+
+function createMockProducerConnection(): ProducerConnection {
+  return {
+    publish: vi.fn(async () => undefined),
+    publishBatch: vi.fn(async () => false),
+    disconnect: vi.fn(async () => undefined),
+  };
+}
+
 function createDependencies(
   overrides: Partial<TrendsRuntimeFactoryDependencies> = {}
 ) {
@@ -110,18 +126,8 @@ function createDependencies(
   const prisma = { $disconnect: vi.fn().mockResolvedValue(undefined) } as any;
   const redis = {} as any;
   const allowlist = createAllowlist();
-  const kafkaConsumer = {
-    subscribe: vi.fn().mockResolvedValue(undefined),
-  } as any;
-  const kafkaConsumerContext = {
-    kafka: {} as any,
-    consumer: kafkaConsumer,
-  };
-  const kafkaProducer = {} as any;
-  const kafkaProducerContext = {
-    kafka: {} as any,
-    producer: kafkaProducer,
-  };
+  const kafkaConsumerConnection = createMockConsumerConnection();
+  const kafkaProducerConnection = createMockProducerConnection();
 
   const dependencies: TrendsRuntimeFactoryDependencies = {
     createHealthContext: vi.fn(() => healthContext),
@@ -129,8 +135,8 @@ function createDependencies(
     createPrismaClient: vi.fn(async () => prisma),
     createRedisClient: vi.fn(async () => redis),
     loadAllowlist: vi.fn(() => allowlist),
-    createKafkaConsumer: vi.fn(async () => kafkaConsumerContext),
-    createKafkaProducer: vi.fn(async () => kafkaProducerContext),
+    createKafkaConsumer: vi.fn(async () => kafkaConsumerConnection),
+    createKafkaProducer: vi.fn(async () => kafkaProducerConnection),
     disconnectKafkaConsumer: vi.fn(async () => undefined),
     disconnectKafkaProducer: vi.fn(async () => undefined),
     disconnectRedis: vi.fn(async () => undefined),
@@ -146,10 +152,8 @@ function createDependencies(
     prisma,
     redis,
     allowlist,
-    kafkaConsumer,
-    kafkaConsumerContext,
-    kafkaProducer,
-    kafkaProducerContext,
+    kafkaConsumerConnection,
+    kafkaProducerConnection,
   };
 }
 
@@ -173,7 +177,7 @@ describe("createTrendsRuntimeFactory", () => {
     expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
   });
 
-  it("creates a runtime context with healthy dependencies and topic subscriptions", async () => {
+  it("creates a runtime context with healthy dependencies", async () => {
     const config = createConfig();
     const loggerHarness = createLogger();
     const {
@@ -183,9 +187,8 @@ describe("createTrendsRuntimeFactory", () => {
       prisma,
       redis,
       allowlist,
-      kafkaConsumer,
-      kafkaConsumerContext,
-      kafkaProducerContext,
+      kafkaConsumerConnection,
+      kafkaProducerConnection,
     } = createDependencies();
     const factory = createTrendsRuntimeFactory(dependencies);
 
@@ -198,8 +201,8 @@ describe("createTrendsRuntimeFactory", () => {
     expect(ctx.prisma).toBe(prisma);
     expect(ctx.redis).toBe(redis);
     expect(ctx.allowlist).toBe(allowlist);
-    expect(ctx.kafkaConsumerContext).toBe(kafkaConsumerContext);
-    expect(ctx.kafkaProducerContext).toBe(kafkaProducerContext);
+    expect(ctx.kafkaConsumerContext.consumer).toBe(kafkaConsumerConnection);
+    expect(ctx.kafkaProducerContext.producer).toBe(kafkaProducerConnection);
     expect(ctx.lagWriteTimestamps.size).toBe(0);
     expect(ctx.snapshotTimer).toBeNull();
     expect(ctx.snapshotInFlight).toBe(false);
@@ -211,24 +214,17 @@ describe("createTrendsRuntimeFactory", () => {
     );
     expect(dependencies.loadAllowlist).toHaveBeenCalledWith(config.TOPICS_ALLOWLIST_PATH);
     expect(dependencies.createKafkaConsumer).toHaveBeenCalledWith(
+      config,
       loggerHarness.childFor("kafka-consumer")
     );
     expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(
+      config,
       loggerHarness.childFor("kafka-producer")
     );
 
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "redis" });
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-consumer" });
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-producer" });
-
-    expect(kafkaConsumer.subscribe).toHaveBeenCalledWith({
-      topic: config.KAFKA_TOPIC_RAW_EVENTS,
-      fromBeginning: false,
-    });
-    expect(kafkaConsumer.subscribe).toHaveBeenCalledWith({
-      topic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-      fromBeginning: false,
-    });
 
     expect(healthContext.postgresHealthy).toBe(true);
     expect(healthContext.redisHealthy).toBe(true);

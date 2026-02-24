@@ -124,9 +124,10 @@ function createDependencies(
     mutedTopics: new Set<string>(),
     maxTopicsPerEvent: 5,
   } as any;
-  const kafkaContext = {
-    producer: {} as any,
-    kafka: {} as any,
+  const kafkaProducerConnection = {
+    publish: vi.fn(async () => undefined),
+    publishBatch: vi.fn(async () => false),
+    disconnect: vi.fn(async () => undefined),
   };
   const marketFilterProfiles: MarketFilterProfile[] = [
     { key: "pos", name: "POS", matchers: [] },
@@ -157,7 +158,7 @@ function createDependencies(
     initializeCheckpointStore: vi.fn(async () => undefined),
     closeCheckpointStore: vi.fn(() => undefined),
     loadAllowlist: vi.fn(() => allowlist),
-    createKafkaProducer: vi.fn(async () => kafkaContext),
+    createKafkaProducer: vi.fn(async () => kafkaProducerConnection),
     disconnectProducer: vi.fn(async () => undefined),
     loadMarketFilterProfiles: vi.fn(() => marketFilterProfiles),
     getEnvironment: vi.fn(() => environment),
@@ -172,7 +173,7 @@ function createDependencies(
     healthServer,
     checkpointStore,
     allowlist,
-    kafkaContext,
+    kafkaProducerConnection,
     marketFilterProfiles,
     environment,
     contentFetcherConfig,
@@ -210,7 +211,7 @@ describe("createCollectorRuntimeFactory", () => {
       healthServer,
       checkpointStore,
       allowlist,
-      kafkaContext,
+      kafkaProducerConnection,
       marketFilterProfiles,
       environment,
       adapters,
@@ -233,7 +234,7 @@ describe("createCollectorRuntimeFactory", () => {
     expect(ctx.healthServer).toBe(healthServer);
     expect(ctx.checkpointStore).toBe(checkpointStore);
     expect(ctx.allowlist).toBe(allowlist);
-    expect(ctx.kafkaContext).toBe(kafkaContext);
+    expect(ctx.kafkaContext.producer).toBe(kafkaProducerConnection);
     expect(ctx.marketFilterProfiles).toBe(marketFilterProfiles);
     expect(ctx.adapters).toEqual(adapters);
     expect(ctx.shutdownRequested).toBe(false);
@@ -245,7 +246,7 @@ describe("createCollectorRuntimeFactory", () => {
     );
     expect(dependencies.initializeCheckpointStore).toHaveBeenCalledWith(checkpointStore);
     expect(dependencies.loadAllowlist).toHaveBeenCalledWith(config.TOPICS_ALLOWLIST_PATH);
-    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(loggerHarness);
+    expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(config, loggerHarness);
     expect(dependencies.loadMarketFilterProfiles).toHaveBeenCalledWith(config.MARKET_FILTERS_DIR);
     expect(dependencies.getEnvironment).toHaveBeenCalledTimes(1);
     expect(dependencies.createContentFetcherConfig).toHaveBeenCalledWith(environment);

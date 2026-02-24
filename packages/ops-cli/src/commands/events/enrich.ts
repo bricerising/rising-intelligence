@@ -8,8 +8,8 @@ import {
 import {
   extractTopics,
   loadAllowlist,
-  prepareRawEventForPersistence,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/pipeline";
+import { prepareRawEventForPersistence } from "@rising-intelligence/pipeline/hydration";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseCanonicalSource } from "@rising-intelligence/shared";
+import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import type {
   EvidenceStrategy,
   LlmProvider,

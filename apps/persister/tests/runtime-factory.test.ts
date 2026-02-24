@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConsumerConnection } from "@rising-intelligence/pipeline/transport";
 import { PostgresCircuitBreaker } from "../src/circuit-breaker.js";
 import type { Config } from "../src/config.js";
 import { createHealthContext } from "../src/health.js";
@@ -69,6 +70,13 @@ function createLogger() {
   });
 }
 
+function createMockConsumerConnection(): ConsumerConnection {
+  return {
+    consume: vi.fn(async () => undefined),
+    disconnect: vi.fn(async () => undefined),
+  };
+}
+
 function createDependencies(
   overrides: Partial<PersisterRuntimeFactoryDependencies> = {}
 ) {
@@ -76,13 +84,7 @@ function createDependencies(
   const healthServer = {} as Server;
   const prisma = { $disconnect: vi.fn().mockResolvedValue(undefined) } as any;
   const redis = {} as any;
-  const kafkaConsumer = {
-    subscribe: vi.fn().mockResolvedValue(undefined),
-  } as any;
-  const kafkaContext = {
-    kafka: {} as any,
-    consumer: kafkaConsumer,
-  };
+  const kafkaConsumerConnection = createMockConsumerConnection();
   const circuitBreaker = new PostgresCircuitBreaker(2, 60000);
 
   const dependencies: PersisterRuntimeFactoryDependencies = {
@@ -90,7 +92,7 @@ function createDependencies(
     startHealthServer: vi.fn(() => healthServer),
     createPrismaClient: vi.fn(async () => prisma),
     createRedisClient: vi.fn(async () => redis),
-    createKafkaConsumer: vi.fn(async () => kafkaContext),
+    createKafkaConsumer: vi.fn(async () => kafkaConsumerConnection),
     createCircuitBreaker: vi.fn(() => circuitBreaker),
     disconnectKafkaConsumer: vi.fn(async () => undefined),
     disconnectRedis: vi.fn(async () => undefined),
@@ -105,8 +107,7 @@ function createDependencies(
     healthServer,
     prisma,
     redis,
-    kafkaConsumer,
-    kafkaContext,
+    kafkaConsumerConnection,
     circuitBreaker,
   };
 }
@@ -143,7 +144,7 @@ describe("createPersisterRuntimeFactory", () => {
       healthServer,
       prisma,
       redis,
-      kafkaContext,
+      kafkaConsumerConnection,
       circuitBreaker,
     } = createDependencies();
     const factory = createPersisterRuntimeFactory(dependencies);
@@ -156,7 +157,7 @@ describe("createPersisterRuntimeFactory", () => {
     expect(ctx.healthServer).toBe(healthServer);
     expect(ctx.prisma).toBe(prisma);
     expect(ctx.redis).toBe(redis);
-    expect(ctx.kafkaContext).toBe(kafkaContext);
+    expect(ctx.kafkaContext.consumer).toBe(kafkaConsumerConnection);
     expect(ctx.circuitBreaker).toBe(circuitBreaker);
     expect(ctx.lagWriteTimestamps.size).toBe(0);
 
@@ -166,16 +167,13 @@ describe("createPersisterRuntimeFactory", () => {
       loggerHarness.childFor("redis")
     );
     expect(dependencies.createKafkaConsumer).toHaveBeenCalledWith(
+      config,
       loggerHarness.childFor("kafka")
     );
     expect(dependencies.createCircuitBreaker).toHaveBeenCalledWith(config);
 
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "redis" });
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka" });
-    expect(kafkaContext.consumer.subscribe).toHaveBeenCalledWith({
-      topic: config.KAFKA_TOPIC_RAW_EVENTS,
-      fromBeginning: false,
-    });
 
     expect(healthContext.postgresHealthy).toBe(true);
     expect(healthContext.redisHealthy).toBe(true);
@@ -187,12 +185,9 @@ describe("createPersisterRuntimeFactory", () => {
     const loggerHarness = createLogger();
     const cleanupOrder: string[] = [];
     const setup = createDependencies({
-      createKafkaConsumer: vi.fn(async () => ({
-        kafka: {} as any,
-        consumer: {
-          subscribe: vi.fn().mockRejectedValue(new Error("subscribe failed")),
-        } as any,
-      })),
+      createKafkaConsumer: vi.fn(async () => {
+        throw new Error("consumer connect failed");
+      }),
       disconnectKafkaConsumer: vi.fn(async () => {
         cleanupOrder.push("kafka-consumer");
       }),
@@ -208,10 +203,9 @@ describe("createPersisterRuntimeFactory", () => {
     });
     const factory = createPersisterRuntimeFactory(setup.dependencies);
 
-    await expect(factory.createRuntime(config, loggerHarness)).rejects.toThrow("subscribe failed");
+    await expect(factory.createRuntime(config, loggerHarness)).rejects.toThrow("consumer connect failed");
 
     expect(cleanupOrder).toEqual([
-      "kafka-consumer",
       "redis",
       "postgres",
       "health-server",

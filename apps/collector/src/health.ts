@@ -8,7 +8,7 @@ import {
   quoteMetricLabelValue,
   type HealthHandlers,
   type HistogramState,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 
 const DURATION_BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];

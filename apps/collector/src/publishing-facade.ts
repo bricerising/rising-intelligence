@@ -1,7 +1,8 @@
-import type { Producer } from "kafkajs";
 import type { Logger } from "pino";
-import { createKeyedKafkaTopicPublisher } from "@rising-intelligence/shared";
-import { publishEvent, TOPICS } from "./kafka/producer.js";
+import {
+  createKeyedTopicPublisher,
+  type ProducerConnection,
+} from "@rising-intelligence/pipeline/transport";
 import {
   serializeDeadLetterEvent,
   serializeHeartbeat,
@@ -9,18 +10,21 @@ import {
 } from "./serializer.js";
 import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "./types.js";
 
+export const TOPICS = {
+  RAW_EVENTS: "events.raw",
+  DLQ: "events.raw.dlq",
+  HEARTBEAT: "collector.heartbeat",
+} as const;
+
 export interface CollectorPublisher {
   publishRawEvent(event: RawEvent): Promise<void>;
   publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
   publishHeartbeat(event: CollectorHeartbeat): Promise<void>;
 }
 
-type PublishEventFn = typeof publishEvent;
-
 export interface CreateCollectorPublisherInput {
-  producer: Producer;
+  connection: ProducerConnection;
   logger: Logger;
-  publish?: PublishEventFn;
 }
 
 /**
@@ -30,33 +34,26 @@ export interface CreateCollectorPublisherInput {
 export function createCollectorPublisher(
   input: CreateCollectorPublisherInput
 ): CollectorPublisher {
-  const publish = input.publish ?? publishEvent;
-  const { producer, logger } = input;
-  const rawEventPublisher = createKeyedKafkaTopicPublisher<RawEvent, Logger>({
-    producer,
-    logger,
+  const { connection } = input;
+  const rawEventPublisher = createKeyedTopicPublisher<RawEvent>({
+    connection,
     topic: TOPICS.RAW_EVENTS,
-    publish,
     serialize: serializeRawEvent,
     getKey(event) {
       return event.event_id;
     },
   });
-  const deadLetterPublisher = createKeyedKafkaTopicPublisher<DeadLetterEvent, Logger>({
-    producer,
-    logger,
+  const deadLetterPublisher = createKeyedTopicPublisher<DeadLetterEvent>({
+    connection,
     topic: TOPICS.DLQ,
-    publish,
     serialize: serializeDeadLetterEvent,
     getKey(event) {
       return event.dlq_id;
     },
   });
-  const heartbeatPublisher = createKeyedKafkaTopicPublisher<CollectorHeartbeat, Logger>({
-    producer,
-    logger,
+  const heartbeatPublisher = createKeyedTopicPublisher<CollectorHeartbeat>({
+    connection,
     topic: TOPICS.HEARTBEAT,
-    publish,
     serialize: serializeHeartbeat,
     getKey(event) {
       return event.source;

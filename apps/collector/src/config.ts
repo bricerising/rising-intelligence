@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { getSecretValue, loadDotEnv, parseConfig, zBooleanEnv } from "@rising-intelligence/shared";
+import {
+  getSecretValue,
+  loadDotEnv,
+  parseConfig,
+  zBooleanEnv,
+} from "@rising-intelligence/shared/config";
 
 const ConfigSchema = z.object({
   // Service

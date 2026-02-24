@@ -1,23 +1,19 @@
-import type { EachBatchPayload } from "kafkajs";
+import type { BatchStrategy, MessageStrategy } from "@rising-intelligence/pipeline/transport";
+import { createMessageBatchStrategy } from "@rising-intelligence/pipeline/transport";
 import { Prisma } from "@rising-intelligence/db";
 import {
-  createTopicBatchRouter,
-  runKafkaMessageBatch,
-  type BatchTopicHandler,
-  closeServer,
-  serializeError,
+  createServiceBootstrap,
   runService,
   runShutdownSteps,
-  createServiceBootstrap,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { serializeError } from "@rising-intelligence/shared/errors";
+import { closeServer } from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 import {
   incrementGeneration,
   observeGenerationDuration,
   incrementError,
 } from "./health.js";
-import { disconnectKafkaConsumer } from "./kafka/consumer.js";
-import { disconnectKafkaProducer } from "./kafka/producer.js";
 import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deserialize.js";
 import { disconnectRedis } from "./redis.js";
 import { processSummaryRequest } from "./process.js";
@@ -138,37 +134,33 @@ function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessa
 function createTopicBatchHandler(
   ctx: RuntimeContext,
   topicHandler: TopicMessageHandler
-): BatchTopicHandler {
-  return async (payload: EachBatchPayload): Promise<void> => {
-    const { heartbeat } = payload;
-
-    await runKafkaMessageBatch({
-      ctx,
-      payload,
-      heartbeatIntervalMessages: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
-      strategy: {
-        deserialize: (value) => value,
-        onEmptyValue(_ctx, messageContext): void {
-          ctx.logger.warn(messageContext, "Skipping message with empty value");
-        },
-        async onMessage(_ctx, messageContext, messageValue): Promise<void> {
-          await topicHandler({
-            messageValue,
-            messageLogger: ctx.logger.child(messageContext),
-            heartbeat,
-          });
-        },
-      },
-      resolveOffsets: true,
-    });
+): BatchStrategy<RuntimeContext> {
+  const strategy: MessageStrategy<RuntimeContext, Buffer> = {
+    deserialize: (value) => value,
+    onEmptyValue(_ctx, messageContext): void {
+      ctx.logger.warn(messageContext, "Skipping message with empty value");
+    },
+    async onMessage(_ctx, messageContext, messageValue): Promise<void> {
+      await topicHandler({
+        messageValue,
+        messageLogger: ctx.logger.child(messageContext),
+        heartbeat: messageContext.keepAlive,
+      });
+    },
   };
+
+  return createMessageBatchStrategy({
+    strategy,
+    progressInterval: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
+    acknowledge: true,
+  });
 }
 
 function createBatchTopicHandlers(
   ctx: RuntimeContext
-): Map<string, BatchTopicHandler> {
+): Map<string, BatchStrategy<RuntimeContext>> {
   const messageHandlers = createTopicMessageHandlers(ctx);
-  return new Map<string, BatchTopicHandler>(
+  return new Map<string, BatchStrategy<RuntimeContext>>(
     [...messageHandlers.entries()].map(([topic, handler]) => [
       topic,
       createTopicBatchHandler(ctx, handler),
@@ -184,19 +176,11 @@ async function createRuntime(): Promise<RuntimeContext> {
 }
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
-  const topicBatchRouter = createTopicBatchRouter({
-    logger: ctx.logger,
-    handlers: createBatchTopicHandlers(ctx),
-  });
-
-  await ctx.kafkaConsumerContext.consumer.run({
-    // Offsets are resolved manually per message; keep auto-commit enabled so
-    // commitOffsetsIfNecessary() persists progress and downtime messages replay.
-    autoCommit: true,
-    eachBatchAutoResolve: false,
-    eachBatch: async (payload: EachBatchPayload) => {
-      await topicBatchRouter.handle(payload);
-    },
+  await ctx.kafkaConsumerContext.consumer.consume({
+    topics: [ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS, ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS],
+    ctx,
+    strategy: createBatchTopicHandlers(ctx),
+    fromBeginning: false,
   });
 }
 
@@ -204,7 +188,7 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
   await runShutdownSteps(ctx.logger, [
     {
       name: "kafka-consumer",
-      run: async () => disconnectKafkaConsumer(ctx.kafkaConsumerContext.consumer, ctx.logger),
+      run: async () => ctx.kafkaConsumerContext.consumer.disconnect(),
       errorMessage: "Kafka consumer disconnect failed",
       onSuccess: () => {
         ctx.healthContext.kafkaHealthy = false;
@@ -212,7 +196,7 @@ async function gracefulShutdown(ctx: RuntimeContext): Promise<void> {
     },
     {
       name: "kafka-producer",
-      run: async () => disconnectKafkaProducer(ctx.kafkaProducerContext.producer, ctx.logger),
+      run: async () => ctx.kafkaProducerContext.producer.disconnect(),
       errorMessage: "Kafka producer disconnect failed",
     },
     {

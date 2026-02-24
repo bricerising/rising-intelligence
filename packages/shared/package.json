@@ -4,12 +4,34 @@
   "private": true,
   "type": "module",
   "description": "Shared contracts, config, lifecycle, and telemetry utilities",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle.d.ts",
+      "default": "./dist/lifecycle.js"
+    },
+    "./logging": {
+      "types": "./dist/logging.d.ts",
+      "default": "./dist/logging.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "default": "./dist/http.js"
+    },
+    "./resilience": {
+      "types": "./dist/resilience.d.ts",
+      "default": "./dist/resilience.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "default": "./dist/errors.js"
+    },
+    "./testing": {
+      "types": "./testing/index.ts",
+      "default": "./testing/index.ts"
     }
   },
   "files": [

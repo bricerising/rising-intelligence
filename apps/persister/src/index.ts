@@ -1,13 +1,12 @@
 import {
-  closeServer,
+  createServiceBootstrap,
   runService,
   runShutdownSteps,
-  createServiceBootstrap,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { closeServer } from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
-import { disconnectKafkaConsumer } from "./kafka/consumer.js";
 import { disconnectRedis } from "./redis.js";
-import { processBatch, type PersisterContext } from "./process.js";
+import { PERSISTER_BATCH_STRATEGY, type PersisterContext } from "./process.js";
 import { createPersisterRuntimeFactory } from "./runtime-factory.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
@@ -22,16 +21,11 @@ async function initializePersister(): Promise<PersisterContext> {
 }
 
 async function runConsumer(ctx: PersisterContext): Promise<void> {
-  const consumer = ctx.kafkaContext.consumer;
-
-  await consumer.run({
-    // processBatch resolves offsets manually; keep auto-commit enabled so
-    // commitOffsetsIfNecessary() persists offsets across restarts.
-    autoCommit: true,
-    eachBatchAutoResolve: false,
-    eachBatch: async (payload) => {
-      await processBatch(ctx, payload);
-    },
+  await ctx.kafkaContext.consumer.consume({
+    topics: ctx.config.KAFKA_TOPIC_RAW_EVENTS,
+    ctx,
+    strategy: PERSISTER_BATCH_STRATEGY,
+    fromBeginning: false,
   });
 }
 
@@ -39,7 +33,7 @@ async function gracefulShutdown(ctx: PersisterContext): Promise<void> {
   await runShutdownSteps(ctx.logger, [
     {
       name: "kafka-consumer",
-      run: async () => disconnectKafkaConsumer(ctx.kafkaContext.consumer, ctx.logger),
+      run: async () => ctx.kafkaContext.consumer.disconnect(),
       errorMessage: "Kafka disconnect failed during shutdown",
       onSuccess: () => {
         ctx.healthContext.kafkaHealthy = false;

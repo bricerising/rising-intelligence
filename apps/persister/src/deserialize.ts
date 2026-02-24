@@ -2,7 +2,7 @@ import {
   deserializeRawEvent as sharedDeserialize,
   parseCanonicalSource,
   type CanonicalSource,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/pipeline";
 import { Source } from "@rising-intelligence/db";
 import type { ParsedRawEvent } from "./types.js";
 

@@ -5,7 +5,7 @@ import {
   parseConfig,
   resolveDatabaseUrl,
   resolvePostgresPassword,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/config";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 const LLM_PROVIDERS = ["internal", "http", "codex-cli"] as const;

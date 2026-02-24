@@ -36,8 +36,13 @@ describe("trends snapshot publishing", () => {
       pipeline: vi.fn(() => pipeline),
     };
 
+    const publishedMessages: Array<{ topic: string; key: string; value: Buffer }> = [];
     const producer = {
-      send: vi.fn().mockResolvedValue(undefined),
+      publish: vi.fn(async (topic: string, key: string, value: Buffer) => {
+        publishedMessages.push({ topic, key, value });
+      }),
+      publishBatch: vi.fn(async () => false),
+      disconnect: vi.fn(async () => undefined),
     };
 
     const prisma = {
@@ -78,11 +83,11 @@ describe("trends snapshot publishing", () => {
       healthContext,
     });
 
-    expect(producer.send).toHaveBeenCalledOnce();
-    const produceRequest = (producer.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(produceRequest.topic).toBe("trends.snapshots");
+    expect(producer.publish).toHaveBeenCalledOnce();
+    const [publishedTopic, , publishedValue] = (producer.publish as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(publishedTopic).toBe("trends.snapshots");
 
-    const wirePayload = JSON.parse(produceRequest.messages[0].value.toString("utf-8"));
+    const wirePayload = JSON.parse((publishedValue as Buffer).toString("utf-8"));
     expect(wirePayload.window).toBe(1);
     expect(wirePayload.topics).toHaveLength(1);
     expect(wirePayload.topics[0].topic).toBe("aws.bedrock");

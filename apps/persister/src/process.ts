@@ -1,21 +1,22 @@
 import { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { EachBatchPayload } from "kafkajs";
+import type {
+  BatchContext,
+  BatchStrategy,
+  ConsumerConnection,
+  MessageContext,
+  MessageStrategy,
+  PipelineMessage,
+} from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
 import type { PrismaClient } from "@rising-intelligence/db";
 import {
-  createKafkaBatchLifecycle,
-  processKafkaBatchMessages,
   runAsyncChain,
-  serializeError,
   type AsyncChainStep,
-  type KafkaBatchLifecycle,
-  type KafkaBatchMessageContext,
-  type KafkaBatchMessageStrategy,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/resilience";
+import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import type { Config } from "./config.js";
-import type { KafkaConsumerContext } from "./kafka/consumer.js";
 import {
   incrementError,
   incrementEventsProcessed,
@@ -47,7 +48,7 @@ class RedisWriteFailure extends Error {
 }
 
 type BatchMessageCollectorStrategy<TMessage> = Pick<
-  KafkaBatchMessageStrategy<PersisterContext, TMessage>,
+  MessageStrategy<PersisterContext, TMessage>,
   "deserialize" | "onEmptyValue" | "onDeserializeFailure"
 >;
 
@@ -87,28 +88,54 @@ async function waitWithHeartbeats(
 
 async function collectMessagesWithStrategy<TMessage>(
   ctx: PersisterContext,
-  payload: EachBatchPayload,
-  batchLifecycle: KafkaBatchLifecycle,
+  batch: BatchContext,
+  messages: readonly PipelineMessage[],
   strategy: BatchMessageCollectorStrategy<TMessage>
 ): Promise<TMessage[] | null> {
   const events: TMessage[] = [];
+  let handledMessages = 0;
 
-  const { completed } = await processKafkaBatchMessages(
-    ctx,
-    payload,
-    batchLifecycle,
-    {
-      ...strategy,
-      onMessage(
-        _ctx: PersisterContext,
-        _messageContext: KafkaBatchMessageContext,
-        decoded: TMessage
-      ): void {
-        events.push(decoded);
-      },
+  for (const message of messages) {
+    if (!batch.isActive()) {
+      return null;
     }
-  );
-  if (!completed) {
+
+    const messageContext: MessageContext = {
+      topic: batch.topic,
+      partition: batch.partition,
+      position: message.position,
+      keepAlive: () => batch.keepAlive(),
+    };
+
+    if (!message.value) {
+      await strategy.onEmptyValue?.(ctx, messageContext);
+      handledMessages += 1;
+      if (handledMessages % LOOP_HEARTBEAT_INTERVAL_MESSAGES === 0) {
+        await batch.keepAlive();
+      }
+      continue;
+    }
+
+    let decoded: TMessage;
+    try {
+      decoded = strategy.deserialize(message.value);
+    } catch (error) {
+      await strategy.onDeserializeFailure?.(ctx, messageContext, error);
+      handledMessages += 1;
+      if (handledMessages % LOOP_HEARTBEAT_INTERVAL_MESSAGES === 0) {
+        await batch.keepAlive();
+      }
+      continue;
+    }
+
+    events.push(decoded);
+    handledMessages += 1;
+    if (handledMessages % LOOP_HEARTBEAT_INTERVAL_MESSAGES === 0) {
+      await batch.keepAlive();
+    }
+  }
+
+  if (!batch.isActive()) {
     return null;
   }
 
@@ -117,7 +144,7 @@ async function collectMessagesWithStrategy<TMessage>(
 
 async function pausePartitionWhenCircuitOpen(
   ctx: PersisterContext,
-  payload: EachBatchPayload
+  batch: BatchContext
 ): Promise<boolean> {
   if (!ctx.circuitBreaker.isOpen()) {
     return false;
@@ -126,18 +153,18 @@ async function pausePartitionWhenCircuitOpen(
   const waitMs = ctx.circuitBreaker.timeUntilClose();
   ctx.healthContext.circuitOpen = true;
 
-  const resume = payload.pause();
+  const resume = batch.pause();
   ctx.logger.warn(
     {
       waitMs,
-      kafkaTopic: payload.batch.topic,
-      partition: payload.batch.partition,
+      kafkaTopic: batch.topic,
+      partition: batch.partition,
     },
     "Postgres circuit open; pausing partition"
   );
 
   try {
-    await waitWithHeartbeats(waitMs, payload.heartbeat);
+    await waitWithHeartbeats(waitMs, () => batch.keepAlive());
   } finally {
     resume();
   }
@@ -147,7 +174,8 @@ async function pausePartitionWhenCircuitOpen(
 
 async function persistEventsWithCircuitHandling(
   ctx: PersisterContext,
-  payload: EachBatchPayload,
+  batch: BatchContext,
+  messages: readonly PipelineMessage[],
   events: ParsedRawEvent[]
 ): Promise<void> {
   try {
@@ -176,9 +204,9 @@ async function persistEventsWithCircuitHandling(
 
     ctx.logger.error(
       {
-        kafkaTopic: payload.batch.topic,
-        partition: payload.batch.partition,
-        batchSize: payload.batch.messages.length,
+        kafkaTopic: batch.topic,
+        partition: batch.partition,
+        batchSize: messages.length,
         openedCircuit: opened,
         error: serializeError(error),
       },
@@ -196,7 +224,7 @@ export interface PersisterContext {
   healthServer: Server;
   prisma: PrismaClient;
   redis: Redis;
-  kafkaContext: KafkaConsumerContext;
+  kafkaContext: { consumer: ConsumerConnection };
   circuitBreaker: PostgresCircuitBreaker;
   lagWriteTimestamps: Map<string, number>;
 }
@@ -235,14 +263,14 @@ export async function persistAndMarkSeen(
 
 export async function updateLag(
   ctx: PersisterContext,
-  payload: EachBatchPayload,
+  batch: BatchContext,
   currentOffset: bigint,
   latestOffset: bigint,
   lag: bigint
 ): Promise<boolean> {
-  setConsumerLag(ctx.healthContext, payload.batch.partition, lag);
+  setConsumerLag(ctx.healthContext, batch.partition, lag);
 
-  const partitionKey = `${payload.batch.topic}:${payload.batch.partition}`;
+  const partitionKey = `${batch.topic}:${batch.partition}`;
   const lastWrite = ctx.lagWriteTimestamps.get(partitionKey) ?? 0;
   const now = Date.now();
 
@@ -252,8 +280,8 @@ export async function updateLag(
 
   await upsertConsumerLag(ctx.prisma, {
     consumerGroup: ctx.config.KAFKA_CONSUMER_GROUP,
-    topic: payload.batch.topic,
-    partition: payload.batch.partition,
+    topic: batch.topic,
+    partition: batch.partition,
     currentOffset,
     latestOffset,
     lagMessages: lag,
@@ -265,28 +293,20 @@ export async function updateLag(
 }
 
 interface ProcessBatchState {
-  batchLifecycle: KafkaBatchLifecycle;
   events: ParsedRawEvent[] | null;
 }
 
 interface ProcessBatchExecutionContext {
   ctx: PersisterContext;
-  payload: EachBatchPayload;
+  batch: BatchContext;
+  messages: readonly PipelineMessage[];
   state: ProcessBatchState;
 }
 
 type ProcessBatchStep = AsyncChainStep<ProcessBatchExecutionContext, void>;
 
-function createProcessBatchState(payload: EachBatchPayload): ProcessBatchState {
+function createProcessBatchState(): ProcessBatchState {
   return {
-    batchLifecycle: createKafkaBatchLifecycle(
-      {
-        isRunning: payload.isRunning,
-        isStale: payload.isStale,
-        heartbeat: payload.heartbeat,
-      },
-      LOOP_HEARTBEAT_INTERVAL_MESSAGES
-    ),
     events: null,
   };
 }
@@ -294,8 +314,8 @@ function createProcessBatchState(payload: EachBatchPayload): ProcessBatchState {
 function createBatchLifecycleGateStep(): ProcessBatchStep {
   return {
     name: "batch-lifecycle-gate",
-    async execute({ state }, next): Promise<void> {
-      if (!state.batchLifecycle.shouldContinue()) {
+    async execute({ batch }, next): Promise<void> {
+      if (!batch.isActive()) {
         return;
       }
 
@@ -307,8 +327,8 @@ function createBatchLifecycleGateStep(): ProcessBatchStep {
 function createCircuitPauseStep(): ProcessBatchStep {
   return {
     name: "circuit-breaker-pause",
-    async execute({ ctx, payload }, next): Promise<void> {
-      if (await pausePartitionWhenCircuitOpen(ctx, payload)) {
+    async execute({ ctx, batch }, next): Promise<void> {
+      if (await pausePartitionWhenCircuitOpen(ctx, batch)) {
         return;
       }
 
@@ -320,8 +340,8 @@ function createCircuitPauseStep(): ProcessBatchStep {
 function createObserveBatchSizeStep(): ProcessBatchStep {
   return {
     name: "observe-batch-size",
-    async execute({ ctx, payload }, next): Promise<void> {
-      observeBatchSize(ctx.healthContext, payload.batch.messages.length);
+    async execute({ ctx, messages }, next): Promise<void> {
+      observeBatchSize(ctx.healthContext, messages.length);
       await next();
     },
   };
@@ -330,11 +350,11 @@ function createObserveBatchSizeStep(): ProcessBatchStep {
 function createCollectMessagesStep(): ProcessBatchStep {
   return {
     name: "collect-messages",
-    async execute({ ctx, payload, state }, next): Promise<void> {
+    async execute({ ctx, batch, messages, state }, next): Promise<void> {
       const events = await collectMessagesWithStrategy(
         ctx,
-        payload,
-        state.batchLifecycle,
+        batch,
+        messages,
         RAW_EVENT_BATCH_STRATEGY
       );
       if (!events) {
@@ -350,12 +370,12 @@ function createCollectMessagesStep(): ProcessBatchStep {
 function createPersistEventsStep(): ProcessBatchStep {
   return {
     name: "persist-events",
-    async execute({ ctx, payload, state }, next): Promise<void> {
+    async execute({ ctx, batch, messages, state }, next): Promise<void> {
       if (state.events === null) {
         throw new Error("Persister process pipeline reached persistence without collected events");
       }
 
-      await persistEventsWithCircuitHandling(ctx, payload, state.events);
+      await persistEventsWithCircuitHandling(ctx, batch, messages, state.events);
       await next();
     },
   };
@@ -364,9 +384,9 @@ function createPersistEventsStep(): ProcessBatchStep {
 function createResolveOffsetsStep(): ProcessBatchStep {
   return {
     name: "resolve-offsets",
-    async execute({ payload }, next): Promise<void> {
-      for (const message of payload.batch.messages) {
-        payload.resolveOffset(message.offset);
+    async execute({ batch, messages }, next): Promise<void> {
+      for (const message of messages) {
+        batch.acknowledge(message.position);
       }
       await next();
     },
@@ -376,13 +396,13 @@ function createResolveOffsetsStep(): ProcessBatchStep {
 function createCommitAndHeartbeatStep(): ProcessBatchStep {
   return {
     name: "commit-and-heartbeat",
-    async execute({ payload, state }, next): Promise<void> {
-      await payload.commitOffsetsIfNecessary();
-      if (!state.batchLifecycle.shouldContinue()) {
+    async execute({ batch }, next): Promise<void> {
+      await batch.commit();
+      if (!batch.isActive()) {
         return;
       }
 
-      await state.batchLifecycle.flushHeartbeat();
+      await batch.keepAlive();
       await next();
     },
   };
@@ -391,21 +411,21 @@ function createCommitAndHeartbeatStep(): ProcessBatchStep {
 function createLagUpdateStep(): ProcessBatchStep {
   return {
     name: "update-consumer-lag",
-    async execute({ ctx, payload }, next): Promise<void> {
-      const lastMessage = payload.batch.messages.at(-1);
+    async execute({ ctx, batch, messages }, next): Promise<void> {
+      const lastMessage = messages.at(-1);
       if (!lastMessage) {
         await next();
         return;
       }
 
-      const currentOffset = toBigInt(lastMessage.offset, 0n) + 1n;
-      const latestOffset = toBigInt(payload.batch.highWatermark, currentOffset);
+      const currentOffset = toBigInt(lastMessage.position, 0n) + 1n;
+      const latestOffset = toBigInt(batch.highWatermark, currentOffset);
       const lag = latestOffset > currentOffset ? latestOffset - currentOffset : 0n;
 
       try {
         const wroteLag = await updateLag(
           ctx,
-          payload,
+          batch,
           currentOffset,
           latestOffset,
           lag
@@ -418,8 +438,8 @@ function createLagUpdateStep(): ProcessBatchStep {
         ctx.healthContext.postgresHealthy = false;
         ctx.logger.warn(
           {
-            kafkaTopic: payload.batch.topic,
-            partition: payload.batch.partition,
+            kafkaTopic: batch.topic,
+            partition: batch.partition,
             error: serializeError(error),
           },
           "Failed to update consumer lag"
@@ -457,13 +477,13 @@ async function runProcessBatchPipeline(
   });
 }
 
-export async function processBatch(
-  ctx: PersisterContext,
-  payload: EachBatchPayload
-): Promise<void> {
-  await runProcessBatchPipeline({
-    ctx,
-    payload,
-    state: createProcessBatchState(payload),
-  });
-}
+export const PERSISTER_BATCH_STRATEGY: BatchStrategy<PersisterContext> = {
+  async processBatch(ctx, batch, messages): Promise<void> {
+    await runProcessBatchPipeline({
+      ctx,
+      batch,
+      messages,
+      state: createProcessBatchState(),
+    });
+  },
+};

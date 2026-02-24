@@ -2,7 +2,7 @@ import { Readability } from "@mozilla/readability";
 import {
   createUrlSafetyFacade,
   type UrlSafetyFacade,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/http";
 import { JSDOM, VirtualConsole } from "jsdom";
 import type { Logger } from "pino";
 

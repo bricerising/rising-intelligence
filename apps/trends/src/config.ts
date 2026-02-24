@@ -5,7 +5,7 @@ import {
   resolvePostgresPassword,
   resolveDatabaseUrl,
   zBooleanEnv,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/config";
 import type { TrendWindow } from "./types.js";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;

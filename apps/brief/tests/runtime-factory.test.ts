@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConsumerConnection, ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { Config } from "../src/config.js";
 import { createHealthContext } from "../src/health.js";
 import {
@@ -84,17 +85,14 @@ function createDependencies(
   const healthServer = {} as Server;
   const prisma = { $disconnect: vi.fn().mockResolvedValue(undefined) } as any;
   const redis = {} as any;
-  const kafkaConsumer = {
-    subscribe: vi.fn().mockResolvedValue(undefined),
-  } as any;
-  const kafkaConsumerContext = {
-    kafka: {} as any,
-    consumer: kafkaConsumer,
+  const kafkaConsumerConnection: ConsumerConnection = {
+    consume: vi.fn(async () => undefined),
+    disconnect: vi.fn(async () => undefined),
   };
-  const kafkaProducer = {} as any;
-  const kafkaProducerContext = {
-    kafka: {} as any,
-    producer: kafkaProducer,
+  const kafkaProducerConnection: ProducerConnection = {
+    publish: vi.fn(async () => undefined),
+    publishBatch: vi.fn(async () => false),
+    disconnect: vi.fn(async () => undefined),
   };
 
   const dependencies: BriefRuntimeFactoryDependencies = {
@@ -103,8 +101,8 @@ function createDependencies(
     setBudgetRemainingUsd: vi.fn(() => undefined),
     createPrismaClient: vi.fn(async () => prisma),
     createRedisClient: vi.fn(async () => redis),
-    createKafkaConsumer: vi.fn(async () => kafkaConsumerContext),
-    createKafkaProducer: vi.fn(async () => kafkaProducerContext),
+    createKafkaConsumer: vi.fn(async () => kafkaConsumerConnection),
+    createKafkaProducer: vi.fn(async () => kafkaProducerConnection),
     disconnectKafkaConsumer: vi.fn(async () => undefined),
     disconnectKafkaProducer: vi.fn(async () => undefined),
     disconnectRedis: vi.fn(async () => undefined),
@@ -119,9 +117,8 @@ function createDependencies(
     healthServer,
     prisma,
     redis,
-    kafkaConsumer,
-    kafkaConsumerContext,
-    kafkaProducerContext,
+    kafkaConsumerConnection,
+    kafkaProducerConnection,
   };
 }
 
@@ -145,7 +142,7 @@ describe("createBriefRuntimeFactory", () => {
     expect(setup.dependencies.createHealthContext).not.toHaveBeenCalled();
   });
 
-  it("creates a runtime context with healthy dependencies and topic subscriptions", async () => {
+  it("creates a runtime context with healthy dependencies", async () => {
     const config = createConfig();
     const loggerHarness = createLogger();
     const {
@@ -154,9 +151,8 @@ describe("createBriefRuntimeFactory", () => {
       healthServer,
       prisma,
       redis,
-      kafkaConsumer,
-      kafkaConsumerContext,
-      kafkaProducerContext,
+      kafkaConsumerConnection,
+      kafkaProducerConnection,
     } = createDependencies();
     const factory = createBriefRuntimeFactory(dependencies);
 
@@ -168,8 +164,8 @@ describe("createBriefRuntimeFactory", () => {
     expect(ctx.healthServer).toBe(healthServer);
     expect(ctx.prisma).toBe(prisma);
     expect(ctx.redis).toBe(redis);
-    expect(ctx.kafkaConsumerContext).toBe(kafkaConsumerContext);
-    expect(ctx.kafkaProducerContext).toBe(kafkaProducerContext);
+    expect(ctx.kafkaConsumerContext.consumer).toBe(kafkaConsumerConnection);
+    expect(ctx.kafkaProducerContext.producer).toBe(kafkaProducerConnection);
 
     expect(dependencies.createHealthContext).toHaveBeenCalledWith(config.LLM_DAILY_BUDGET_USD);
     expect(dependencies.startHealthServer).toHaveBeenCalledWith(healthContext, loggerHarness);
@@ -183,20 +179,17 @@ describe("createBriefRuntimeFactory", () => {
       loggerHarness.childFor("redis")
     );
     expect(dependencies.createKafkaConsumer).toHaveBeenCalledWith(
+      config,
       loggerHarness.childFor("kafka-consumer")
     );
     expect(dependencies.createKafkaProducer).toHaveBeenCalledWith(
+      config,
       loggerHarness.childFor("kafka-producer")
     );
 
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "redis" });
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-consumer" });
     expect(loggerHarness.child).toHaveBeenCalledWith({ component: "kafka-producer" });
-
-    expect(kafkaConsumer.subscribe).toHaveBeenCalledWith({
-      topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
-      fromBeginning: false,
-    });
 
     expect(healthContext.postgresHealthy).toBe(true);
     expect(healthContext.redisHealthy).toBe(true);

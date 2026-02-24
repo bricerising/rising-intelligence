@@ -1,7 +1,7 @@
 import {
   isRateLimitError,
   isTransientError,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/resilience";
 import {
   incrementEventsFailed,
   incrementRateLimitBackoff,

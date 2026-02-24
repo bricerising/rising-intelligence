@@ -1,5 +1,5 @@
 import { TrendWindow } from "@rising-intelligence/db";
-import { serializeError } from "@rising-intelligence/shared";
+import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 
 export interface TopicMessageHandlerInput {

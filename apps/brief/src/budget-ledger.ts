@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@rising-intelligence/db";
-import { serializeError } from "@rising-intelligence/shared";
+import { serializeError } from "@rising-intelligence/shared/errors";
 import type { Redis } from "ioredis";
 import type pino from "pino";
 import {

@@ -1,6 +1,6 @@
 import { Redis } from "ioredis";
 import type { Logger } from "pino";
-import { redactUrlPassword } from "@rising-intelligence/shared";
+import { redactUrlPassword } from "@rising-intelligence/shared/http";
 
 export async function createRedisClient(redisUrl: string, logger: Logger): Promise<Redis> {
   const redis = new Redis(redisUrl, {

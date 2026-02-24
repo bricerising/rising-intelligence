@@ -1,15 +1,21 @@
 import type { Server } from "node:http";
 import {
+  createConsumerConnection,
+  createProducerConnection,
+  type ConsumerConnection,
+  type ProducerConnection,
+} from "@rising-intelligence/pipeline/transport";
+import {
   createPrismaRuntimeDependencies,
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
   createFunctionDependencyFactory,
-  closeServer,
-  createComponentLoggerFactory,
   createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { closeServer } from "@rising-intelligence/shared/http";
+import { createComponentLoggerFactory } from "@rising-intelligence/shared/logging";
 import type { Redis } from "ioredis";
 import type pino from "pino";
 import { loadAllowlist, type CompiledAllowlist } from "./allowlist.js";
@@ -20,20 +26,18 @@ import {
   type HealthContext,
 } from "./health.js";
 import {
-  createKafkaConsumer,
-  disconnectKafkaConsumer,
-  type KafkaConsumerContext,
-} from "./kafka/consumer.js";
-import {
-  createKafkaProducer,
-  disconnectKafkaProducer,
-  type KafkaProducerContext,
-} from "./kafka/producer.js";
-import {
   createRedisClient as createRedisConnection,
   disconnectRedis,
 } from "./redis.js";
 import type { TrendsContext } from "./process.js";
+
+export interface KafkaConsumerContext {
+  consumer: ConsumerConnection;
+}
+
+export interface KafkaProducerContext {
+  producer: ProducerConnection;
+}
 
 type KafkaConsumer = KafkaConsumerContext["consumer"];
 type KafkaProducer = KafkaProducerContext["producer"];
@@ -45,8 +49,8 @@ export interface TrendsRuntimeFactoryDependencies {
   createPrismaClient(config: Config): Promise<PrismaClient>;
   createRedisClient(config: Config, logger: pino.Logger): Promise<Redis>;
   loadAllowlist(path: string): CompiledAllowlist;
-  createKafkaConsumer(logger: pino.Logger): Promise<KafkaConsumerContext>;
-  createKafkaProducer(logger: pino.Logger): Promise<KafkaProducerContext>;
+  createKafkaConsumer(config: Config, logger: pino.Logger): Promise<KafkaConsumer>;
+  createKafkaProducer(config: Config, logger: pino.Logger): Promise<KafkaProducer>;
   disconnectKafkaConsumer(consumer: KafkaConsumer, logger: pino.Logger): Promise<void>;
   disconnectKafkaProducer(producer: KafkaProducer, logger: pino.Logger): Promise<void>;
   disconnectRedis(redis: Redis | null, logger: pino.Logger): Promise<void>;
@@ -83,10 +87,30 @@ const DEFAULT_DEPENDENCIES: TrendsRuntimeFactoryDependencies = {
     return createRedisConnection(config.REDIS_URL, logger);
   },
   loadAllowlist,
-  createKafkaConsumer,
-  createKafkaProducer,
-  disconnectKafkaConsumer,
-  disconnectKafkaProducer,
+  async createKafkaConsumer(config, logger): Promise<KafkaConsumer> {
+    return createConsumerConnection({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      groupId: config.KAFKA_CONSUMER_GROUP,
+      logger,
+    });
+  },
+  async createKafkaProducer(config, logger): Promise<KafkaProducer> {
+    return createProducerConnection({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      clientIdSuffix: "-producer",
+      logger,
+    });
+  },
+  async disconnectKafkaConsumer(consumer, logger): Promise<void> {
+    await consumer.disconnect();
+    logger.info("Kafka consumer disconnected");
+  },
+  async disconnectKafkaProducer(producer, logger): Promise<void> {
+    await producer.disconnect();
+    logger.info("Kafka producer disconnected");
+  },
   disconnectRedis,
   closeHealthServer: closeServer,
 };
@@ -130,27 +154,23 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
       logger.info({ topicCount: allowlist.topics.length }, "Topics allowlist loaded");
 
       const kafkaConsumerContext = await resources.connectKafkaConsumer(
-        () =>
-          this.dependencies.createKafkaConsumer(
+        async () => ({
+          consumer: await this.dependencies.createKafkaConsumer(
+            config,
             componentLoggers.create("kafka-consumer")
           ),
+        }),
         (consumerContext) =>
           this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
       );
-      await kafkaConsumerContext.consumer.subscribe({
-        topic: config.KAFKA_TOPIC_RAW_EVENTS,
-        fromBeginning: false,
-      });
-      await kafkaConsumerContext.consumer.subscribe({
-        topic: config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-        fromBeginning: false,
-      });
 
       const kafkaProducerContext = await resources.connectKafkaProducer(
-        () =>
-          this.dependencies.createKafkaProducer(
+        async () => ({
+          producer: await this.dependencies.createKafkaProducer(
+            config,
             componentLoggers.create("kafka-producer")
           ),
+        }),
         (producerContext) =>
           this.dependencies.disconnectKafkaProducer(producerContext.producer, logger)
       );

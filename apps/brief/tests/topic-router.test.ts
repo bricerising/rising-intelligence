@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 async function loadTopicBatchRouter() {
-  const actual = await vi.importActual<typeof import("@rising-intelligence/shared")>(
-    "@rising-intelligence/shared"
+  const actual = await vi.importActual<typeof import("@rising-intelligence/pipeline/transport")>(
+    "@rising-intelligence/pipeline/transport"
   );
   return actual.createTopicBatchRouter;
 }
@@ -22,7 +22,7 @@ function createBatchPayload(topic: string, offsets: string[] = ["1", "2"]) {
   } as any;
 }
 
-describe("shared topic batch router", () => {
+describe("pipeline topic batch router", () => {
   it("routes known topics to the registered handler", async () => {
     const createTopicBatchRouter = await loadTopicBatchRouter();
     const logger = { warn: vi.fn() } as any;

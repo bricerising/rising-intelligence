@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createPrismaClient, Source, type Prisma } from "@rising-intelligence/db";
-import { REPO_ROOT, extractTopics, loadAllowlist } from "@rising-intelligence/shared";
+import { extractTopics, loadAllowlist } from "@rising-intelligence/pipeline";
+import { REPO_ROOT } from "@rising-intelligence/shared/config";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import {

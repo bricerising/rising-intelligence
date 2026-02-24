@@ -1,4 +1,4 @@
-import { parseCanonicalSource } from "@rising-intelligence/shared";
+import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import type { CollectorHeartbeatState } from "./health.js";
 
 const COLLECTOR_STATUS_BY_NUMBER = new Map<number, CollectorHeartbeatState["status"]>([

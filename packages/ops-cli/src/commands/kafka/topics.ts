@@ -1,5 +1,5 @@
 import { Admin, Kafka } from "kafkajs";
-import { getEnvString } from "@rising-intelligence/shared";
+import { getEnvString } from "@rising-intelligence/shared/config";
 import type { CliFlags } from "../../lib/args.js";
 import { getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
 

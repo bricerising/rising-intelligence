@@ -5,7 +5,7 @@ import {
   parseConfig,
   resolvePostgresPassword,
   resolveDatabaseUrl,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/config";
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("persister"),

@@ -1,9 +1,8 @@
-import type { Producer } from "kafkajs";
 import type { Logger } from "pino";
-import { createKafkaTopicPublisher } from "@rising-intelligence/shared";
-import { publishSnapshot as publishKafkaSnapshot } from "./kafka/producer.js";
-
-type PublishSnapshotFn = typeof publishKafkaSnapshot;
+import {
+  createTopicPublisher,
+  type ProducerConnection,
+} from "@rising-intelligence/pipeline/transport";
 
 export interface TrendsSnapshotPublisher<
   TPayload extends Record<string, unknown> = Record<string, unknown>
@@ -12,10 +11,9 @@ export interface TrendsSnapshotPublisher<
 }
 
 export interface CreateTrendsSnapshotPublisherInput {
-  producer: Producer;
+  connection: ProducerConnection;
   logger: Logger;
   topic: string;
-  publish?: PublishSnapshotFn;
 }
 
 /**
@@ -27,13 +25,10 @@ export function createTrendsSnapshotPublisher<
 >(
   input: CreateTrendsSnapshotPublisherInput
 ): TrendsSnapshotPublisher<TPayload> {
-  const publish = input.publish ?? publishKafkaSnapshot;
-  const { producer, logger, topic } = input;
-  const topicPublisher = createKafkaTopicPublisher<TPayload, Logger>({
-    producer,
-    logger,
+  const { connection, topic } = input;
+  const topicPublisher = createTopicPublisher<TPayload>({
+    connection,
     topic,
-    publish,
   });
 
   return {

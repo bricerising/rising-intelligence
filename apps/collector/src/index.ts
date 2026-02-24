@@ -1,16 +1,12 @@
 import {
-  closeServer,
-  serializeError,
+  createServiceBootstrap,
   runService,
   runShutdownSteps,
-  createServiceBootstrap,
-  BackoffManager,
-  sleep,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { serializeError } from "@rising-intelligence/shared/errors";
+import { closeServer } from "@rising-intelligence/shared/http";
+import { BackoffManager, sleep } from "@rising-intelligence/shared/resilience";
 import { getConfig } from "./config.js";
-import {
-  disconnectProducer,
-} from "./kafka/producer.js";
 import {
   observePollDuration,
   observePollItemsCount,
@@ -58,7 +54,7 @@ async function runAdapter(
   const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
   const adapterLogger = ctx.logger.child({ adapter: adapter.name });
   const publisher = createCollectorPublisher({
-    producer: kafkaContext.producer,
+    connection: kafkaContext.producer,
     logger: adapterLogger,
   });
   const backoff = new BackoffManager(adapter.name, adapterLogger);
@@ -190,7 +186,7 @@ async function gracefulShutdown(ctx: CollectorContext): Promise<void> {
   await runShutdownSteps(logger, [
     {
       name: "kafka-producer",
-      run: async () => disconnectProducer(kafkaContext.producer, logger),
+      run: async () => kafkaContext.producer.disconnect(),
       errorMessage: "Kafka producer disconnect failed",
       onSuccess: () => {
         ctx.healthContext.kafkaHealthy = false;

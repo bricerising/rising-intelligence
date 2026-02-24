@@ -1,11 +1,15 @@
 import type { Server } from "node:http";
 import {
+  createProducerConnection,
+  type ProducerConnection,
+} from "@rising-intelligence/pipeline/transport";
+import {
   createFunctionDependencyFactory,
-  closeServer,
-  createComponentLoggerFactory,
   createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { closeServer } from "@rising-intelligence/shared/http";
+import { createComponentLoggerFactory } from "@rising-intelligence/shared/logging";
 import type pino from "pino";
 import {
   createCollectorAdapterFactory,
@@ -24,19 +28,16 @@ import {
   type HealthContext,
 } from "./health.js";
 import {
-  createKafkaProducer,
-  disconnectProducer,
-  type KafkaProducerContext,
-} from "./kafka/producer.js";
-import {
   loadMarketFilterProfiles,
   type MarketFilterProfile,
 } from "./market-filters.js";
 import { loadAllowlist, type CompiledAllowlist } from "./topics/extractor.js";
 import type { SourceAdapter } from "./types.js";
 
-type KafkaProducer = KafkaProducerContext["producer"];
 type RuntimeLoggerComponent = "checkpoint";
+interface PipelineProducerContext {
+  producer: ProducerConnection;
+}
 
 export interface CollectorRuntimeFactoryDependencies {
   createHealthContext(): HealthContext;
@@ -46,8 +47,8 @@ export interface CollectorRuntimeFactoryDependencies {
   initializeCheckpointStore(store: CheckpointStore): Promise<void>;
   closeCheckpointStore(store: CheckpointStore): void;
   loadAllowlist(path: string): CompiledAllowlist;
-  createKafkaProducer(logger: pino.Logger): Promise<KafkaProducerContext>;
-  disconnectProducer(producer: KafkaProducer, logger: pino.Logger): Promise<void>;
+  createKafkaProducer(config: Config, logger: pino.Logger): Promise<ProducerConnection>;
+  disconnectProducer(producer: ProducerConnection, logger: pino.Logger): Promise<void>;
   loadMarketFilterProfiles(path: string): MarketFilterProfile[];
   getEnvironment(): NodeJS.ProcessEnv;
   createContentFetcherConfig(env: NodeJS.ProcessEnv): ContentFetcherConfig;
@@ -57,7 +58,7 @@ export interface CollectorRuntimeFactoryDependencies {
 export interface CollectorRuntimeContext {
   config: Config;
   logger: pino.Logger;
-  kafkaContext: KafkaProducerContext;
+  kafkaContext: PipelineProducerContext;
   healthContext: HealthContext;
   healthServer: Server;
   checkpointStore: CheckpointStore;
@@ -88,8 +89,17 @@ const DEFAULT_DEPENDENCIES: CollectorRuntimeFactoryDependencies = {
     store.close();
   },
   loadAllowlist,
-  createKafkaProducer,
-  disconnectProducer,
+  async createKafkaProducer(config, logger): Promise<ProducerConnection> {
+    return createProducerConnection({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      logger,
+    });
+  },
+  async disconnectProducer(producer, logger): Promise<void> {
+    await producer.disconnect();
+    logger.info("Kafka producer disconnected");
+  },
   loadMarketFilterProfiles,
   getEnvironment(): NodeJS.ProcessEnv {
     return process.env;
@@ -147,9 +157,9 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         throw error;
       }
 
-      const kafkaContext = await resources.connectKafkaProducer(
-        () => this.dependencies.createKafkaProducer(logger),
-        (context) => this.dependencies.disconnectProducer(context.producer, logger)
+      const producerConnection = await resources.connectKafkaProducer(
+        () => this.dependencies.createKafkaProducer(config, logger),
+        (connection) => this.dependencies.disconnectProducer(connection, logger)
       );
       healthContext.kafkaHealthy = true;
 
@@ -217,7 +227,9 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
       return {
         config,
         logger,
-        kafkaContext,
+        kafkaContext: {
+          producer: producerConnection,
+        },
         healthContext,
         healthServer,
         checkpointStore,

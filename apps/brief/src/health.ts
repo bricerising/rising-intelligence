@@ -8,7 +8,7 @@ import {
   quoteMetricLabelValue,
   type HistogramState,
   type HealthHandlers,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 
 const LLM_DURATION_BUCKETS_SECONDS = [1, 5, 10, 30, 60, 120, 300];

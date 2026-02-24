@@ -10,7 +10,7 @@ import {
   formatHistogram,
   getMaxConsumerLag,
   type HealthHandlers,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 import type { TrendWindow } from "./types.js";
 

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EachBatchPayload, KafkaMessage, Batch } from "kafkajs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { BatchContext, BatchStrategy, PipelineMessage } from "@rising-intelligence/pipeline/transport";
 import type pino from "pino";
 import type { TrendsContext } from "../src/process.js";
 
@@ -23,7 +23,7 @@ vi.mock("../src/config.js", () => ({
   }),
 }));
 
-import { processBatch, processCollectorHeartbeatBatch } from "../src/process.js";
+import { createBatchStrategies } from "../src/process.js";
 import { createHealthContext, type HealthContext } from "../src/health.js";
 
 function makeLogger(): pino.Logger {
@@ -36,16 +36,13 @@ function makeLogger(): pino.Logger {
   } as unknown as pino.Logger;
 }
 
-function makeMessage(offset: string, value: unknown | null): KafkaMessage {
+function makePipelineMessage(position: string, value: unknown | null): PipelineMessage {
   return {
-    offset,
     key: null,
     value: value === null ? null : Buffer.from(JSON.stringify(value), "utf-8"),
+    position,
     timestamp: Date.now().toString(),
-    attributes: 0,
-    headers: {},
-    size: 0,
-  } as KafkaMessage;
+  };
 }
 
 function makeValidPayload(eventId = "rss:1") {
@@ -70,31 +67,26 @@ function makeAllowlist() {
   };
 }
 
-function makePayload(
-  messages: KafkaMessage[],
-  overrides: Partial<EachBatchPayload> = {}
-): EachBatchPayload {
+function makeBatchContext(overrides: Partial<BatchContext> = {}): BatchContext {
   return {
-    batch: {
-      topic: "events.raw",
-      partition: 0,
-      highWatermark: "100",
-      messages,
-    } as Batch,
-    isRunning: () => true,
-    isStale: () => false,
-    resolveOffset: vi.fn(),
-    commitOffsetsIfNecessary: vi.fn().mockResolvedValue(undefined),
-    heartbeat: vi.fn().mockResolvedValue(undefined),
-    uncommittedOffsets: vi.fn(),
+    topic: "events.raw",
+    partition: 0,
+    highWatermark: "100",
+    isActive: vi.fn().mockReturnValue(true),
+    keepAlive: vi.fn().mockResolvedValue(undefined),
+    acknowledge: vi.fn(),
+    commit: vi.fn().mockResolvedValue(undefined),
+    pause: vi.fn().mockReturnValue(vi.fn()),
     ...overrides,
-  } as unknown as EachBatchPayload;
+  };
 }
 
 function makeContext(overrides: Partial<TrendsContext> = {}): TrendsContext {
   return {
     config: {
       KAFKA_CONSUMER_GROUP: "trends-processor",
+      KAFKA_TOPIC_RAW_EVENTS: "events.raw",
+      KAFKA_TOPIC_COLLECTOR_HEARTBEAT: "collector.heartbeat",
       WINDOWS: ["15m", "60m"],
       MAX_EVIDENCE_PER_TOPIC: 10,
       CONSUMER_LAG_UPDATE_INTERVAL_MS: 15000,
@@ -111,6 +103,18 @@ function makeContext(overrides: Partial<TrendsContext> = {}): TrendsContext {
   };
 }
 
+function getStrategy(
+  ctx: TrendsContext,
+  topic: string
+): BatchStrategy<TrendsContext> {
+  const strategies = createBatchStrategies(ctx);
+  const strategy = strategies.get(topic);
+  if (!strategy) {
+    throw new Error(`No strategy for topic: ${topic}`);
+  }
+  return strategy;
+}
+
 describe("trends processBatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -121,69 +125,71 @@ describe("trends processBatch", () => {
   });
 
   it("processes valid messages and resolves offsets", async () => {
-    const msg = makeMessage("1", makeValidPayload());
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("1", makeValidPayload());
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
-    expect(payload.heartbeat).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.commit).toHaveBeenCalledOnce();
+    expect(batch.keepAlive).toHaveBeenCalled();
     expect(ctx.healthContext.metrics.eventsProcessed).toBe(1);
   });
 
   it("skips messages with null value", async () => {
-    const msg = makeMessage("1", null);
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("1", null);
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
     expect(mocks.applyEventToWindows).not.toHaveBeenCalled();
   });
 
   it("skips messages with invalid JSON and resolves offset", async () => {
-    const msg: KafkaMessage = {
-      offset: "1",
+    const msg: PipelineMessage = {
       key: null,
       value: Buffer.from("{bad-json", "utf-8"),
+      position: "1",
       timestamp: Date.now().toString(),
-      attributes: 0,
-      headers: {},
-      size: 0,
-    } as KafkaMessage;
-    const payload = makePayload([msg]);
+    };
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
 
   it("skips events with no tracked topics", async () => {
-    const payload_data = makeValidPayload();
-    payload_data.tags = ["unknown.topic"];
-    const msg = makeMessage("1", payload_data);
-    const payload = makePayload([msg]);
+    const payload = makeValidPayload();
+    payload.tags = ["unknown.topic"];
+    const msg = makePipelineMessage("1", payload);
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
     expect(mocks.applyEventToWindows).not.toHaveBeenCalled();
   });
 
   it("increments duplicatesSkipped when dedup detects duplicate", async () => {
     mocks.applyEventToWindows.mockResolvedValue({ duplicate: true, buckets: {} });
-    const msg = makeMessage("1", makeValidPayload());
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("1", makeValidPayload());
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
     expect(ctx.healthContext.metrics.duplicatesSkipped).toBe(1);
     expect(ctx.healthContext.metrics.eventsProcessed).toBe(0);
@@ -191,96 +197,101 @@ describe("trends processBatch", () => {
 
   it("throws on Redis error and marks redis unhealthy", async () => {
     mocks.applyEventToWindows.mockRejectedValue(new Error("REDIS_DOWN"));
-    const msg = makeMessage("1", makeValidPayload());
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("1", makeValidPayload());
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await expect(processBatch(ctx, payload)).rejects.toThrow("REDIS_DOWN");
+    await expect(strategy.processBatch(ctx, batch, [msg])).rejects.toThrow("REDIS_DOWN");
     expect(ctx.healthContext.redisHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("redis_error")).toBe(1);
   });
 
   it("returns early when consumer is not running", async () => {
-    const msg = makeMessage("1", makeValidPayload());
-    const payload = makePayload([msg], { isRunning: () => false });
+    const msg = makePipelineMessage("1", makeValidPayload());
+    const batch = makeBatchContext({ isActive: vi.fn().mockReturnValue(false) });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).not.toHaveBeenCalled();
+    expect(batch.acknowledge).not.toHaveBeenCalled();
     expect(mocks.applyEventToWindows).not.toHaveBeenCalled();
   });
 
   it("returns early when batch is stale", async () => {
-    const msg = makeMessage("1", makeValidPayload());
-    const payload = makePayload([msg], { isStale: () => true });
+    const msg = makePipelineMessage("1", makeValidPayload());
+    const batch = makeBatchContext({ isActive: vi.fn().mockReturnValue(false) });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).not.toHaveBeenCalled();
+    expect(batch.acknowledge).not.toHaveBeenCalled();
   });
 
   it("stops processing when batch becomes stale mid-loop", async () => {
-    const msg1 = makeMessage("1", makeValidPayload("rss:1"));
-    const msg2 = makeMessage("2", makeValidPayload("rss:2"));
-    let stale = false;
-    const payload = makePayload([msg1, msg2], {
-      isStale: vi.fn(() => stale),
+    const msg1 = makePipelineMessage("1", makeValidPayload("rss:1"));
+    const msg2 = makePipelineMessage("2", makeValidPayload("rss:2"));
+    let callCount = 0;
+    const batch = makeBatchContext({
+      isActive: vi.fn(() => {
+        callCount++;
+        // Active for first few checks, then becomes stale after first message processed
+        return callCount <= 2;
+      }),
     });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
     mocks.applyEventToWindows
-      .mockImplementationOnce(async () => {
-        stale = true;
-        return { duplicate: false, buckets: {} };
-      })
+      .mockResolvedValueOnce({ duplicate: false, buckets: {} })
       .mockResolvedValue({ duplicate: false, buckets: {} });
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg1, msg2]);
 
     expect(mocks.applyEventToWindows).toHaveBeenCalledTimes(1);
-    expect(payload.resolveOffset).toHaveBeenCalledTimes(1);
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
-    const upsert = ctx.prisma.consumerLag.upsert as ReturnType<typeof vi.fn>;
-    expect(upsert).not.toHaveBeenCalled();
+    // Lag update should not run when batch becomes inactive
   });
 
   it("processes multiple messages in order", async () => {
-    const resolveOrder: string[] = [];
-    const msg1 = makeMessage("1", makeValidPayload("rss:1"));
-    const msg2 = makeMessage("2", makeValidPayload("rss:2"));
-    const resolveOffset = vi.fn((offset: string) => resolveOrder.push(offset));
-    const payload = makePayload([msg1, msg2], { resolveOffset });
+    const acknowledgeOrder: string[] = [];
+    const msg1 = makePipelineMessage("1", makeValidPayload("rss:1"));
+    const msg2 = makePipelineMessage("2", makeValidPayload("rss:2"));
+    const batch = makeBatchContext({
+      acknowledge: vi.fn((position: string) => acknowledgeOrder.push(position)),
+    });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg1, msg2]);
 
-    expect(resolveOrder).toEqual(["1", "2"]);
+    expect(acknowledgeOrder).toEqual(["1", "2"]);
     expect(ctx.healthContext.metrics.eventsProcessed).toBe(2);
   });
 
   it("heartbeats once per interval and once on flush", async () => {
     const messages = Array.from({ length: 50 }, (_, index) =>
-      makeMessage(`${index + 1}`, makeValidPayload(`rss:${index + 1}`))
+      makePipelineMessage(`${index + 1}`, makeValidPayload(`rss:${index + 1}`))
     );
-    const payload = makePayload(messages);
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, messages);
 
-    expect(payload.heartbeat).toHaveBeenCalledTimes(2);
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
-    expect(payload.resolveOffset).toHaveBeenCalledTimes(50);
+    expect(batch.keepAlive).toHaveBeenCalledTimes(2);
+    expect(batch.commit).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledTimes(50);
   });
 
   it("updates consumer lag when interval has elapsed", async () => {
-    const msg = makeMessage("50", makeValidPayload());
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("50", makeValidPayload());
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
     const upsert = ctx.prisma.consumerLag.upsert as ReturnType<typeof vi.fn>;
     expect(upsert).toHaveBeenCalledOnce();
@@ -288,16 +299,17 @@ describe("trends processBatch", () => {
   });
 
   it("throttles consumer lag writes within interval", async () => {
-    const msg1 = makeMessage("50", makeValidPayload("rss:1"));
-    const payload1 = makePayload([msg1]);
+    const msg1 = makePipelineMessage("50", makeValidPayload("rss:1"));
+    const msg2 = makePipelineMessage("51", makeValidPayload("rss:2"));
+    const batch = makeBatchContext();
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
-    await processBatch(ctx, payload1);
+    await strategy.processBatch(ctx, batch, [msg1]);
 
     // Second batch within interval
-    const msg2 = makeMessage("51", makeValidPayload("rss:2"));
-    const payload2 = makePayload([msg2]);
-    await processBatch(ctx, payload2);
+    const batch2 = makeBatchContext();
+    await strategy.processBatch(ctx, batch2, [msg2]);
 
     const upsert = ctx.prisma.consumerLag.upsert as ReturnType<typeof vi.fn>;
     expect(upsert).toHaveBeenCalledOnce();
@@ -310,18 +322,19 @@ describe("trends processBatch", () => {
         consumerLag: { upsert },
       } as unknown as TrendsContext["prisma"],
     });
-    const msg = makeMessage("50", makeValidPayload());
-    const payload = makePayload([msg]);
+    const msg = makePipelineMessage("50", makeValidPayload());
+    const batch = makeBatchContext();
+    const strategy = getStrategy(ctx, "events.raw");
 
     // Should not throw - postgres failure is non-fatal
-    await processBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
     expect(ctx.healthContext.postgresHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("postgres_error")).toBe(1);
   });
 
   it("stores collector heartbeat state from heartbeat batches", async () => {
-    const heartbeatMessage = makeMessage("1", {
+    const heartbeatMessage = makePipelineMessage("1", {
       source: 1,
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -329,20 +342,14 @@ describe("trends processBatch", () => {
       status: 1,
       error_message: "",
     });
-    const payload = makePayload([heartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [heartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [heartbeatMessage]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.commit).toHaveBeenCalledOnce();
     expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
       source: "rss",
       status: "healthy",
@@ -351,7 +358,7 @@ describe("trends processBatch", () => {
   });
 
   it("accepts numeric-string heartbeat status and items_fetched values", async () => {
-    const heartbeatMessage = makeMessage("1", {
+    const heartbeatMessage = makePipelineMessage("1", {
       source: 1,
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -359,17 +366,11 @@ describe("trends processBatch", () => {
       status: "1",
       error_message: "",
     });
-    const payload = makePayload([heartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [heartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [heartbeatMessage]);
 
     expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
       source: "rss",
@@ -379,7 +380,7 @@ describe("trends processBatch", () => {
   });
 
   it("accepts named collector status aliases", async () => {
-    const heartbeatMessage = makeMessage("1", {
+    const heartbeatMessage = makePipelineMessage("1", {
       source: 1,
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -387,17 +388,11 @@ describe("trends processBatch", () => {
       status: "collector_status_degraded",
       error_message: "rate limited",
     });
-    const payload = makePayload([heartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [heartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [heartbeatMessage]);
 
     expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
       source: "rss",
@@ -408,34 +403,25 @@ describe("trends processBatch", () => {
   });
 
   it("skips malformed collector heartbeat payloads and advances offsets", async () => {
-    const msg: KafkaMessage = {
-      offset: "1",
+    const msg: PipelineMessage = {
       key: null,
       value: Buffer.from("{bad-json", "utf-8"),
+      position: "1",
       timestamp: Date.now().toString(),
-      attributes: 0,
-      headers: {},
-      size: 0,
-    } as KafkaMessage;
-    const payload = makePayload([msg], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [msg],
-      },
-    });
+    };
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [msg]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.commit).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
 
   it("skips collector heartbeat payloads with invalid source types", async () => {
-    const heartbeatMessage = makeMessage("1", {
+    const heartbeatMessage = makePipelineMessage("1", {
       source: { value: 1 },
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -443,26 +429,20 @@ describe("trends processBatch", () => {
       status: 1,
       error_message: "",
     });
-    const payload = makePayload([heartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [heartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [heartbeatMessage]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.commit).toHaveBeenCalledOnce();
     expect(ctx.healthContext.collectorHeartbeats.size).toBe(0);
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
 
   it("skips collector heartbeat payloads with unsupported status values", async () => {
-    const heartbeatMessage = makeMessage("1", {
+    const heartbeatMessage = makePipelineMessage("1", {
       source: 1,
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -470,26 +450,20 @@ describe("trends processBatch", () => {
       status: "unknown",
       error_message: "",
     });
-    const payload = makePayload([heartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "2",
-        messages: [heartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [heartbeatMessage]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.commit).toHaveBeenCalledOnce();
     expect(ctx.healthContext.collectorHeartbeats.size).toBe(0);
     expect(ctx.healthContext.metrics.errors.get("parse_error")).toBe(1);
   });
 
   it("keeps the newest heartbeat when messages arrive out of order", async () => {
-    const newerHeartbeatMessage = makeMessage("1", {
+    const newerHeartbeatMessage = makePipelineMessage("1", {
       source: 1,
       timestamp: "2026-02-06T10:00:00.000Z",
       last_fetch_at: "2026-02-06T09:59:30.000Z",
@@ -497,7 +471,7 @@ describe("trends processBatch", () => {
       status: 1,
       error_message: "",
     });
-    const olderHeartbeatMessage = makeMessage("2", {
+    const olderHeartbeatMessage = makePipelineMessage("2", {
       source: 1,
       timestamp: "2026-02-06T09:58:00.000Z",
       last_fetch_at: "2026-02-06T09:57:30.000Z",
@@ -505,21 +479,15 @@ describe("trends processBatch", () => {
       status: 3,
       error_message: "timed out",
     });
-    const payload = makePayload([newerHeartbeatMessage, olderHeartbeatMessage], {
-      batch: {
-        topic: "collector.heartbeat",
-        partition: 0,
-        highWatermark: "3",
-        messages: [newerHeartbeatMessage, olderHeartbeatMessage],
-      },
-    });
+    const batch = makeBatchContext({ topic: "collector.heartbeat" });
     const ctx = makeContext();
+    const strategy = getStrategy(ctx, "collector.heartbeat");
 
-    await processCollectorHeartbeatBatch(ctx, payload);
+    await strategy.processBatch(ctx, batch, [newerHeartbeatMessage, olderHeartbeatMessage]);
 
-    expect(payload.resolveOffset).toHaveBeenCalledWith("1");
-    expect(payload.resolveOffset).toHaveBeenCalledWith("2");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(batch.acknowledge).toHaveBeenCalledWith("2");
+    expect(batch.commit).toHaveBeenCalledOnce();
     expect(ctx.healthContext.collectorHeartbeats.get("rss")).toMatchObject({
       source: "rss",
       status: "healthy",

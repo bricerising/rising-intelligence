@@ -1,6 +1,10 @@
-import { Kafka } from "kafkajs";
+import {
+  createProducerConnection,
+  type PipelineLogger,
+} from "@rising-intelligence/pipeline/transport";
+import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import { createPrismaClient } from "@rising-intelligence/db";
-import { getEnvString, parseCanonicalSource } from "@rising-intelligence/shared";
+import { getEnvString } from "@rising-intelligence/shared/config";
 import type { CliFlags } from "../../lib/args.js";
 import {
   getBooleanFlag,
@@ -17,6 +21,13 @@ import {
   type RequestResultWaiter,
 } from "./result-waiter.js";
 import { resolveTopicsDatabaseUrl } from "../topics/database-url.js";
+
+const NOOP_LOGGER: PipelineLogger = {
+  error() {},
+  warn() {},
+  info() {},
+  debug() {},
+};
 
 type RequestType = "daily" | "threshold";
 type QueryEvidenceStrategy = "diversity" | "recency" | "engagement";
@@ -1008,18 +1019,14 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
     console.warn("Proceeding with brief request anyway...\n");
   }
 
-  const kafka = new Kafka({
-    clientId: config.kafkaClientId,
-    brokers: config.kafkaBrokers,
-  });
-
   // Set up result consumer BEFORE publishing the request to avoid race condition
   let waiter: RequestResultWaiter<BriefResult> | undefined;
   if (!config.noWait) {
     // eslint-disable-next-line no-console
     console.log(`⏳ Setting up result listener (timeout: ${config.timeoutSeconds}s)...`);
     waiter = await setupRequestResultWaiter<BriefResult>({
-      kafka,
+      kafkaBrokers: config.kafkaBrokers,
+      kafkaClientId: config.kafkaClientId,
       groupId: `riops-brief-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       topic: config.summaryResultsTopic,
       requestId: config.requestId,
@@ -1034,18 +1041,17 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
   }
 
   // Now publish the request
-  const producer = kafka.producer({ allowAutoTopicCreation: false });
+  const producer = await createProducerConnection({
+    brokers: config.kafkaBrokers,
+    clientId: config.kafkaClientId,
+    logger: NOOP_LOGGER,
+  });
   try {
-    await producer.connect();
-    await producer.send({
-      topic: config.summaryRequestsTopic,
-      messages: [
-        {
-          key: config.requestId,
-          value: Buffer.from(JSON.stringify(payload), "utf-8"),
-        },
-      ],
-    });
+    await producer.publish(
+      config.summaryRequestsTopic,
+      config.requestId,
+      Buffer.from(JSON.stringify(payload), "utf-8")
+    );
   } finally {
     await producer.disconnect();
   }

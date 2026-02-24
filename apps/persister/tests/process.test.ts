@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { Source } from "@rising-intelligence/db";
+import type { BatchContext, PipelineMessage } from "@rising-intelligence/pipeline/transport";
 import { createHealthContext } from "../src/health.js";
 import { PostgresCircuitBreaker } from "../src/circuit-breaker.js";
 import type { PersisterContext } from "../src/process.js";
@@ -94,59 +95,68 @@ function createMockContext(overrides: Partial<PersisterContext> = {}): Persister
     healthServer: {} as any,
     prisma: {} as any,
     redis: { pipeline: vi.fn() } as any,
-    kafkaContext: { kafka: {} as any, consumer: {} as any },
+    kafkaContext: { consumer: {} as any },
     circuitBreaker: new PostgresCircuitBreaker(3, 30000),
     lagWriteTimestamps: new Map(),
     ...overrides,
   };
 }
 
-function createMockPayload(
-  messages: Array<{ offset: string; value: Buffer | null }> = [],
-  overrides: Record<string, any> = {}
-) {
+function createMockBatchContext(overrides: Partial<BatchContext> = {}): BatchContext {
   return {
-    batch: {
-      topic: "events.raw",
-      partition: 0,
-      highWatermark: "100",
-      messages,
-      ...overrides.batch,
-    },
-    isRunning: vi.fn().mockReturnValue(true),
-    isStale: vi.fn().mockReturnValue(false),
+    topic: "events.raw",
+    partition: 0,
+    highWatermark: "100",
+    isActive: vi.fn().mockReturnValue(true),
+    keepAlive: vi.fn().mockResolvedValue(undefined),
+    acknowledge: vi.fn(),
+    commit: vi.fn().mockResolvedValue(undefined),
     pause: vi.fn().mockReturnValue(vi.fn()),
-    resolveOffset: vi.fn(),
-    commitOffsetsIfNecessary: vi.fn().mockResolvedValue(undefined),
-    heartbeat: vi.fn().mockResolvedValue(undefined),
     ...overrides,
-  } as any;
+  };
+}
+
+function createPipelineMessages(
+  entries: Array<{ position: string; value: Buffer | null }>
+): PipelineMessage[] {
+  return entries.map((entry) => ({
+    key: null,
+    value: entry.value,
+    position: entry.position,
+    timestamp: `${Date.now()}`,
+  }));
 }
 
 describe("processBatch", () => {
-  let processBatch: typeof import("../src/process.js").processBatch;
+  let processBatch: (
+    ctx: PersisterContext,
+    batch: BatchContext,
+    messages: readonly PipelineMessage[]
+  ) => Promise<void>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     const mod = await import("../src/process.js");
-    processBatch = mod.processBatch;
+    processBatch = mod.PERSISTER_BATCH_STRATEGY.processBatch;
   });
 
   it("skips batch when not running", async () => {
     const ctx = createMockContext();
-    const payload = createMockPayload([], { isRunning: vi.fn().mockReturnValue(false) });
+    const batch = createMockBatchContext({ isActive: vi.fn().mockReturnValue(false) });
+    const messages = createPipelineMessages([]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
-    expect(payload.resolveOffset).not.toHaveBeenCalled();
+    expect(batch.acknowledge).not.toHaveBeenCalled();
   });
 
   it("skips batch when stale", async () => {
     const ctx = createMockContext();
-    const payload = createMockPayload([], { isStale: vi.fn().mockReturnValue(true) });
+    const batch = createMockBatchContext({ isActive: vi.fn().mockReturnValue(false) });
+    const messages = createPipelineMessages([]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
   });
@@ -159,20 +169,20 @@ describe("processBatch", () => {
     });
 
     const ctx = createMockContext();
-    const payload = createMockPayload(
-      [
-        { offset: "10", value: Buffer.from("{}") },
-        { offset: "11", value: Buffer.from("{}") },
-      ],
-      { isStale: vi.fn(() => stale) }
-    );
+    const batch = createMockBatchContext({
+      isActive: vi.fn(() => !stale),
+    });
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("{}") },
+      { position: "11", value: Buffer.from("{}") },
+    ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(deserializeMocks.deserializeRawEvent).toHaveBeenCalledTimes(1);
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
-    expect(payload.resolveOffset).not.toHaveBeenCalled();
-    expect(payload.commitOffsetsIfNecessary).not.toHaveBeenCalled();
+    expect(batch.acknowledge).not.toHaveBeenCalled();
+    expect(batch.commit).not.toHaveBeenCalled();
   });
 
   it("pauses partition when circuit breaker is open", async () => {
@@ -181,14 +191,15 @@ describe("processBatch", () => {
     const ctx = createMockContext({ circuitBreaker: cb });
 
     const resume = vi.fn();
-    const payload = createMockPayload([], { pause: vi.fn().mockReturnValue(resume) });
+    const batch = createMockBatchContext({ pause: vi.fn().mockReturnValue(resume) });
+    const messages = createPipelineMessages([]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
-    expect(payload.pause).toHaveBeenCalledOnce();
+    expect(batch.pause).toHaveBeenCalledOnce();
     expect(resume).toHaveBeenCalledOnce();
-    expect(payload.heartbeat).toHaveBeenCalled();
-    expect(payload.commitOffsetsIfNecessary).not.toHaveBeenCalled();
+    expect(batch.keepAlive).toHaveBeenCalled();
+    expect(batch.commit).not.toHaveBeenCalled();
     expect(ctx.healthContext.circuitOpen).toBe(true);
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ kafkaTopic: "events.raw" }),
@@ -202,12 +213,13 @@ describe("processBatch", () => {
     const ctx = createMockContext({ circuitBreaker: cb });
 
     const resume = vi.fn();
-    const payload = createMockPayload([], {
+    const batch = createMockBatchContext({
       pause: vi.fn().mockReturnValue(resume),
-      heartbeat: vi.fn().mockRejectedValue(new Error("heartbeat failed")),
+      keepAlive: vi.fn().mockRejectedValue(new Error("heartbeat failed")),
     });
+    const messages = createPipelineMessages([]);
 
-    await expect(processBatch(ctx, payload)).rejects.toThrow("heartbeat failed");
+    await expect(processBatch(ctx, batch, messages)).rejects.toThrow("heartbeat failed");
     expect(resume).toHaveBeenCalledOnce();
   });
 
@@ -223,17 +235,18 @@ describe("processBatch", () => {
     redisMocks.markEventsSeen.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("{}") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("{}") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(deserializeMocks.deserializeRawEvent).toHaveBeenCalledOnce();
     expect(persistMocks.persistBatch).toHaveBeenCalledWith(ctx.prisma, [event]);
-    expect(payload.resolveOffset).toHaveBeenCalledWith("10");
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
-    expect(payload.heartbeat).toHaveBeenCalledOnce();
+    expect(batch.acknowledge).toHaveBeenCalledWith("10");
+    expect(batch.commit).toHaveBeenCalledOnce();
+    expect(batch.keepAlive).toHaveBeenCalledOnce();
   });
 
   it("heartbeats once per interval during parsing and once on flush", async () => {
@@ -251,18 +264,19 @@ describe("processBatch", () => {
     redisMocks.markEventsSeen.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload(
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages(
       Array.from({ length: 50 }, (_, index) => ({
-        offset: `${index + 10}`,
+        position: `${index + 10}`,
         value: Buffer.from("{}"),
       }))
     );
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
-    expect(payload.heartbeat).toHaveBeenCalledTimes(2);
-    expect(payload.resolveOffset).toHaveBeenCalledTimes(50);
-    expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledOnce();
+    expect(batch.keepAlive).toHaveBeenCalledTimes(2);
+    expect(batch.acknowledge).toHaveBeenCalledTimes(50);
+    expect(batch.commit).toHaveBeenCalledOnce();
   });
 
   it("skips messages with null value", async () => {
@@ -277,12 +291,13 @@ describe("processBatch", () => {
     redisMocks.markEventsSeen.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: null },
-      { offset: "11", value: Buffer.from("{}") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: null },
+      { position: "11", value: Buffer.from("{}") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(deserializeMocks.deserializeRawEvent).toHaveBeenCalledTimes(1);
     expect(ctx.healthContext.metrics.eventsSkipped.get("malformed")).toBe(1);
@@ -302,12 +317,13 @@ describe("processBatch", () => {
     redisMocks.markEventsSeen.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("bad") },
-      { offset: "11", value: Buffer.from("good") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("bad") },
+      { position: "11", value: Buffer.from("good") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(ctx.healthContext.metrics.eventsSkipped.get("malformed")).toBe(1);
     expect(persistMocks.persistBatch).toHaveBeenCalledWith(ctx.prisma, [expect.objectContaining({ eventId: "rss:2" })]);
@@ -317,12 +333,13 @@ describe("processBatch", () => {
     deserializeMocks.deserializeRawEvent.mockImplementation(() => { throw new Error("bad"); });
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("bad1") },
-      { offset: "11", value: Buffer.from("bad2") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("bad1") },
+      { position: "11", value: Buffer.from("bad2") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
     expect(ctx.healthContext.metrics.eventsSkipped.get("malformed")).toBe(2);
@@ -337,11 +354,12 @@ describe("processBatch", () => {
     // 2 failures recorded, circuit not open yet
 
     const ctx = createMockContext({ circuitBreaker: cb });
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("bad") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("bad") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     // Circuit breaker should NOT have been reset - no DB call was made
     // Next failure should open the circuit (3 of 3)
@@ -355,11 +373,12 @@ describe("processBatch", () => {
     ctx.healthContext.postgresHealthy = false;
     ctx.lagWriteTimestamps.set("events.raw:0", Date.now());
 
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("bad") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("bad") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(persistMocks.persistBatch).not.toHaveBeenCalled();
     expect(ctx.healthContext.postgresHealthy).toBe(false);
@@ -372,11 +391,12 @@ describe("processBatch", () => {
     ctx.healthContext.circuitOpen = true;
     ctx.lagWriteTimestamps.set("events.raw:0", Date.now());
 
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("bad") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("bad") },
     ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(ctx.healthContext.circuitOpen).toBe(false);
   });
@@ -387,11 +407,12 @@ describe("processBatch", () => {
     persistMocks.persistBatch.mockRejectedValue(new Error("connection refused"));
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("{}") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("{}") },
     ]);
 
-    await expect(processBatch(ctx, payload)).rejects.toThrow("connection refused");
+    await expect(processBatch(ctx, batch, messages)).rejects.toThrow("connection refused");
 
     expect(ctx.healthContext.postgresHealthy).toBe(false);
     expect(ctx.healthContext.metrics.errors.get("postgres_error")).toBe(1);
@@ -413,13 +434,14 @@ describe("processBatch", () => {
     redisMocks.markEventsSeen.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "10", value: Buffer.from("{}") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "10", value: Buffer.from("{}") },
     ]);
 
     expect(ctx.healthContext.lastEventAt).toBeUndefined();
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(ctx.healthContext.lastEventAt).toBeInstanceOf(Date);
   });
@@ -437,11 +459,12 @@ describe("processBatch", () => {
     persistMocks.upsertConsumerLag.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const messages = [{ offset: "50", value: Buffer.from("{}") }];
-    const payload = createMockPayload(messages);
-    payload.batch.highWatermark = "100";
+    const batch = createMockBatchContext({ highWatermark: "100" });
+    const messages = createPipelineMessages([
+      { position: "50", value: Buffer.from("{}") },
+    ]);
 
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     // currentOffset = 50 + 1 = 51, latestOffset = 100, lag = 49
     expect(ctx.healthContext.metrics.consumerLag.get(0)).toBe(49n);
@@ -460,12 +483,13 @@ describe("processBatch", () => {
     persistMocks.upsertConsumerLag.mockRejectedValue(new Error("lag write failed"));
 
     const ctx = createMockContext();
-    const payload = createMockPayload([
-      { offset: "50", value: Buffer.from("{}") },
+    const batch = createMockBatchContext();
+    const messages = createPipelineMessages([
+      { position: "50", value: Buffer.from("{}") },
     ]);
 
     // Should not throw
-    await processBatch(ctx, payload);
+    await processBatch(ctx, batch, messages);
 
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ error: expect.objectContaining({ message: "lag write failed" }) }),
@@ -574,11 +598,9 @@ describe("updateLag", () => {
     persistMocks.upsertConsumerLag.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([], {
-      batch: { topic: "events.raw", partition: 0, highWatermark: "100", messages: [] },
-    });
+    const batch = createMockBatchContext({ highWatermark: "100" });
 
-    const wrote = await updateLag(ctx, payload, 50n, 100n, 50n);
+    const wrote = await updateLag(ctx, batch, 50n, 100n, 50n);
 
     expect(persistMocks.upsertConsumerLag).toHaveBeenCalledWith(ctx.prisma, expect.objectContaining({
       consumerGroup: "persister",
@@ -596,16 +618,14 @@ describe("updateLag", () => {
     persistMocks.upsertConsumerLag.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload = createMockPayload([], {
-      batch: { topic: "events.raw", partition: 0, highWatermark: "100", messages: [] },
-    });
+    const batch = createMockBatchContext({ highWatermark: "100" });
 
     // First call writes
-    await updateLag(ctx, payload, 50n, 100n, 50n);
+    await updateLag(ctx, batch, 50n, 100n, 50n);
     expect(persistMocks.upsertConsumerLag).toHaveBeenCalledTimes(1);
 
     // Second call within interval is throttled (same partition)
-    const wrote = await updateLag(ctx, payload, 60n, 100n, 40n);
+    const wrote = await updateLag(ctx, batch, 60n, 100n, 40n);
     expect(persistMocks.upsertConsumerLag).toHaveBeenCalledTimes(1);
     expect(wrote).toBe(false);
 
@@ -617,15 +637,11 @@ describe("updateLag", () => {
     persistMocks.upsertConsumerLag.mockResolvedValue(undefined);
 
     const ctx = createMockContext();
-    const payload0 = createMockPayload([], {
-      batch: { topic: "events.raw", partition: 0, highWatermark: "100", messages: [] },
-    });
-    const payload1 = createMockPayload([], {
-      batch: { topic: "events.raw", partition: 1, highWatermark: "200", messages: [] },
-    });
+    const batch0 = createMockBatchContext({ partition: 0, highWatermark: "100" });
+    const batch1 = createMockBatchContext({ partition: 1, highWatermark: "200" });
 
-    await updateLag(ctx, payload0, 50n, 100n, 50n);
-    await updateLag(ctx, payload1, 150n, 200n, 50n);
+    await updateLag(ctx, batch0, 50n, 100n, 50n);
+    await updateLag(ctx, batch1, 150n, 200n, 50n);
 
     expect(persistMocks.upsertConsumerLag).toHaveBeenCalledTimes(2);
   });

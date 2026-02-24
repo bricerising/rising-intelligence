@@ -4,4 +4,4 @@ export {
   isRateLimitError,
   isTransientError,
   type BackoffConfig,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/resilience";

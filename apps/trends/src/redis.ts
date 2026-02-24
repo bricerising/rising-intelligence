@@ -1,6 +1,6 @@
 import { Redis } from "ioredis";
 import type { Logger } from "pino";
-import { redactUrlPassword } from "@rising-intelligence/shared";
+import { redactUrlPassword } from "@rising-intelligence/shared/http";
 import type { TrendWindow, ParsedRawEvent } from "./types.js";
 
 const WINDOW_SECONDS: Record<TrendWindow, number> = {

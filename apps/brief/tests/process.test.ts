@@ -187,7 +187,9 @@ function makeContext(overrides: Record<string, unknown> = {}) {
       set: vi.fn().mockResolvedValue("OK"),
     },
     producer: {
-      send: vi.fn().mockResolvedValue(undefined),
+      publish: vi.fn().mockResolvedValue(undefined),
+      publishBatch: vi.fn(async () => false),
+      disconnect: vi.fn(async () => undefined),
     },
     ...overrides,
   } as any;
@@ -240,7 +242,7 @@ describe("processSummaryRequest", () => {
 
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
     expect(ctx.redis.eval).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
     expect(ctx.healthContext.metrics.llmCostUsdTotal).toBeGreaterThan(0);
   });
@@ -286,7 +288,7 @@ describe("processSummaryRequest", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.redis.eval).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(120);
     expect(ctx.healthContext.metrics.llmTokens.get("output")).toBe(80);
@@ -400,7 +402,7 @@ describe("processSummaryRequest", () => {
 
     expect(codexCliMocks.executeCodexCli).toHaveBeenCalledOnce();
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.redis.eval).toHaveBeenCalledTimes(1);
     expect(ctx.redis.set).toHaveBeenCalled();
     expect(ctx.healthContext.metrics.llmTokens.get("input")).toBe(160);
@@ -430,7 +432,7 @@ describe("processSummaryRequest", () => {
     const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
     expect(persistedPayload.failure.error_code).toBe("llm_error");
     expect(persistedPayload.failure.retryable).toBe(true);
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("failure")).toBe(1);
     expect(ctx.healthContext.metrics.errors.get("llm_error")).toBe(1);
   });
@@ -463,7 +465,7 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief).toBeDefined();
     expect(persistedPayload.failure).toBeUndefined();
     expect(persistedPayload.brief.meta.provider).toBe("internal");
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
   });
 
@@ -599,7 +601,7 @@ describe("processSummaryRequest", () => {
     await processSummaryRequest(ctx, makeRequest());
 
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       expect.any(Object),
@@ -651,7 +653,7 @@ describe("processSummaryRequest", () => {
     await Promise.resolve();
 
     expect(ctx.prisma.briefResult.create).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       expect.any(Object),
       "Failed to asynchronously mirror reserved budget to Postgres"
@@ -744,7 +746,7 @@ describe("processSummaryRequest", () => {
 
     expect(ctx.prisma.briefResult.create).not.toHaveBeenCalled();
     expect(ctx.redis.eval).not.toHaveBeenCalled();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.duplicatesSkipped).toBe(1);
     expect(ctx.healthContext.metrics.generation.get("skipped")).toBe(1);
   });
@@ -793,7 +795,7 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief.highlights[0].citations).toEqual(["https://example.com/1"]);
     expect(persistedPayload.brief.meta.provider).toBe("internal");
     expect(persistedPayload.brief.meta.model).toBe("rule-based-fallback-v1");
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
   });
 
@@ -1139,7 +1141,7 @@ describe("processSummaryRequest", () => {
         }),
       })
     );
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
     const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
     expect(persistedPayload.brief.highlights[0].topic).toBe("aws.bedrock");
     expect(ctx.healthContext.metrics.generation.get("success")).toBe(1);
@@ -1757,7 +1759,7 @@ describe("processSummaryRequest", () => {
     await processSummaryRequest(ctx, request);
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(ctx.producer.send).toHaveBeenCalledOnce();
+    expect(ctx.producer.publish).toHaveBeenCalledOnce();
   });
 
   it("applies engagement evidence strategy ordering in query mode", async () => {

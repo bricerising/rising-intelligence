@@ -1,4 +1,4 @@
-import type { CanonicalSource } from "@rising-intelligence/shared";
+import type { CanonicalSource } from "@rising-intelligence/pipeline";
 
 export type Source = CanonicalSource;
 

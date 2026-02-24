@@ -21,12 +21,21 @@ topics:
   - key: ai.openai
     display_name: OpenAI
     priority: 80
+    matchers:
+      - type: keyword
+        value: openai
   - key: aws.bedrock
     display_name: Bedrock
     priority: 90
+    matchers:
+      - type: keyword
+        value: bedrock
   - key: ai.general
     display_name: AI General
     priority: 20
+    matchers:
+      - type: keyword
+        value: ai
 suppression:
   muted_topics:
     - ai.general
@@ -49,12 +58,21 @@ topics:
   - key: b.topic
     display_name: B Topic
     priority: 10
+    matchers:
+      - type: keyword
+        value: topic-b
   - key: a.topic
     display_name: A Topic
     priority: 10
+    matchers:
+      - type: keyword
+        value: topic-a
   - key: c.topic
     display_name: C Topic
     priority: 20
+    matchers:
+      - type: keyword
+        value: topic-c
 `);
     const allowlist = loadAllowlist(path);
     const filtered = filterTrackedTags(["a.topic", "b.topic", "c.topic"], allowlist);
@@ -67,8 +85,14 @@ topics:
 topics:
   - key: duplicate.topic
     display_name: Topic One
+    matchers:
+      - type: keyword
+        value: one
   - key: duplicate.topic
     display_name: Topic Two
+    matchers:
+      - type: keyword
+        value: two
 `);
     expect(() => loadAllowlist(path)).toThrow("Duplicate topic key");
   });

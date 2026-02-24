@@ -1,5 +1,5 @@
 import { TrendWindow as DbTrendWindow, PrismaClient, type Prisma } from "@rising-intelligence/db";
-import type { Producer } from "kafkajs";
+import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
 import type { Logger } from "pino";
 import type { Config } from "./config.js";
@@ -92,7 +92,7 @@ export interface SnapshotContext {
   config: Config;
   logger: Logger;
   redis: Redis;
-  producer: Producer;
+  producer: ProducerConnection;
   prisma: PrismaClient;
   allowlist: CompiledAllowlist;
   healthContext: HealthContext;
@@ -222,7 +222,7 @@ async function publishWindowSnapshot(
 
 export async function publishSnapshots(ctx: SnapshotContext): Promise<PublishedWindowSnapshot[]> {
   const publisher = createTrendsSnapshotPublisher({
-    producer: ctx.producer,
+    connection: ctx.producer,
     logger: ctx.logger,
     topic: ctx.config.KAFKA_TOPIC_TRENDS_SNAPSHOTS,
   });

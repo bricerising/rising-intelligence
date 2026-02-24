@@ -1,17 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import { createBriefResultPublisher } from "../src/publishing-facade.js";
 
 describe("brief publishing facade", () => {
   it("serializes payload and publishes to configured topic", async () => {
-    const producer = {} as any;
+    const connection: ProducerConnection = {
+      publish: vi.fn().mockResolvedValue(undefined),
+      publishBatch: vi.fn(async () => false),
+      disconnect: vi.fn(async () => undefined),
+    };
     const logger = {} as any;
-    const publish = vi.fn().mockResolvedValue(undefined);
 
     const publisher = createBriefResultPublisher({
-      producer,
+      connection,
       logger,
       topic: "summary.results",
-      publish,
     });
 
     const payload = {
@@ -24,33 +27,31 @@ describe("brief publishing facade", () => {
 
     await publisher.publishResult("req-1", payload);
 
-    expect(publish).toHaveBeenCalledOnce();
-    expect(publish).toHaveBeenCalledWith(
-      producer,
-      "summary.results",
-      "req-1",
-      expect.any(Buffer),
-      logger
-    );
-
-    const encodedPayload = publish.mock.calls[0][3] as Buffer;
-    expect(JSON.parse(encodedPayload.toString("utf-8"))).toEqual(payload);
+    expect(connection.publish).toHaveBeenCalledOnce();
+    const [topic, key, value] = (connection.publish as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(topic).toBe("summary.results");
+    expect(key).toBe("req-1");
+    expect(JSON.parse((value as Buffer).toString("utf-8"))).toEqual(payload);
   });
 
   it("supports repeated publishes with the same facade instance", async () => {
-    const publish = vi.fn().mockResolvedValue(undefined);
+    const connection: ProducerConnection = {
+      publish: vi.fn().mockResolvedValue(undefined),
+      publishBatch: vi.fn(async () => false),
+      disconnect: vi.fn(async () => undefined),
+    };
     const publisher = createBriefResultPublisher({
-      producer: {} as any,
+      connection,
       logger: {} as any,
       topic: "summary.results",
-      publish,
     });
 
     await publisher.publishResult("req-1", { request_id: "req-1", produced_at: "now" });
     await publisher.publishResult("req-2", { request_id: "req-2", produced_at: "later" });
 
-    expect(publish).toHaveBeenCalledTimes(2);
-    expect(publish.mock.calls[0][2]).toBe("req-1");
-    expect(publish.mock.calls[1][2]).toBe("req-2");
+    expect(connection.publish).toHaveBeenCalledTimes(2);
+    const calls = (connection.publish as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][1]).toBe("req-1");
+    expect(calls[1][1]).toBe("req-2");
   });
 });

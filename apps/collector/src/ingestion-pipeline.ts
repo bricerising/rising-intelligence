@@ -1,5 +1,8 @@
 import type { Logger } from "pino";
-import { runAsyncChain, type AsyncChainStep } from "@rising-intelligence/shared";
+import {
+  runAsyncChain,
+  type AsyncChainStep,
+} from "@rising-intelligence/shared/resilience";
 import type { CheckpointStore } from "./checkpoint.js";
 import {
   incrementEventsFailed,

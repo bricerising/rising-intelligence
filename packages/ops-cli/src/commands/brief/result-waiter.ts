@@ -1,21 +1,11 @@
-import type { Kafka } from "kafkajs";
+import {
+  createConsumerConnection,
+  createMessageBatchStrategy,
+  type PipelineLogger,
+} from "@rising-intelligence/pipeline/transport";
 
 interface RequestScopedResult {
   request_id: string;
-}
-
-interface MessagePayload {
-  message: {
-    value: Buffer | null;
-  };
-}
-
-interface RequestResultConsumer {
-  connect(): Promise<void>;
-  subscribe(input: { topic: string; fromBeginning: boolean }): Promise<void>;
-  run(input: { eachMessage(payload: MessagePayload): Promise<void> }): Promise<void>;
-  stop(): Promise<void>;
-  disconnect(): Promise<void>;
 }
 
 export interface RequestResultWaiter<TResult extends RequestScopedResult> {
@@ -24,7 +14,8 @@ export interface RequestResultWaiter<TResult extends RequestScopedResult> {
 }
 
 export interface SetupRequestResultWaiterInput<TResult extends RequestScopedResult> {
-  kafka: Kafka;
+  kafkaBrokers: string[];
+  kafkaClientId: string;
   groupId: string;
   topic: string;
   requestId: string;
@@ -34,6 +25,13 @@ export interface SetupRequestResultWaiterInput<TResult extends RequestScopedResu
   fromBeginning?: boolean;
   startupDelayMs?: number;
 }
+
+const NOOP_LOGGER: PipelineLogger = {
+  error() {},
+  warn() {},
+  info() {},
+  debug() {},
+};
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,18 +49,17 @@ function tryParseResult<TResult extends RequestScopedResult>(
 }
 
 /**
- * Proxy around a Kafka consumer lifecycle for request-scoped result messages.
- * Callers provide request identity and parsing while this helper owns timeout,
- * stop/disconnect, and run() rejection handling.
+ * Proxy around a request-scoped pipeline consumer.
+ * The waiter resolves once a result for requestId is observed or timeout elapses.
  */
 export async function setupRequestResultWaiter<TResult extends RequestScopedResult>(
   input: SetupRequestResultWaiterInput<TResult>
 ): Promise<RequestResultWaiter<TResult>> {
-  const consumer = input.kafka.consumer({ groupId: input.groupId }) as RequestResultConsumer;
-  await consumer.connect();
-  await consumer.subscribe({
-    topic: input.topic,
-    fromBeginning: input.fromBeginning ?? true,
+  const consumerConnection = await createConsumerConnection({
+    brokers: input.kafkaBrokers,
+    clientId: input.kafkaClientId,
+    groupId: input.groupId,
+    logger: NOOP_LOGGER,
   });
 
   let settled = false;
@@ -73,7 +70,7 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
 
   const requestStop = (): Promise<void> => {
     if (!stopPromise) {
-      stopPromise = consumer.stop().catch((error) => {
+      stopPromise = consumerConnection.disconnect().catch((error) => {
         settleFailure(error);
         throw error;
       });
@@ -115,21 +112,36 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
     void requestStop().catch(() => undefined);
   }, input.timeoutSeconds * 1000);
 
-  const runPromise = consumer.run({
-    eachMessage: async ({ message }): Promise<void> => {
-      if (settled || !message.value) {
-        return;
-      }
+  const strategy = createMessageBatchStrategy({
+    strategy: {
+      deserialize: (value: Buffer) => value,
+      async onMessage(
+        _ctx: void,
+        _messageContext,
+        messageValue: Buffer
+      ): Promise<void> {
+        if (settled) {
+          return;
+        }
 
-      const result = tryParseResult(message.value.toString("utf-8"), input.parseResult);
-      if (!result || result.request_id !== input.requestId) {
-        return;
-      }
+        const result = tryParseResult(messageValue.toString("utf-8"), input.parseResult);
+        if (!result || result.request_id !== input.requestId) {
+          return;
+        }
 
-      settleSuccess(result);
-      // Avoid awaiting stop() inside eachMessage; KafkaJS may wait for handler completion.
-      void requestStop().catch(() => undefined);
+        settleSuccess(result);
+        void requestStop().catch(() => undefined);
+      },
     },
+    acknowledge: true,
+    progressInterval: 20,
+  });
+
+  const runPromise = consumerConnection.consume({
+    topics: input.topic,
+    ctx: undefined,
+    strategy,
+    fromBeginning: input.fromBeginning ?? true,
   });
 
   void runPromise.catch((error) => {
@@ -148,9 +160,8 @@ export async function setupRequestResultWaiter<TResult extends RequestScopedResu
       try {
         await requestStop();
       } catch {
-        // Consumer may already be stopped; swallow cleanup errors for caller simplicity.
+        // Ignore cleanup failures for caller simplicity.
       }
-      await consumer.disconnect();
     },
   };
 }

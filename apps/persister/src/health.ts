@@ -9,7 +9,7 @@ import {
   getMaxConsumerLag,
   type HealthHandlers,
   type HistogramState,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 
 export interface Metrics {

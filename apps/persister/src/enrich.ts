@@ -1,1 +1,1 @@
-export { prepareRawEventForPersistence } from "@rising-intelligence/shared";
+export { prepareRawEventForPersistence } from "@rising-intelligence/pipeline/hydration";

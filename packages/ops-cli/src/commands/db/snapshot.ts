@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { REPO_ROOT, getEnvString } from "@rising-intelligence/shared";
+import { REPO_ROOT, getEnvString } from "@rising-intelligence/shared/config";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import {

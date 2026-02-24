@@ -6,4 +6,4 @@ export {
   extractTopics,
   extractUrls,
   loadAllowlist,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/pipeline";

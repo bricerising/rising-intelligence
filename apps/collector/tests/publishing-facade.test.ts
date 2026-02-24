@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Producer } from "kafkajs";
-import { TOPICS } from "../src/kafka/producer.js";
-import { createCollectorPublisher } from "../src/publishing-facade.js";
+import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
+import { TOPICS, createCollectorPublisher } from "../src/publishing-facade.js";
 import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "../src/types.js";
 
 function createTestLogger() {
@@ -13,16 +12,19 @@ function createTestLogger() {
   } as any;
 }
 
+function createMockConnection(): ProducerConnection {
+  return {
+    publish: vi.fn(async () => undefined),
+    publishBatch: vi.fn(async () => false),
+    disconnect: vi.fn(async () => undefined),
+  };
+}
+
 describe("collector publishing facade", () => {
   it("publishes raw events with canonical topic and serialized payload", async () => {
-    const publish = vi.fn(async () => undefined);
     const logger = createTestLogger();
-    const producer = {} as Producer;
-    const publisher = createCollectorPublisher({
-      producer,
-      logger,
-      publish,
-    });
+    const connection = createMockConnection();
+    const publisher = createCollectorPublisher({ connection, logger });
 
     const event: RawEvent = {
       event_id: "evt-1",
@@ -34,14 +36,12 @@ describe("collector publishing facade", () => {
 
     await publisher.publishRawEvent(event);
 
-    expect(publish).toHaveBeenCalledTimes(1);
-    const [sentProducer, topic, key, payload, sentLogger] = publish.mock.calls[0];
-    expect(sentProducer).toBe(producer);
+    expect(connection.publish).toHaveBeenCalledTimes(1);
+    const [topic, key, value] = (connection.publish as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(topic).toBe(TOPICS.RAW_EVENTS);
     expect(key).toBe("evt-1");
-    expect(sentLogger).toBe(logger);
 
-    const decoded = JSON.parse((payload as Buffer).toString("utf-8"));
+    const decoded = JSON.parse((value as Buffer).toString("utf-8"));
     expect(decoded).toMatchObject({
       event_id: "evt-1",
       source: 1,
@@ -51,14 +51,9 @@ describe("collector publishing facade", () => {
   });
 
   it("publishes dead letter events to DLQ topic keyed by dlq_id", async () => {
-    const publish = vi.fn(async () => undefined);
     const logger = createTestLogger();
-    const producer = {} as Producer;
-    const publisher = createCollectorPublisher({
-      producer,
-      logger,
-      publish,
-    });
+    const connection = createMockConnection();
+    const publisher = createCollectorPublisher({ connection, logger });
 
     const dlqEvent: DeadLetterEvent = {
       dlq_id: "dlq:1",
@@ -70,24 +65,17 @@ describe("collector publishing facade", () => {
 
     await publisher.publishDeadLetterEvent(dlqEvent);
 
-    expect(publish).toHaveBeenCalledWith(
-      producer,
+    expect(connection.publish).toHaveBeenCalledWith(
       TOPICS.DLQ,
       "dlq:1",
-      expect.any(Buffer),
-      logger
+      expect.any(Buffer)
     );
   });
 
   it("publishes collector heartbeats to heartbeat topic keyed by source", async () => {
-    const publish = vi.fn(async () => undefined);
     const logger = createTestLogger();
-    const producer = {} as Producer;
-    const publisher = createCollectorPublisher({
-      producer,
-      logger,
-      publish,
-    });
+    const connection = createMockConnection();
+    const publisher = createCollectorPublisher({ connection, logger });
 
     const heartbeat: CollectorHeartbeat = {
       source: "rss",
@@ -99,16 +87,14 @@ describe("collector publishing facade", () => {
 
     await publisher.publishHeartbeat(heartbeat);
 
-    expect(publish).toHaveBeenCalledWith(
-      producer,
+    expect(connection.publish).toHaveBeenCalledWith(
       TOPICS.HEARTBEAT,
       "rss",
-      expect.any(Buffer),
-      logger
+      expect.any(Buffer)
     );
 
-    const payload = publish.mock.calls[0][3] as Buffer;
-    const decoded = JSON.parse(payload.toString("utf-8"));
+    const value = (connection.publish as ReturnType<typeof vi.fn>).mock.calls[0][2] as Buffer;
+    const decoded = JSON.parse(value.toString("utf-8"));
     expect(decoded).toMatchObject({
       source: 1,
       status: 1,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { loadDotEnv } from "@rising-intelligence/shared";
+import { loadDotEnv } from "@rising-intelligence/shared/config";
 import { createDefaultCommandRegistry } from "./command-registry.js";
 import { printHelp } from "./help.js";
 import { parseArgs } from "./lib/args.js";

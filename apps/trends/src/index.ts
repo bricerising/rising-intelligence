@@ -1,19 +1,14 @@
-import type { EachBatchPayload } from "kafkajs";
 import {
-  createTopicBatchRouter,
-  type BatchTopicHandler,
-  closeServer,
-  serializeError,
+  createServiceBootstrap,
   runService,
   runShutdownSteps,
-  createServiceBootstrap,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { serializeError } from "@rising-intelligence/shared/errors";
+import { closeServer } from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
 import { incrementError } from "./health.js";
-import { disconnectKafkaConsumer } from "./kafka/consumer.js";
-import { disconnectKafkaProducer } from "./kafka/producer.js";
 import { disconnectRedis } from "./redis.js";
-import { processBatch, processCollectorHeartbeatBatch } from "./process.js";
+import { createBatchStrategies } from "./process.js";
 import {
   createTrendsRuntimeFactory,
   type TrendsRuntimeContext,
@@ -65,30 +60,15 @@ async function runSnapshotLoop(ctx: TrendsRuntimeContext): Promise<void> {
   ctx.snapshotTimer.unref();
 }
 
-function createBatchTopicHandlers(ctx: TrendsRuntimeContext): Map<string, BatchTopicHandler> {
-  return new Map<string, BatchTopicHandler>([
-    [ctx.config.KAFKA_TOPIC_RAW_EVENTS, async (payload) => processBatch(ctx, payload)],
-    [
-      ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-      async (payload) => processCollectorHeartbeatBatch(ctx, payload),
-    ],
-  ]);
-}
-
 async function runConsumer(ctx: TrendsRuntimeContext): Promise<void> {
-  const topicBatchRouter = createTopicBatchRouter({
-    logger: ctx.logger,
-    handlers: createBatchTopicHandlers(ctx),
-  });
-
-  await ctx.kafkaConsumerContext.consumer.run({
-    // Offsets are resolved manually; auto-commit must stay enabled so
-    // commitOffsetsIfNecessary() records progress for restart recovery.
-    autoCommit: true,
-    eachBatchAutoResolve: false,
-    eachBatch: async (payload: EachBatchPayload) => {
-      await topicBatchRouter.handle(payload);
-    },
+  await ctx.kafkaConsumerContext.consumer.consume({
+    topics: [
+      ctx.config.KAFKA_TOPIC_RAW_EVENTS,
+      ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
+    ],
+    ctx,
+    strategy: createBatchStrategies(ctx),
+    fromBeginning: false,
   });
 }
 
@@ -103,7 +83,7 @@ async function gracefulShutdown(ctx: TrendsRuntimeContext): Promise<void> {
   await runShutdownSteps(logger, [
     {
       name: "kafka-consumer",
-      run: async () => disconnectKafkaConsumer(ctx.kafkaConsumerContext.consumer, logger),
+      run: async () => ctx.kafkaConsumerContext.consumer.disconnect(),
       errorMessage: "Kafka consumer disconnect failed",
       onSuccess: () => {
         ctx.healthContext.kafkaHealthy = false;
@@ -111,7 +91,7 @@ async function gracefulShutdown(ctx: TrendsRuntimeContext): Promise<void> {
     },
     {
       name: "kafka-producer",
-      run: async () => disconnectKafkaProducer(ctx.kafkaProducerContext.producer, logger),
+      run: async () => ctx.kafkaProducerContext.producer.disconnect(),
       errorMessage: "Kafka producer disconnect failed",
     },
     {

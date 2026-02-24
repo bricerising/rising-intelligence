@@ -1,46 +1,25 @@
-import type { Kafka } from "kafkajs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@rising-intelligence/pipeline/transport", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@rising-intelligence/pipeline/transport")>();
+  return {
+    ...original,
+    createConsumerConnection: vi.fn(),
+  };
+});
+
+import type {
+  BatchContext,
+  BatchStrategy,
+  ConsumerConnection,
+  PipelineMessage,
+} from "@rising-intelligence/pipeline/transport";
+import { createConsumerConnection } from "@rising-intelligence/pipeline/transport";
 import { setupRequestResultWaiter } from "../src/commands/brief/result-waiter.js";
 
 interface TestResultPayload {
   request_id: string;
   produced_at: string;
-}
-
-type EachMessageHandler = (payload: {
-  message: { value: Buffer | null };
-}) => Promise<void>;
-
-class FakeConsumer {
-  private eachMessage: EachMessageHandler | null = null;
-
-  readonly connect = vi.fn(async () => undefined);
-  readonly subscribe = vi.fn(async () => undefined);
-  readonly stop = vi.fn(async () => undefined);
-  readonly disconnect = vi.fn(async () => undefined);
-
-  readonly run = vi.fn(
-    async (input: { eachMessage(payload: { message: { value: Buffer | null } }): Promise<void> }) => {
-      this.eachMessage = input.eachMessage;
-    }
-  );
-
-  async emitRaw(rawValue: string | null): Promise<void> {
-    if (!this.eachMessage) {
-      throw new Error("Consumer has not started");
-    }
-    await this.eachMessage({
-      message: {
-        value: rawValue === null ? null : Buffer.from(rawValue, "utf-8"),
-      },
-    });
-  }
-}
-
-function createKafkaStub(consumer: unknown): Kafka {
-  return {
-    consumer: vi.fn(() => consumer),
-  } as unknown as Kafka;
 }
 
 function parseTestResult(rawValue: string): TestResultPayload | null {
@@ -66,59 +45,117 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-class StopWithinHandlerConsumer {
-  private eachMessage: EachMessageHandler | null = null;
-  private handlingMessage = false;
-  private releaseStop: (() => void) | null = null;
+function createFakeBatchContext(): BatchContext {
+  return {
+    topic: "summary.results",
+    partition: 0,
+    highWatermark: "0",
+    isActive: () => true,
+    keepAlive: vi.fn(async () => undefined),
+    acknowledge: vi.fn(),
+    commit: vi.fn(async () => undefined),
+    pause: () => () => undefined,
+  };
+}
 
-  readonly connect = vi.fn(async () => undefined);
-  readonly subscribe = vi.fn(async () => undefined);
+function createPipelineMessage(rawValue: string | null): PipelineMessage {
+  return {
+    key: null,
+    value: rawValue === null ? null : Buffer.from(rawValue, "utf-8"),
+    position: "0",
+    timestamp: Date.now().toString(),
+  };
+}
+
+/**
+ * Fake ConsumerConnection that captures the BatchStrategy from consume()
+ * so tests can feed messages through it via emitMessage().
+ */
+class FakeConsumerConnection {
+  private strategy: BatchStrategy<any> | null = null;
+  private ctx: any = null;
+
   readonly disconnect = vi.fn(async () => undefined);
 
-  readonly stop = vi.fn(async () => {
+  readonly consume = vi.fn(async (options: any) => {
+    this.strategy = options.strategy;
+    this.ctx = options.ctx;
+    // Return a never-resolving promise to simulate a running consumer
+    return new Promise<void>(() => {});
+  });
+
+  async emitMessage(rawValue: string | null): Promise<void> {
+    if (!this.strategy) {
+      throw new Error("Consumer has not started");
+    }
+    await this.strategy.processBatch(
+      this.ctx,
+      createFakeBatchContext(),
+      [createPipelineMessage(rawValue)]
+    );
+  }
+}
+
+/**
+ * Variant that simulates disconnect() blocking until the message handler returns,
+ * verifying the waiter does not deadlock in that scenario.
+ */
+class StopWithinHandlerConnection {
+  private strategy: BatchStrategy<any> | null = null;
+  private ctx: any = null;
+  private handlingMessage = false;
+  private releaseDisconnect: (() => void) | null = null;
+
+  readonly disconnect = vi.fn(async () => {
     if (!this.handlingMessage) {
       return;
     }
     await new Promise<void>((resolve) => {
-      this.releaseStop = resolve;
+      this.releaseDisconnect = resolve;
     });
   });
 
-  readonly run = vi.fn(
-    async (input: { eachMessage(payload: { message: { value: Buffer | null } }): Promise<void> }) => {
-      this.eachMessage = input.eachMessage;
-    }
-  );
+  readonly consume = vi.fn(async (options: any) => {
+    this.strategy = options.strategy;
+    this.ctx = options.ctx;
+    return new Promise<void>(() => {});
+  });
 
-  async emitRaw(rawValue: string | null): Promise<void> {
-    if (!this.eachMessage) {
+  async emitMessage(rawValue: string | null): Promise<void> {
+    if (!this.strategy) {
       throw new Error("Consumer has not started");
     }
 
     this.handlingMessage = true;
     try {
-      await this.eachMessage({
-        message: {
-          value: rawValue === null ? null : Buffer.from(rawValue, "utf-8"),
-        },
-      });
+      await this.strategy.processBatch(
+        this.ctx,
+        createFakeBatchContext(),
+        [createPipelineMessage(rawValue)]
+      );
     } finally {
       this.handlingMessage = false;
-      this.releaseStop?.();
-      this.releaseStop = null;
+      this.releaseDisconnect?.();
+      this.releaseDisconnect = null;
     }
   }
 }
 
+const mockedCreateConsumerConnection = vi.mocked(createConsumerConnection);
+
 describe("setupRequestResultWaiter", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   it("resolves the first matching request result and ignores non-matching payloads", async () => {
-    const fakeConsumer = new FakeConsumer();
+    const fakeConnection = new FakeConsumerConnection();
+    mockedCreateConsumerConnection.mockResolvedValue(fakeConnection);
+
     const waiter = await setupRequestResultWaiter<TestResultPayload>({
-      kafka: createKafkaStub(fakeConsumer),
+      kafkaBrokers: ["localhost:9092"],
+      kafkaClientId: "test-client",
       groupId: "test-group",
       topic: "summary.results",
       requestId: "target-request",
@@ -129,26 +166,28 @@ describe("setupRequestResultWaiter", () => {
 
     const waitPromise = waiter.waitForResult();
 
-    await fakeConsumer.emitRaw(JSON.stringify({ request_id: "other-request", produced_at: "now" }));
-    await fakeConsumer.emitRaw("not-json");
-    await fakeConsumer.emitRaw(JSON.stringify({ request_id: "target-request", produced_at: "now" }));
+    await fakeConnection.emitMessage(JSON.stringify({ request_id: "other-request", produced_at: "now" }));
+    await fakeConnection.emitMessage("not-json");
+    await fakeConnection.emitMessage(JSON.stringify({ request_id: "target-request", produced_at: "now" }));
 
     await expect(waitPromise).resolves.toEqual({
       request_id: "target-request",
       produced_at: "now",
     });
-    expect(fakeConsumer.stop).toHaveBeenCalledTimes(1);
 
     await waiter.disconnect();
-    expect(fakeConsumer.disconnect).toHaveBeenCalledTimes(1);
+    expect(fakeConnection.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("rejects on timeout and stops the consumer", async () => {
     vi.useFakeTimers();
 
-    const fakeConsumer = new FakeConsumer();
+    const fakeConnection = new FakeConsumerConnection();
+    mockedCreateConsumerConnection.mockResolvedValue(fakeConnection);
+
     const waiter = await setupRequestResultWaiter<TestResultPayload>({
-      kafka: createKafkaStub(fakeConsumer),
+      kafkaBrokers: ["localhost:9092"],
+      kafkaClientId: "test-client",
       groupId: "test-group",
       topic: "summary.results",
       requestId: "target-request",
@@ -163,24 +202,22 @@ describe("setupRequestResultWaiter", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     await timedOut;
-    expect(fakeConsumer.stop).toHaveBeenCalledTimes(1);
     await waiter.disconnect();
+    expect(fakeConnection.disconnect).toHaveBeenCalled();
   });
 
   it("propagates consumer run failures", async () => {
-    const runError = new Error("consumer run failed");
-    const failingConsumer = {
-      connect: vi.fn(async () => undefined),
-      subscribe: vi.fn(async () => undefined),
-      run: vi.fn(async () => {
-        throw runError;
+    const failingConnection: ConsumerConnection = {
+      consume: vi.fn(async () => {
+        throw new Error("consumer run failed");
       }),
-      stop: vi.fn(async () => undefined),
       disconnect: vi.fn(async () => undefined),
     };
+    mockedCreateConsumerConnection.mockResolvedValue(failingConnection);
 
     const waiter = await setupRequestResultWaiter<TestResultPayload>({
-      kafka: createKafkaStub(failingConsumer),
+      kafkaBrokers: ["localhost:9092"],
+      kafkaClientId: "test-client",
       groupId: "test-group",
       topic: "summary.results",
       requestId: "target-request",
@@ -192,10 +229,13 @@ describe("setupRequestResultWaiter", () => {
     await expect(waiter.waitForResult()).rejects.toThrow("consumer run failed");
   });
 
-  it("does not hang when stop() waits for eachMessage to return", async () => {
-    const consumer = new StopWithinHandlerConsumer();
+  it("does not hang when disconnect() waits for message handler to return", async () => {
+    const connection = new StopWithinHandlerConnection();
+    mockedCreateConsumerConnection.mockResolvedValue(connection);
+
     const waiter = await setupRequestResultWaiter<TestResultPayload>({
-      kafka: createKafkaStub(consumer),
+      kafkaBrokers: ["localhost:9092"],
+      kafkaClientId: "test-client",
       groupId: "test-group",
       topic: "summary.results",
       requestId: "target-request",
@@ -205,7 +245,7 @@ describe("setupRequestResultWaiter", () => {
     });
 
     const waitPromise = waiter.waitForResult();
-    const emitPromise = consumer.emitRaw(
+    const emitPromise = connection.emitMessage(
       JSON.stringify({ request_id: "target-request", produced_at: "now" })
     );
 
@@ -216,6 +256,6 @@ describe("setupRequestResultWaiter", () => {
     await expect(withTimeout(emitPromise, 200)).resolves.toBeUndefined();
 
     await waiter.disconnect();
-    expect(consumer.disconnect).toHaveBeenCalledTimes(1);
+    expect(connection.disconnect).toHaveBeenCalledTimes(1);
   });
 });

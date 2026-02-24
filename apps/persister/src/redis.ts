@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import { redactUrlPassword } from "@rising-intelligence/shared";
+import { redactUrlPassword } from "@rising-intelligence/shared/http";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { ParsedRawEvent } from "./types.js";

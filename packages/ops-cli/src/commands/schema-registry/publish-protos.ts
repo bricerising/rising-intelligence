@@ -2,13 +2,15 @@ import { readFile } from "node:fs/promises";
 
 import {
   CONTRACT_REFERENCE_NAME,
-  CONTRACTS_PROTO_PATH,
   CONTRACTS_SUBJECT,
   GRPC_SUBJECT,
   KAFKA_VALUE_SUBJECTS,
+} from "@rising-intelligence/pipeline";
+import {
+  CONTRACTS_PROTO_PATH,
   SERVICES_PROTO_PATH,
   getEnvString,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/config";
 
 type SchemaReference = {
   name: string;

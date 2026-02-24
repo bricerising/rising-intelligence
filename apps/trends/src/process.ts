@@ -1,12 +1,14 @@
-import type { EachBatchPayload } from "kafkajs";
+import type {
+  BatchContext,
+  BatchStrategy,
+  MessageContext,
+  MessageStrategy,
+  PipelineMessage,
+} from "@rising-intelligence/pipeline/transport";
+import { createMessageBatchStrategy } from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
 import { type PrismaClient, upsertConsumerLag } from "@rising-intelligence/db";
-import {
-  runKafkaMessageBatch,
-  serializeError,
-  type KafkaBatchMessageContext,
-  type KafkaBatchMessageStrategy,
-} from "@rising-intelligence/shared";
+import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
@@ -49,29 +51,9 @@ export interface TrendsContext {
   lagWriteTimestamps: Map<string, number>;
 }
 
-interface BatchProcessingMode<TMessage> {
-  strategy: KafkaBatchMessageStrategy<TrendsContext, TMessage>;
-  onCompletedBatch?(ctx: TrendsContext, payload: EachBatchPayload): Promise<void>;
-}
-
-async function runBatchProcessingMode<TMessage>(
-  ctx: TrendsContext,
-  payload: EachBatchPayload,
-  mode: BatchProcessingMode<TMessage>
-): Promise<void> {
-  await runKafkaMessageBatch({
-    ctx,
-    payload,
-    heartbeatIntervalMessages: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
-    strategy: mode.strategy,
-    resolveOffsets: true,
-    onCompletedBatch: mode.onCompletedBatch,
-  });
-}
-
 function onEmptyBatchValue(
   ctx: TrendsContext,
-  messageContext: KafkaBatchMessageContext,
+  messageContext: MessageContext,
   logMessage: string
 ): void {
   incrementError(ctx.healthContext, "parse_error");
@@ -80,7 +62,7 @@ function onEmptyBatchValue(
 
 function onBatchDeserializeFailure(
   ctx: TrendsContext,
-  messageContext: KafkaBatchMessageContext,
+  messageContext: MessageContext,
   error: unknown,
   logMessage: string
 ): void {
@@ -94,7 +76,7 @@ function onBatchDeserializeFailure(
   );
 }
 
-const RAW_EVENT_BATCH_STRATEGY: KafkaBatchMessageStrategy<TrendsContext, ParsedRawEvent> = {
+const RAW_EVENT_MESSAGE_STRATEGY: MessageStrategy<TrendsContext, ParsedRawEvent> = {
   deserialize: deserializeRawEvent,
   onEmptyValue(ctx, messageContext): void {
     onEmptyBatchValue(ctx, messageContext, "Skipping message with empty value");
@@ -145,7 +127,7 @@ const RAW_EVENT_BATCH_STRATEGY: KafkaBatchMessageStrategy<TrendsContext, ParsedR
   },
 };
 
-const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: KafkaBatchMessageStrategy<
+const COLLECTOR_HEARTBEAT_MESSAGE_STRATEGY: MessageStrategy<
   TrendsContext,
   CollectorHeartbeatState
 > = {
@@ -188,15 +170,15 @@ const COLLECTOR_HEARTBEAT_BATCH_STRATEGY: KafkaBatchMessageStrategy<
 
 async function updateConsumerLag(
   ctx: TrendsContext,
-  payload: EachBatchPayload
+  batch: BatchContext,
+  messages: readonly PipelineMessage[]
 ): Promise<void> {
-  const { batch } = payload;
-  const lastMessage = batch.messages.at(-1);
+  const lastMessage = messages.at(-1);
   if (!lastMessage) {
     return;
   }
 
-  const currentOffset = toBigInt(lastMessage.offset, 0n) + 1n;
+  const currentOffset = toBigInt(lastMessage.position, 0n) + 1n;
   const latestOffset = toBigInt(batch.highWatermark, currentOffset);
   const lag = latestOffset > currentOffset ? latestOffset - currentOffset : 0n;
 
@@ -239,25 +221,33 @@ async function updateConsumerLag(
   }
 }
 
-const RAW_EVENT_BATCH_MODE: BatchProcessingMode<ParsedRawEvent> = {
-  strategy: RAW_EVENT_BATCH_STRATEGY,
-  onCompletedBatch: updateConsumerLag,
-};
+const RAW_EVENT_BATCH_STRATEGY_BASE = createMessageBatchStrategy({
+  strategy: RAW_EVENT_MESSAGE_STRATEGY,
+  progressInterval: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
+});
 
-const COLLECTOR_HEARTBEAT_BATCH_MODE: BatchProcessingMode<CollectorHeartbeatState> = {
-  strategy: COLLECTOR_HEARTBEAT_BATCH_STRATEGY,
-};
+const COLLECTOR_HEARTBEAT_BATCH_STRATEGY = createMessageBatchStrategy({
+  strategy: COLLECTOR_HEARTBEAT_MESSAGE_STRATEGY,
+  progressInterval: LOOP_HEARTBEAT_INTERVAL_MESSAGES,
+});
 
-export async function processBatch(
-  ctx: TrendsContext,
-  payload: EachBatchPayload
-): Promise<void> {
-  await runBatchProcessingMode(ctx, payload, RAW_EVENT_BATCH_MODE);
+function createRawEventBatchStrategy(): BatchStrategy<TrendsContext> {
+  return {
+    async processBatch(ctx, batch, messages): Promise<void> {
+      await RAW_EVENT_BATCH_STRATEGY_BASE.processBatch(ctx, batch, messages);
+      if (!batch.isActive()) {
+        return;
+      }
+      await updateConsumerLag(ctx, batch, messages);
+    },
+  };
 }
 
-export async function processCollectorHeartbeatBatch(
-  ctx: TrendsContext,
-  payload: EachBatchPayload
-): Promise<void> {
-  await runBatchProcessingMode(ctx, payload, COLLECTOR_HEARTBEAT_BATCH_MODE);
+export function createBatchStrategies(
+  ctx: TrendsContext
+): ReadonlyMap<string, BatchStrategy<TrendsContext>> {
+  return new Map<string, BatchStrategy<TrendsContext>>([
+    [ctx.config.KAFKA_TOPIC_RAW_EVENTS, createRawEventBatchStrategy()],
+    [ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT, COLLECTOR_HEARTBEAT_BATCH_STRATEGY],
+  ]);
 }

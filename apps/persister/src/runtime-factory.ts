@@ -1,15 +1,19 @@
 import type { Server } from "node:http";
 import {
+  createConsumerConnection,
+  type ConsumerConnection,
+} from "@rising-intelligence/pipeline/transport";
+import {
   createPrismaRuntimeDependencies,
   type PrismaClient,
 } from "@rising-intelligence/db";
 import {
   createFunctionDependencyFactory,
-  closeServer,
-  createComponentLoggerFactory,
   createRuntimeCompositionRoot,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { closeServer } from "@rising-intelligence/shared/http";
+import { createComponentLoggerFactory } from "@rising-intelligence/shared/logging";
 import type { Redis } from "ioredis";
 import type pino from "pino";
 import { PostgresCircuitBreaker } from "./circuit-breaker.js";
@@ -19,15 +23,10 @@ import {
   startHealthServer,
   type HealthContext,
 } from "./health.js";
-import {
-  createKafkaConsumer,
-  disconnectKafkaConsumer,
-  type KafkaConsumerContext,
-} from "./kafka/consumer.js";
 import { createRedisClient, disconnectRedis } from "./redis.js";
 import type { PersisterContext } from "./process.js";
 
-type KafkaConsumer = KafkaConsumerContext["consumer"];
+type KafkaConsumer = ConsumerConnection;
 type RuntimeLoggerComponent = "redis" | "kafka";
 
 export interface PersisterRuntimeFactoryDependencies {
@@ -35,7 +34,7 @@ export interface PersisterRuntimeFactoryDependencies {
   startHealthServer(ctx: HealthContext, logger: pino.Logger): Server;
   createPrismaClient(config: Config): Promise<PrismaClient>;
   createRedisClient(config: Config, logger: pino.Logger): Promise<Redis>;
-  createKafkaConsumer(logger: pino.Logger): Promise<KafkaConsumerContext>;
+  createKafkaConsumer(config: Config, logger: pino.Logger): Promise<KafkaConsumer>;
   createCircuitBreaker(config: Config): PostgresCircuitBreaker;
   disconnectKafkaConsumer(consumer: KafkaConsumer, logger: pino.Logger): Promise<void>;
   disconnectRedis(redis: Redis | null): Promise<void>;
@@ -61,14 +60,24 @@ const DEFAULT_DEPENDENCIES: PersisterRuntimeFactoryDependencies = {
   createHealthContext,
   startHealthServer,
   createRedisClient,
-  createKafkaConsumer,
+  async createKafkaConsumer(config, logger): Promise<KafkaConsumer> {
+    return createConsumerConnection({
+      brokers: config.KAFKA_BROKERS,
+      clientId: config.KAFKA_CLIENT_ID,
+      groupId: config.KAFKA_CONSUMER_GROUP,
+      logger,
+    });
+  },
   createCircuitBreaker(config): PostgresCircuitBreaker {
     return new PostgresCircuitBreaker(
       config.POSTGRES_CIRCUIT_FAILURE_THRESHOLD,
       config.POSTGRES_CIRCUIT_OPEN_MS
     );
   },
-  disconnectKafkaConsumer,
+  async disconnectKafkaConsumer(consumer, logger): Promise<void> {
+    await consumer.disconnect();
+    logger.info("Kafka consumer disconnected");
+  },
   disconnectRedis,
   closeHealthServer: closeServer,
 };
@@ -107,20 +116,17 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
       );
       healthContext.redisHealthy = true;
 
-      const kafkaContext = await resources.connectKafkaConsumer(
+      const kafkaConsumerConnection = await resources.connectKafkaConsumer(
         () =>
           this.dependencies.createKafkaConsumer(
+            config,
             componentLoggers.create("kafka")
           ),
-        (consumerContext) =>
-          this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
+        (consumerConnection) =>
+          this.dependencies.disconnectKafkaConsumer(consumerConnection, logger)
       );
-      await kafkaContext.consumer.subscribe({
-        topic: config.KAFKA_TOPIC_RAW_EVENTS,
-        fromBeginning: false,
-      });
       healthContext.kafkaHealthy = true;
-      logger.info({ topic: config.KAFKA_TOPIC_RAW_EVENTS }, "Kafka consumer subscribed");
+      logger.info({ topic: config.KAFKA_TOPIC_RAW_EVENTS }, "Kafka consumer initialized");
 
       return {
         config,
@@ -129,7 +135,9 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
         healthServer,
         prisma,
         redis,
-        kafkaContext,
+        kafkaContext: {
+          consumer: kafkaConsumerConnection,
+        },
         circuitBreaker: this.dependencies.createCircuitBreaker(config),
         lagWriteTimestamps: new Map(),
       };

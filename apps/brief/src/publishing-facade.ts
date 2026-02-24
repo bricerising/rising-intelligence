@@ -1,9 +1,8 @@
-import type { Producer } from "kafkajs";
 import type { Logger } from "pino";
-import { createKafkaTopicPublisher } from "@rising-intelligence/shared";
-import { publishBriefResult } from "./kafka/producer.js";
-
-type PublishBriefResultFn = typeof publishBriefResult;
+import {
+  createTopicPublisher,
+  type ProducerConnection,
+} from "@rising-intelligence/pipeline/transport";
 
 export interface BriefResultPublisher<
   TPayload extends Record<string, unknown> = Record<string, unknown>
@@ -12,10 +11,9 @@ export interface BriefResultPublisher<
 }
 
 export interface CreateBriefResultPublisherInput {
-  producer: Producer;
+  connection: ProducerConnection;
   logger: Logger;
   topic: string;
-  publish?: PublishBriefResultFn;
 }
 
 /**
@@ -27,13 +25,10 @@ export function createBriefResultPublisher<
 >(
   input: CreateBriefResultPublisherInput
 ): BriefResultPublisher<TPayload> {
-  const publish = input.publish ?? publishBriefResult;
-  const { producer, logger, topic } = input;
-  const topicPublisher = createKafkaTopicPublisher<TPayload, Logger>({
-    producer,
-    logger,
+  const { connection, topic } = input;
+  const topicPublisher = createTopicPublisher<TPayload>({
+    connection,
     topic,
-    publish,
   });
 
   return {

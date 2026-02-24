@@ -1,11 +1,11 @@
 import { BriefStatus, type PrismaClient } from "@rising-intelligence/db";
-import type { Producer } from "kafkajs";
+import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
 import {
   buildFunctionDependencies,
-  serializeError,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
+import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import { z } from "zod";
 import {
@@ -77,7 +77,7 @@ export interface ProcessContext {
   healthContext: HealthContext;
   prisma: PrismaClient;
   redis: Redis;
-  producer: Producer;
+  producer: ProducerConnection;
 }
 
 interface RequestScopedProcessContext extends ProcessContext {
@@ -214,7 +214,7 @@ class SummaryRequestRuntimeFactory {
         logger,
       }),
       publisher: this.dependencies.createBriefResultPublisher({
-        producer: requestContext.producer,
+        connection: requestContext.producer,
         logger,
         topic: requestContext.config.KAFKA_TOPIC_SUMMARY_RESULTS,
       }),

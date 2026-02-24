@@ -8,7 +8,7 @@ vi.mock("../src/config.js", () => ({
   }),
 }));
 
-import { createHealthHandler } from "@rising-intelligence/shared";
+import { createHealthHandler } from "@rising-intelligence/shared/http";
 import {
   createHealthContext,
   createHandlers,

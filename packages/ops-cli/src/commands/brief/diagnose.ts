@@ -1,10 +1,17 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { Kafka } from "kafkajs";
-import { getEnvString } from "@rising-intelligence/shared";
+import {
+  createProducerConnection,
+  type PipelineLogger,
+} from "@rising-intelligence/pipeline/transport";
+import { getEnvString } from "@rising-intelligence/shared/config";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
 import { parsePositiveIntegerStrict } from "../../lib/number.js";
+import {
+  createKafkaAdminConnection,
+  type KafkaAdminConnection,
+} from "../kafka/admin-client.js";
 import {
   setupRequestResultWaiter,
   type RequestResultWaiter,
@@ -15,6 +22,12 @@ const DEFAULT_BRIEF_HEALTH_URL = "http://localhost:3005/health";
 const DEFAULT_DOCKER_COMPOSE_FILE = "docker-compose.yml";
 const DEFAULT_DOCKER_SERVICE = "brief";
 const DEFAULT_DOCKER_LOG_TAIL = 200;
+const NOOP_LOGGER: PipelineLogger = {
+  error() {},
+  warn() {},
+  info() {},
+  debug() {},
+};
 
 type DiagnoseStatus = "success" | "failed" | "no_result" | "check_failed";
 
@@ -177,15 +190,14 @@ async function checkBriefHealth(url: string): Promise<DiagnoseOutput["checks"]["
 }
 
 async function computeLag(
-  admin: ReturnType<Kafka["admin"]>,
+  admin: KafkaAdminConnection,
   groupId: string,
   topic: string
 ): Promise<LagCheck> {
   const latestOffsets = await admin.fetchTopicOffsets(topic);
-  const committedOffsets = await admin.fetchOffsets({ groupId, topics: [topic] });
-  const committedTopic = committedOffsets.find((row) => row.topic === topic);
+  const committedOffsets = await admin.fetchGroupOffsets(groupId, topic);
   const committedByPartition = new Map(
-    (committedTopic?.partitions ?? []).map((partition) => [partition.partition, partition.offset])
+    committedOffsets.map((partition) => [partition.partition, partition.offset])
   );
 
   let totalLag = 0;
@@ -234,22 +246,20 @@ async function collectRequestLogs(config: DiagnoseConfig): Promise<string[]> {
 }
 
 async function publishDiagnosticRequest(
-  kafka: Kafka,
   config: DiagnoseConfig,
   payload: Record<string, unknown>
 ): Promise<void> {
-  const producer = kafka.producer({ allowAutoTopicCreation: false });
+  const producer = await createProducerConnection({
+    brokers: config.kafkaBrokers,
+    clientId: config.kafkaClientId,
+    logger: NOOP_LOGGER,
+  });
   try {
-    await producer.connect();
-    await producer.send({
-      topic: config.summaryRequestsTopic,
-      messages: [
-        {
-          key: config.requestId,
-          value: Buffer.from(JSON.stringify(payload), "utf-8"),
-        },
-      ],
-    });
+    await producer.publish(
+      config.summaryRequestsTopic,
+      config.requestId,
+      Buffer.from(JSON.stringify(payload), "utf-8")
+    );
   } finally {
     await producer.disconnect();
   }
@@ -288,16 +298,13 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
     timeoutSeconds: config.timeoutSeconds,
   };
 
-  const kafka = new Kafka({
+  const admin = await createKafkaAdminConnection({
     clientId: config.kafkaClientId,
     brokers: config.kafkaBrokers,
   });
-  const admin = kafka.admin();
   let waiter: RequestResultWaiter<BriefResultPayload> | null = null;
 
   try {
-    await admin.connect();
-
     const topics = await admin.listTopics();
     diagnosis.checks.topics = [
       {
@@ -313,7 +320,8 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
     diagnosis.checks.lag.push(await computeLag(admin, "brief-generator", config.summaryRequestsTopic));
 
     waiter = await setupRequestResultWaiter<BriefResultPayload>({
-      kafka,
+      kafkaBrokers: config.kafkaBrokers,
+      kafkaClientId: config.kafkaClientId,
       groupId: `riops-brief-diagnose-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       topic: config.summaryResultsTopic,
       requestId: config.requestId,
@@ -327,7 +335,7 @@ export async function briefDiagnose(flags: CliFlags): Promise<void> {
     });
 
     if (!config.skipTrigger) {
-      await publishDiagnosticRequest(kafka, config, payload);
+      await publishDiagnosticRequest(config, payload);
       diagnosis.triggered = true;
     }
 

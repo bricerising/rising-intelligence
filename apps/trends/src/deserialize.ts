@@ -1,7 +1,7 @@
-import { deserializeRawEvent as sharedDeserialize } from "@rising-intelligence/shared";
+import { deserializeRawEvent as sharedDeserialize } from "@rising-intelligence/pipeline";
 import type { ParsedRawEvent, Source } from "./types.js";
 
-export { parseCanonicalSource as parseSource } from "@rising-intelligence/shared";
+export { parseCanonicalSource as parseSource } from "@rising-intelligence/pipeline";
 
 export function deserializeRawEvent(messageValue: Buffer): ParsedRawEvent {
   const shared = sharedDeserialize(messageValue);

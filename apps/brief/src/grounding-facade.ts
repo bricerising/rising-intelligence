@@ -1,4 +1,4 @@
-import { createUrlSafetyFacade } from "@rising-intelligence/shared";
+import { createUrlSafetyFacade } from "@rising-intelligence/shared/http";
 import type pino from "pino";
 import { incrementSuspiciousContent, type HealthContext } from "./health.js";
 import type {

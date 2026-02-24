@@ -2,7 +2,7 @@ import type { Logger } from "pino";
 import {
   buildFunctionDependencies,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared";
+} from "@rising-intelligence/shared/lifecycle";
 import type { CheckpointStore } from "../checkpoint.js";
 import type { Config } from "../config.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
