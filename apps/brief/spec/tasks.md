@@ -10,6 +10,7 @@
 - 2026-02-10: Updated Docker image + Compose to support `LLM_PROVIDER=codex-cli` in containerized runs (Codex CLI install + host `${HOME}/.codex` mount).
 - 2026-02-10: Implemented runtime prompt-injection hygiene for LLM inputs (evidence sanitization + suspicious-content logging metric), plus regression tests for sanitized payload generation.
 - 2026-02-10: Updated specs for query-mode summary generation (`last N days` default), topic glob filtering, and executive-summary output (implementation pending).
+- 2026-02-24: Completed module-boundary migration: Brief transport now uses `@rising-intelligence/pipeline/transport`, app-local `src/kafka/` wrappers were removed, shared root imports were migrated to subpaths, and workspace build/lint/tests pass.
 
 ## Phase 1: Skeleton + contracts
 

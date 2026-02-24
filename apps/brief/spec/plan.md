@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions with structured output, budget enforcement, and evidence grounding.
+Build `apps/brief` as a pipeline-transport consumer/producer that wraps all LLM interactions with structured output, budget enforcement, and evidence grounding.
 
 ## Architecture (High Level)
 
@@ -18,8 +18,8 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 ```json
 {
   "@rising-intelligence/db": "workspace:*",
+  "@rising-intelligence/pipeline": "workspace:*",
   "@rising-intelligence/shared": "workspace:*",
-  "kafkajs": "^2.x",
   "ioredis": "^5.x",
   "openai": "^4.x",
   "zod": "^3.x"
@@ -38,8 +38,8 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 **Deliverables**:
 - `src/index.ts` - service entry point
 - `src/config.ts` - environment config
-- `src/kafka/consumer.ts` - Kafka consumer
-- `src/kafka/producer.ts` - Kafka producer
+- `src/runtime-factory.ts` - consumer/producer connection wiring
+- `src/publishing-facade.ts` - typed result publishing over pipeline transport
 - `src/deserialize.ts` - request mode normalization
 - `src/db/results.ts` - result persistence
 
@@ -98,16 +98,24 @@ Build `apps/brief` as a Kafka consumer/producer that wraps all LLM interactions 
 ### Consumer Loop
 
 ```typescript
-async function run() {
-  const consumer = kafka.consumer({ groupId: 'brief-generator' });
-  await consumer.connect();
-  await consumer.subscribe({ topic: 'summary.requests' });
+import {
+  createConsumerConnection,
+  createMessageBatchStrategy,
+} from "@rising-intelligence/pipeline/transport";
 
-  await consumer.run({
-    eachMessage: async ({ message }) => {
-      const request = deserialize<SummaryRequest>(message.value);
-      await processRequest(request);
-    },
+async function run() {
+  const consumer = await createConsumerConnection({
+    brokers: config.KAFKA_BROKERS,
+    clientId: config.KAFKA_CLIENT_ID,
+    groupId: config.KAFKA_CONSUMER_GROUP,
+    logger: log,
+  });
+
+  await consumer.consume({
+    topics: [config.KAFKA_TOPIC_SUMMARY_REQUESTS, config.KAFKA_TOPIC_TREND_SNAPSHOTS],
+    ctx,
+    strategy: createBatchTopicHandlers(ctx),
+    fromBeginning: false,
   });
 }
 

@@ -22,12 +22,12 @@ export default [
   {
     files: ["apps/**/*.ts"],
     rules: {
-      "no-restricted-imports": ["warn", {
+      "no-restricted-imports": ["error", {
         paths: [
           {
             name: "@rising-intelligence/shared",
             message:
-              "Root shared imports are being deprecated. Import from explicit shared subpaths.",
+              "Root shared imports are not allowed. Import from explicit shared subpaths.",
           },
           {
             name: "kafkajs",
@@ -42,12 +42,12 @@ export default [
     files: ["packages/ops-cli/src/**/*.ts"],
     ignores: ["packages/ops-cli/src/commands/kafka/**/*.ts"],
     rules: {
-      "no-restricted-imports": ["warn", {
+      "no-restricted-imports": ["error", {
         paths: [
           {
             name: "@rising-intelligence/shared",
             message:
-              "Root shared imports are being deprecated. Import from explicit shared subpaths.",
+              "Root shared imports are not allowed. Import from explicit shared subpaths.",
           },
           {
             name: "kafkajs",

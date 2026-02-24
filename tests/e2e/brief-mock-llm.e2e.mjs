@@ -85,9 +85,64 @@ class ResultCollector {
     this.runPromise = null;
   }
 
-  async start() {
+  async start(startTimeoutMs = 15000) {
     await this.consumer.connect();
     await this.consumer.subscribe({ topic: this.topic, fromBeginning: false });
+
+    let settled = false;
+    let timeoutId;
+    let removeGroupJoin = () => {};
+    let removeCrash = () => {};
+    let resolveJoin;
+    let rejectJoin;
+
+    const joinPromise = new Promise((resolve, reject) => {
+      resolveJoin = resolve;
+      rejectJoin = reject;
+    });
+
+    const clearWaiters = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      removeGroupJoin();
+      removeCrash();
+    };
+
+    removeGroupJoin = this.consumer.on(this.consumer.events.GROUP_JOIN, () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearWaiters();
+      resolveJoin();
+    });
+
+    removeCrash = this.consumer.on(this.consumer.events.CRASH, (event) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearWaiters();
+      const error = event?.payload?.error;
+      rejectJoin(
+        error instanceof Error
+          ? error
+          : new Error("Result consumer crashed before joining Kafka group")
+      );
+    });
+
+    timeoutId = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearWaiters();
+      rejectJoin(
+        new Error(`Timed out waiting for result consumer group join on topic: ${this.topic}`)
+      );
+    }, startTimeoutMs);
+
     this.runPromise = this.consumer.run({
       eachMessage: async ({ message }) => {
         if (!message.key || !message.value) {
@@ -111,6 +166,8 @@ class ResultCollector {
         }
       },
     });
+
+    await joinPromise;
   }
 
   getCount(key) {

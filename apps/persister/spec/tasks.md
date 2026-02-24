@@ -1,5 +1,9 @@
 # Tasks: Persister Service
 
+## Progress
+
+- 2026-02-24: Completed module-boundary migration: Persister consumer now uses `@rising-intelligence/pipeline/transport`, app-local `src/kafka/` wrappers were removed, shared root imports were migrated to subpaths, and workspace build/lint/tests pass.
+
 ## Phase 1: Skeleton + contracts
 
 ### T001: Service skeleton

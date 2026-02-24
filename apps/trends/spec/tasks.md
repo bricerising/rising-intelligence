@@ -5,6 +5,7 @@
 - 2026-02-06: Implemented T001-T007 baseline path (service skeleton, Kafka consumer, deserialization, allowlist loading/filtering, window dedup, and Redis window counters with periodic snapshot publishing).
 - 2026-02-06: Implemented daily brief request triggering with freshness gating and `summary.requests` publishing (initial T014/T016 path).
 - 2026-02-10: Disabled automatic brief triggering; brief generation is now request-driven only (`summary.requests` published externally).
+- 2026-02-24: Completed module-boundary migration: Trends consumer/producer now use `@rising-intelligence/pipeline/transport`, app-local `src/kafka/` wrappers were removed, shared root imports were migrated to subpaths, and workspace build/lint/tests pass.
 
 ## Phase 1: Skeleton + contracts
 

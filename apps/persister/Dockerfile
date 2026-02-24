@@ -13,12 +13,14 @@ COPY package.json package-lock.json* ./
 
 # Copy workspace package files
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/pipeline/package.json ./packages/pipeline/
 COPY packages/db/package.json ./packages/db/
 COPY apps/persister/package.json ./apps/persister/
 
 # Install dependencies for all workspaces needed by this service build
 RUN npm ci \
     --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/pipeline \
     --workspace=@rising-intelligence/db \
     --workspace=@rising-intelligence/persister
 
@@ -39,12 +41,14 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
+COPY packages/pipeline ./packages/pipeline
 COPY packages/db ./packages/db
 COPY apps/persister ./apps/persister
 COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared
+RUN npm run build --workspace=@rising-intelligence/pipeline
 RUN npm run build --workspace=@rising-intelligence/db
 
 # Generate Prisma client
@@ -68,6 +72,8 @@ RUN apk add --no-cache openssl && \
 # Copy built artifacts
 COPY --from=builder --chown=persister:nodejs /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=persister:nodejs /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder --chown=persister:nodejs /app/packages/pipeline/dist ./packages/pipeline/dist
+COPY --from=builder --chown=persister:nodejs /app/packages/pipeline/package.json ./packages/pipeline/
 COPY --from=builder --chown=persister:nodejs /app/packages/db/dist ./packages/db/dist
 COPY --from=builder --chown=persister:nodejs /app/packages/db/package.json ./packages/db/
 COPY --from=builder --chown=persister:nodejs /app/apps/persister/dist ./apps/persister/dist

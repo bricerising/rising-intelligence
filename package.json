@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "pretest": "npm run build --workspace=@rising-intelligence/shared",
+    "pretest": "npm run build --workspaces --if-present",
     "test": "npm run test:workspaces",
     "test:workspaces": "npm run test --workspaces --if-present",
     "test:e2e:brief": "node tests/e2e/brief-mock-llm.e2e.mjs",

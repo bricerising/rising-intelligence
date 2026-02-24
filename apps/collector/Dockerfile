@@ -13,11 +13,13 @@ COPY package.json package-lock.json* ./
 
 # Copy workspace package files
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/pipeline/package.json ./packages/pipeline/
 COPY apps/collector/package.json ./apps/collector/
 
 # Install dependencies for all workspaces needed by this service build
 RUN npm ci \
     --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/pipeline \
     --workspace=@rising-intelligence/collector
 
 # =============================================================================
@@ -35,11 +37,13 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
+COPY packages/pipeline ./packages/pipeline
 COPY apps/collector ./apps/collector
 COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared
+RUN npm run build --workspace=@rising-intelligence/pipeline
 
 # Build the service
 RUN npm run build --workspace=@rising-intelligence/collector
@@ -58,6 +62,8 @@ RUN addgroup --system --gid 1001 nodejs && \
 # Copy built artifacts
 COPY --from=builder --chown=collector:nodejs /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=collector:nodejs /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder --chown=collector:nodejs /app/packages/pipeline/dist ./packages/pipeline/dist
+COPY --from=builder --chown=collector:nodejs /app/packages/pipeline/package.json ./packages/pipeline/
 COPY --from=builder --chown=collector:nodejs /app/apps/collector/dist ./apps/collector/dist
 COPY --from=builder --chown=collector:nodejs /app/apps/collector/package.json ./apps/collector/
 

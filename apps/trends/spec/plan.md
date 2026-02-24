@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis-backed window state.
+Build `apps/trends` as a pipeline-transport consumer/producer + periodic snapshot publisher with Redis-backed window state.
 
 ## Architecture (High Level)
 
@@ -21,8 +21,8 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 ```json
 {
   "@rising-intelligence/db": "workspace:*",
+  "@rising-intelligence/pipeline": "workspace:*",
   "@rising-intelligence/shared": "workspace:*",
-  "kafkajs": "^2.x",
   "ioredis": "^5.x",
   "yaml": "^2.x",
   "cron": "^3.x"
@@ -42,8 +42,8 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 **Deliverables**:
 - `src/index.ts` - service entry point
 - `src/config.ts` - environment config
-- `src/kafka/consumer.ts` - Kafka consumer
-- `src/kafka/producer.ts` - Kafka producer
+- `src/runtime-factory.ts` - consumer/producer connection wiring
+- `src/process.ts` - batch strategies for raw events and heartbeats
 - `src/allowlist.ts` - allowlist loader
 - `src/extractor.ts` - topic key filtering (from `RawEvent.tags`)
 - `src/redis/windows.ts` - window state management
@@ -80,20 +80,27 @@ Build `apps/trends` as a Kafka consumer + periodic snapshot publisher with Redis
 ### Consumer Loop
 
 ```typescript
+import {
+  createConsumerConnection,
+  createMessageBatchStrategy,
+} from "@rising-intelligence/pipeline/transport";
+
 async function run() {
-  const consumer = kafka.consumer({ groupId: 'trends-processor' });
-  await consumer.connect();
-  await consumer.subscribe({ topic: 'events.raw', fromBeginning: false });
+  const consumer = await createConsumerConnection({
+    brokers: config.KAFKA_BROKERS,
+    clientId: config.KAFKA_CLIENT_ID,
+    groupId: config.KAFKA_CONSUMER_GROUP,
+    logger: log,
+  });
 
   // Start background jobs
-  startLagTracker(consumer);
   startSnapshotPublisher();
 
-  await consumer.run({
-    eachMessage: async ({ message }) => {
-      const event = deserialize<RawEvent>(message.value);
-      await processEvent(event);
-    },
+  await consumer.consume({
+    topics: [config.KAFKA_TOPIC_RAW_EVENTS, config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT],
+    ctx,
+    strategy: createBatchStrategies(ctx),
+    fromBeginning: false,
   });
 }
 ```

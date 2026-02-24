@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build `apps/collector` as a simple ingestion service: External APIs → Kafka. No database dependencies.
+Build `apps/collector` as a simple ingestion service: External APIs → pipeline transport → Kafka. No database dependencies.
 
 This plan includes a phase-1 POS intelligence source-pack rollout (public feeds only) with EDGAR detail metadata enrichment and market-profile filtering.
 
@@ -14,7 +14,7 @@ This plan includes a phase-1 POS intelligence source-pack rollout (public feeds 
 - **No dependencies**: No Postgres, no Redis
 
 ```
-External APIs → Adapters → Normalizer → Kafka
+External APIs → Adapters → Normalizer → Pipeline Transport → Kafka
                               ↓
                        Local Checkpoints
 ```
@@ -23,8 +23,8 @@ External APIs → Adapters → Normalizer → Kafka
 
 ```json
 {
+  "@rising-intelligence/pipeline": "workspace:*",
   "@rising-intelligence/shared": "workspace:*",
-  "kafkajs": "^2.x",
   "better-sqlite3": "^9.x",
   "rss-parser": "^3.x",
   "node-fetch": "^3.x"
@@ -45,7 +45,8 @@ Note: No `@rising-intelligence/db` — collector doesn't use Prisma.
 **Deliverables**:
 - `src/index.ts` - service entry point
 - `src/config.ts` - environment config
-- `src/kafka/producer.ts` - Kafka producer
+- `src/runtime-factory.ts` - runtime composition + producer connection wiring
+- `src/publishing-facade.ts` - topic publisher wrappers over pipeline transport
 - `src/normalizer.ts` - common normalization logic
 - `src/validator.ts` - RawEvent schema validation
 
@@ -127,7 +128,11 @@ interface SourceAdapter {
 
 ```typescript
 async function runAdapter(adapter: SourceAdapter) {
-  const producer = await createKafkaProducer();
+  const producer = await createProducerConnection({
+    brokers: config.KAFKA_BROKERS,
+    clientId: config.KAFKA_CLIENT_ID,
+    logger: log,
+  });
   const backoff = new BackoffManager(adapter.name);
   const checkpoints = new CheckpointStore(config.CHECKPOINT_DB_PATH);
 
@@ -150,11 +155,12 @@ async function runAdapter(adapter: SourceAdapter) {
           continue;
         }
 
-        // Publish to Kafka
-        await producer.send({
-          topic: 'events.raw',
-          messages: [{ key: event.event_id, value: serialize(event) }],
-        });
+        // Publish to Kafka via pipeline transport abstraction
+        await producer.publish(
+          "events.raw",
+          event.event_id,
+          serialize(event)
+        );
 
         await checkpoints.markSeen(event.source, event.event_id);
         lastCheckpoint = checkpoint;

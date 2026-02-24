@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build `apps/persister` as a lightweight Kafka consumer that materializes events to Postgres and Redis.
+Build `apps/persister` as a lightweight pipeline-transport consumer that materializes events to Postgres and Redis.
 
 ## Architecture (High Level)
 
@@ -11,7 +11,7 @@ Build `apps/persister` as a lightweight Kafka consumer that materializes events 
 - **Dependencies**: Prisma (via `@rising-intelligence/db`), ioredis
 
 ```
-Kafka (events.raw) → Consumer → [Postgres, Redis]
+Kafka (events.raw) → Pipeline Transport ConsumerConnection → [Postgres, Redis]
 ```
 
 ## Dependencies
@@ -19,8 +19,8 @@ Kafka (events.raw) → Consumer → [Postgres, Redis]
 ```json
 {
   "@rising-intelligence/db": "workspace:*",
+  "@rising-intelligence/pipeline": "workspace:*",
   "@rising-intelligence/shared": "workspace:*",
-  "kafkajs": "^2.x",
   "ioredis": "^5.x"
 }
 ```
@@ -37,7 +37,8 @@ Kafka (events.raw) → Consumer → [Postgres, Redis]
 **Deliverables**:
 - `src/index.ts` - service entry point
 - `src/config.ts` - environment config
-- `src/kafka/consumer.ts` - Kafka consumer
+- `src/runtime-factory.ts` - consumer connection and runtime composition
+- `src/process.ts` - batch strategy pipeline for processing/commit/lag
 - `src/db/persist.ts` - Postgres write logic
 
 ### Phase 2: Redis integration + dedup cache
@@ -66,33 +67,25 @@ Kafka (events.raw) → Consumer → [Postgres, Redis]
 ### Consumer Setup
 
 ```typescript
-import { Kafka } from 'kafkajs';
+import {
+  createConsumerConnection,
+  type BatchStrategy,
+} from "@rising-intelligence/pipeline/transport";
 
-const kafka = new Kafka({
-  clientId: 'persister',
-  brokers: config.KAFKA_BROKERS.split(','),
-});
-
-const consumer = kafka.consumer({
-  groupId: 'persister',
-  sessionTimeout: 30000,
-  heartbeatInterval: 3000,
+const consumer = await createConsumerConnection({
+  brokers: config.KAFKA_BROKERS,
+  clientId: config.KAFKA_CLIENT_ID,
+  groupId: config.KAFKA_CONSUMER_GROUP,
+  logger: log,
 });
 
 async function run() {
-  await consumer.connect();
-  await consumer.subscribe({ topic: 'events.raw', fromBeginning: false });
-
-  await consumer.run({
-    autoCommit: false,
-    eachMessage: async ({ message, partition, topic }) => {
-      await processMessage(message);
-      await consumer.commitOffsets([{
-        topic,
-        partition,
-        offset: (BigInt(message.offset) + 1n).toString(),
-      }]);
-    },
+  const strategy: BatchStrategy<PersisterContext> = createPersisterBatchStrategy();
+  await consumer.consume({
+    topics: config.KAFKA_TOPIC_RAW_EVENTS,
+    ctx,
+    strategy,
+    fromBeginning: false,
   });
 }
 ```

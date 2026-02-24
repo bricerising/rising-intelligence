@@ -1,7 +1,7 @@
 # Spec 011: Module Boundaries and Shared Package Governance
 
 **Created**: 2026-02-23
-**Status**: Proposed
+**Status**: Implemented (2026-02-24)
 
 ## Overview
 
@@ -22,6 +22,32 @@ This document defines:
 3. what data pipeline protocol interfaces replace the current Kafka-coupled transport layer,
 4. how import boundaries are enforced mechanically,
 5. how to migrate without halting feature work.
+
+## Implementation Status (2026-02-24)
+
+This spec is implemented in the repository.
+
+Completed outcomes:
+
+- `packages/pipeline` exists and owns pipeline protocol interfaces, pipeline vocabulary/constants, topic extraction, and hydration helpers.
+- App-local `src/kafka/` wrappers were removed from `apps/collector`, `apps/persister`, `apps/trends`, and `apps/brief`.
+- App and ops-cli pipeline command paths now use `@rising-intelligence/pipeline/transport` instead of direct app Kafka wrappers.
+- Shared root-barrel imports were fully migrated to subpaths, and `packages/shared/src/index.ts` plus the `.` export were removed.
+- Direct `kafkajs` imports were eliminated from app code; ops-cli keeps direct `kafkajs` only in `packages/ops-cli/src/commands/kafka/` admin commands.
+- `no-restricted-imports` boundary guardrails are in error mode for `apps/**/*.ts` and `packages/ops-cli/src/**/*.ts` (excluding kafka admin command paths).
+
+Completion checks captured during implementation:
+
+- `npm run build` passes across workspaces.
+- `npm run lint` passes across workspaces.
+- Targeted workspace tests for `collector`, `persister`, `trends`, `brief`, and `ops-cli` pass.
+- `rg '@rising-intelligence/shared' apps packages --glob '*.{ts,tsx,mts,cts,js,mjs,cjs}'` returns no root-barrel imports.
+
+Phase/task completion snapshot:
+
+- Phase 1 tasks (1-15): completed.
+- Phase 2 task (16): completed.
+- Phase 3 task (17): completed.
 
 ## Problem Statement
 
