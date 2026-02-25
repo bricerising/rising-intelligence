@@ -1,7 +1,7 @@
 # Spec 001: Real-Time Personal Intelligence System
 
 **Created**: 2026-02-05
-**Updated**: 2026-02-05
+**Updated**: 2026-02-25
 **Status**: Proposed
 
 ## Overview
@@ -39,16 +39,16 @@ The system is optimized for a single operator (you) monitoring tech, AI, and AWS
 - **Trend Score**: A composite score used to rank topics (volume + acceleration + baseline delta).
 - **Brief**: An LLM-generated report summarizing top trends with source links and suggested actions.
 
-## Repository Layout (Specify-Poker Style)
+## Repository Layout
 
-This repo follows the same documentation + monorepo shape as `specify-poker`:
+This repo follows a spec-first monorepo shape:
 
 - System intent and cross-cutting constraints live in `specs/`.
 - Each deployable service lives in `apps/<service>/` with a local spec bundle in `apps/<service>/spec/`.
 - Shared runtime primitives and contracts live in `packages/shared/` (schemas, config, lifecycle, telemetry helpers).
 - Local-first infrastructure wiring lives in `infra/` and `docker-compose.yml`.
 
-Planned tree:
+Repository tree (current layout):
 
 ```text
 apps/
@@ -85,7 +85,7 @@ specs/                # thematic system specifications
 - **R-002 (Normalization)**: All ingested items MUST be converted to a shared `RawEvent` schema and published to the stream.
 - **R-003 (Idempotency)**: Ingestion MUST emit a stable `event_id` per source item and perform best-effort deduplication within a Collector instance; downstream consumers MUST remain idempotent under at-least-once delivery.
 - **R-004 (Trend Metrics)**: The system MUST compute topic metrics on sliding windows and publish periodic `TrendSnapshot` outputs.
-- **R-005 (Ranking)**: The system MUST output a ranked “Top N Trends” list for a configurable window (e.g., 60m and 24h).
+- **R-005 (Ranking)**: The system MUST output a ranked “Top N Trends” list for configurable windows (MVP: `15m` and `60m`; optional extension: `24h`).
 - **R-006 (Brief Generation)**: The system MUST produce briefs only from explicit `SummaryRequest` messages.
 - **R-007 (Dashboards)**: The system MUST expose dashboards for:
   - raw event exploration (search/filter by source/topic),
@@ -236,7 +236,7 @@ export type Source =
   | "github"
   | "bluesky"
   | "mastodon";
-  // NOTE: "twitter" is deprecated - API requires Enterprise tier ($42K+/year)
+  // NOTE: "twitter" is intentionally excluded from the current source set.
 
 export interface RawEvent {
   event_id: string; // stable per-source unique ID (e.g., tweet id, reddit fullname, URL hash)
@@ -831,7 +831,9 @@ During events, baseline is multiplied by adjustment factor to avoid false "trend
 - A topic is "Emerging" if `acceleration >= accel_threshold` AND `volume >= min_volume`.
 - The system SHOULD support suppression rules (mute topics) to reduce noise.
 
-### Dynamic Topic Weight Adjustment
+### Dynamic Topic Weight Adjustment (post-MVP option)
+
+Status: Not implemented in the current stack. This section defines a future extension point.
 
 Users can adjust topic importance without editing the allowlist YAML:
 
@@ -854,22 +856,7 @@ function calculateAdjustedScore(topic: string, rawScore: number): number {
 3. **Config file**: `weights.overrides` in `topics.allowlist.yaml`
 4. **Default**: 1.0
 
-**CLI interface** (via `riops`):
-```bash
-# Set a weight override (persists to Redis)
-riops topics set-weight aws.bedrock 2.0
-
-# View current weights
-riops topics list-weights
-
-# Clear an override (reverts to config/default)
-riops topics clear-weight aws.bedrock
-
-# Temporarily boost for N hours
-riops topics set-weight aws.bedrock 2.0 --ttl 24h
-```
-
-**API interface** (optional):
+**Potential API interface**:
 ```
 PUT /api/topics/{key}/weight
 Body: { "weight": 2.0, "ttl_seconds": 86400 }
@@ -1330,7 +1317,7 @@ The system does NOT drop events under backpressure. Kafka's retention ensures ev
 - API keys/secrets MUST be provided via environment variables or a local secrets manager.
 - The system MUST support redaction of potentially sensitive fields before storage.
 - Data retention MUST be configurable (especially for social content) to respect privacy and storage limits.
-- The operator MUST ensure ingestion complies with each platform’s Terms of Service (especially Twitter/X).
+- The operator MUST ensure ingestion complies with each platform’s Terms of Service.
 
 ## Acceptance
 
@@ -1369,9 +1356,9 @@ MVP is “done” when:
 - Request-driven brief generation succeeds for repeated requests across 3 consecutive days.
 - LLM spend stays within the configured daily budget for those requests.
 
-## Local Verification (planned)
+## Local Verification
 
-Once implemented, provide a minimal set of commands/docs to verify locally:
+Use this minimal set of checks in local development:
 
 - Bring up stack: `docker compose up -d`
 - Verify services: Grafana UI loads and Loki data source can query recent `events.raw` logs
@@ -1396,13 +1383,13 @@ Once implemented, provide a minimal set of commands/docs to verify locally:
 ## Open Questions / Decisions
 
 - **Kafka vs Redpanda**: is Kafka required, or is API-compatibility sufficient?
-- **Storage**: Postgres is the read model for trends/briefs (see `specs/005-postgres-read-model.md`); decide retention + indexing strategy once data volume is known.
+- **Storage**: Postgres is the read model for trends/briefs (see `specs/005-postgres-read-model.md`); validate retention + indexing strategy against observed data volume over time.
 - **LLM model**: hosted API vs local model; required latency and daily budget.
 - **Schema Registry**: subject naming strategy + compatibility defaults (see `specs/003-contracts-and-schema-registry.md`).
 
 ## Resolved Decisions
 
-- **Twitter/X**: NOT viable for personal use. API requires Enterprise tier ($42K+/year). Using Bluesky + Reddit + Hacker News for social signal instead.
+- **Twitter/X**: Excluded from the current source mix because access constraints are not a fit for this local-first setup. Use Bluesky + Reddit + Hacker News for social signal.
 - **Baselines**: 30-day median with day-of-week normalization (handles weekly cycles and conference spikes).
 
 ## References (context only)

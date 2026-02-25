@@ -5,12 +5,12 @@
 
 ## Overview
 
-This document describes how to run the Real-Time Personal Intelligence System locally using Docker Compose, following the same “production-aligned local stack” philosophy as `specify-poker`.
+This document describes how to run the Real-Time Personal Intelligence System locally using Docker Compose.
 
 ## Requirements
 
 - Docker Desktop (or Docker Engine) with Compose
-- Node.js 20 LTS (planned; for TypeScript services + tools)
+- Node.js 20 LTS (for TypeScript services + tools)
 
 ## Install repo tooling (once)
 
@@ -68,7 +68,7 @@ On macOS, prefer OTLP logs from services → `otel-collector` → Loki (Promtail
 
 ## Default local URLs
 
-These ports intentionally mirror `specify-poker` to reduce cognitive load:
+Default local ports:
 
 - Grafana: `http://localhost:3001` (default auth in local dev: `admin/admin`)
 - Loki: `http://localhost:3100`
@@ -80,7 +80,7 @@ These ports intentionally mirror `specify-poker` to reduce cognitive load:
 - Redpanda Console (optional): `http://localhost:8080`
 - Postgres: `localhost:5432` (db: `$POSTGRES_DB`, user: `$POSTGRES_USER`)
 
-## First smoke test (planned)
+## First smoke test
 
 1. Bring up the stack and confirm Grafana loads.
 2. Confirm Loki is receiving logs from at least one service.

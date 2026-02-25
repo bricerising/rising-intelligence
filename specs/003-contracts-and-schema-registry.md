@@ -73,7 +73,7 @@ Protobuf evolution rules (enforced in review):
 - Prefer additive changes (new optional fields).
 - When removing, mark field numbers/names as `reserved`.
 
-## Publishing workflow (planned)
+## Publishing workflow
 
 Publishing should be deterministic and scripted:
 
