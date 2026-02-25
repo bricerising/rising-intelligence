@@ -1,0 +1,67 @@
+import type { Logger } from "pino";
+import { runShutdownSteps, type ShutdownStep } from "./lifecycle.js";
+
+export interface InitializationRollbackBuilder {
+  register(step: ShutdownStep): void;
+  rollback(logger: Logger): Promise<void>;
+}
+
+export interface InitializationResourceStep<TResource> {
+  readonly name: string;
+  create(): Promise<TResource> | TResource;
+  rollback(resource: TResource): Promise<void> | void;
+  readonly rollbackErrorMessage: string;
+}
+
+export interface InitializationResourceBuilder {
+  create<TResource>(step: InitializationResourceStep<TResource>): Promise<TResource>;
+  rollback(logger: Logger): Promise<void>;
+}
+
+/**
+ * Builder for startup rollback steps.
+ * Steps are executed in reverse registration order so partial initialization
+ * unwinds in LIFO order.
+ */
+export function createInitializationRollbackBuilder(): InitializationRollbackBuilder {
+  const steps: ShutdownStep[] = [];
+
+  return {
+    register(step: ShutdownStep): void {
+      steps.unshift(step);
+    },
+    async rollback(logger: Logger): Promise<void> {
+      if (steps.length === 0) {
+        return;
+      }
+
+      const registeredSteps = steps.splice(0, steps.length);
+      await runShutdownSteps(logger, registeredSteps);
+    },
+  };
+}
+
+/**
+ * Builder that creates startup resources and automatically registers rollback
+ * handlers for successfully-created resources.
+ */
+export function createInitializationResourceBuilder(): InitializationResourceBuilder {
+  const rollbackBuilder = createInitializationRollbackBuilder();
+
+  return {
+    async create<TResource>(step: InitializationResourceStep<TResource>): Promise<TResource> {
+      const resource = await step.create();
+      rollbackBuilder.register({
+        name: step.name,
+        run: async () => {
+          await step.rollback(resource);
+        },
+        errorMessage: step.rollbackErrorMessage,
+      });
+      return resource;
+    },
+    rollback(logger: Logger): Promise<void> {
+      return rollbackBuilder.rollback(logger);
+    },
+  };
+}

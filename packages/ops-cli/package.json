@@ -1,0 +1,29 @@
+{
+  "name": "@rising-intelligence/ops-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "riops": "./dist/bin.js"
+  },
+  "dependencies": {
+    "@rising-intelligence/pipeline": "0.1.0",
+    "@rising-intelligence/shared": "0.1.0",
+    "kafkajs": "^2.2.4",
+    "yaml": "^2.7.0"
+  },
+  "peerDependencies": {
+    "@rising-intelligence/db": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@rising-intelligence/db": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  }
+}

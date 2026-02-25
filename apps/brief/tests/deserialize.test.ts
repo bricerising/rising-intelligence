@@ -1,0 +1,398 @@
+import { describe, expect, it } from "vitest";
+import {
+  deserializeSummaryRequest,
+  parseSummaryRequestType,
+} from "../src/deserialize.js";
+
+function makeBuffer(payload: unknown): Buffer {
+  return Buffer.from(JSON.stringify(payload), "utf-8");
+}
+
+describe("brief deserializeSummaryRequest", () => {
+  it("deserializes valid requests", () => {
+    const payload = {
+      request_id: "req-1",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      windows: [1, "2"],
+      budget: {
+        daily_budget_usd: 5,
+        max_topics: 3,
+        max_evidence_per_topic: 4,
+        max_output_tokens: 1200,
+      },
+      query: {
+        lookback_days: 7,
+        topic_globs: ["aws.*", "ai.*"],
+        max_events_per_topic: 20,
+      },
+      report: {
+        timezone: "America/New_York",
+        start_at: "2026-01-01T00:00:00-05:00",
+        end_at: "2026-02-10T23:59:59-05:00",
+      },
+      topics: [
+        {
+          topic: "aws.bedrock",
+          metrics: [
+            {
+              topic: "aws.bedrock",
+              window: 2,
+              score: 12.5,
+              volume: 21,
+              acceleration: 0.8,
+            },
+          ],
+          evidence: [
+            {
+              event_id: "evt-1",
+              source: 3,
+              url: "https://example.com/1",
+              title: "Bedrock update",
+              published_at: "2026-02-06T09:00:00.000Z",
+              fetched_at: "2026-02-06T09:30:00.000Z",
+              text_excerpt: "Details",
+            },
+          ],
+        },
+      ],
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+
+    expect(parsed.requestId).toBe("req-1");
+    expect(parsed.type).toBe("daily");
+    expect(parsed.windows).toEqual([1, 2]);
+    expect(parsed.budget).toEqual({
+      dailyBudgetUsd: 5,
+      maxTopics: 3,
+      maxEvidencePerTopic: 4,
+      maxOutputTokens: 1200,
+    });
+    expect(parsed.query).toEqual({
+      lookbackDays: 7,
+      topicGlobs: ["aws.*", "ai.*"],
+      maxEventsPerTopic: 20,
+      evidenceStrategy: "diversity",
+    });
+    expect(parsed.report).toEqual({
+      timezone: "America/New_York",
+      startAt: new Date("2026-01-01T05:00:00.000Z"),
+      endAt: new Date("2026-02-11T04:59:59.000Z"),
+    });
+    expect(parsed.topics[0].topic).toBe("aws.bedrock");
+    expect(parsed.topics[0].metrics).toHaveLength(1);
+    expect(parsed.topics[0].metrics[0]).toMatchObject({
+      topic: "aws.bedrock",
+      window: 2,
+      score: 12.5,
+      volume: 21,
+      acceleration: 0.8,
+    });
+    expect(parsed.topics[0].evidence).toHaveLength(1);
+    expect(parsed.topics[0].evidence[0]).toMatchObject({
+      eventId: "evt-1",
+      source: "hackernews",
+      url: "https://example.com/1",
+      title: "Bedrock update",
+      textExcerpt: "Details",
+    });
+  });
+
+  it("parses protobuf trend window enum names", () => {
+    const payload = {
+      request_id: "req-2",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      windows: ["TREND_WINDOW_15M", "TREND_WINDOW_60M", "TREND_WINDOW_24H", "2"],
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.windows).toEqual([1, 2, 3, 2]);
+  });
+
+  it("preserves missing budget fields as undefined", () => {
+    const payload = {
+      request_id: "req-budget",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      budget: {
+        daily_budget_usd: 5,
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.budget).toEqual({
+      dailyBudgetUsd: 5,
+      maxTopics: undefined,
+      maxEvidencePerTopic: undefined,
+      maxOutputTokens: undefined,
+    });
+  });
+
+  it("normalizes and validates query topic globs", () => {
+    const payload = {
+      request_id: "req-query",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        lookback_days: "7",
+        topic_globs: ["aws.*", "aws.*", "ai.?"],
+        max_events_per_topic: "15",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.query).toEqual({
+      lookbackDays: 7,
+      topicGlobs: ["aws.*", "ai.?"],
+      maxEventsPerTopic: 15,
+      evidenceStrategy: "diversity",
+    });
+    expect(parsed.report).toBeNull();
+  });
+
+  it("supports report framing options", () => {
+    const payload = {
+      request_id: "req-report",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        timezone: "UTC",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.report).toEqual({
+      timezone: "UTC",
+      startAt: undefined,
+      endAt: undefined,
+    });
+  });
+
+  it("supports string summary request types", () => {
+    expect(parseSummaryRequestType("daily")).toBe("daily");
+    expect(parseSummaryRequestType("SUMMARY_REQUEST_TYPE_DAILY")).toBe("daily");
+    expect(parseSummaryRequestType("threshold")).toBe("threshold");
+    expect(parseSummaryRequestType("SUMMARY_REQUEST_TYPE_THRESHOLD")).toBe("threshold");
+  });
+
+  it("throws for unsupported summary request type", () => {
+    expect(() => parseSummaryRequestType(999)).toThrow("Unsupported summary request type enum");
+    expect(() => parseSummaryRequestType("unknown")).toThrow(
+      "Unsupported summary request type value"
+    );
+  });
+
+  it("throws for invalid JSON", () => {
+    expect(() => deserializeSummaryRequest(Buffer.from("{bad", "utf-8"))).toThrow(
+      "Invalid JSON payload"
+    );
+  });
+
+  it("throws for invalid requested_at", () => {
+    const payload = {
+      request_id: "req-1",
+      requested_at: "not-a-date",
+      type: 1,
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow("Invalid requested_at");
+  });
+
+  it("rejects malformed window values", () => {
+    const payload = {
+      request_id: "req-1",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      windows: ["2oops"],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported trend window value"
+    );
+  });
+
+  it("rejects non-positive window enums", () => {
+    const payload = {
+      request_id: "req-1",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      windows: [0],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported trend window enum"
+    );
+  });
+
+  it("rejects non-positive topic metric windows", () => {
+    const payload = {
+      request_id: "req-topic-window",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      topics: [
+        {
+          topic: "aws.bedrock",
+          metrics: [
+            {
+              window: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported trend window enum"
+    );
+  });
+
+  it("rejects unknown positive window enums", () => {
+    const payload = {
+      request_id: "req-1",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      windows: [99],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported trend window enum"
+    );
+  });
+
+  it("rejects invalid query lookback values", () => {
+    const payload = {
+      request_id: "req-query-lookback",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        lookback_days: "2oops",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid query.lookback_days"
+    );
+  });
+
+  it("rejects invalid query topic glob patterns", () => {
+    const payload = {
+      request_id: "req-query-glob",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      query: {
+        topic_globs: ["aws.[*]"],
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported topic glob pattern"
+    );
+  });
+
+  it("ignores legacy report.template fields", () => {
+    const payload = {
+      request_id: "req-report-template",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        template: "state_of_technology",
+        timezone: "UTC",
+      },
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.report).toEqual({
+      timezone: "UTC",
+      startAt: undefined,
+      endAt: undefined,
+    });
+  });
+
+  it("rejects invalid report timezone", () => {
+    const payload = {
+      request_id: "req-report-timezone",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        timezone: "Mars/Olympus",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid report.timezone"
+    );
+  });
+
+  it("rejects reversed report time bounds", () => {
+    const payload = {
+      request_id: "req-report-bounds",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      report: {
+        start_at: "2026-02-10T00:00:00.000Z",
+        end_at: "2026-02-01T00:00:00.000Z",
+      },
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Invalid report bounds"
+    );
+  });
+
+  it("rejects missing required fields", () => {
+    const payload = {
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow();
+  });
+
+  it("rejects unknown evidence source values", () => {
+    const payload = {
+      request_id: "req-source",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      topics: [
+        {
+          topic: "aws.bedrock",
+          evidence: [
+            {
+              event_id: "evt-1",
+              source: "totally-unknown-source",
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow(
+      "Unsupported source value"
+    );
+  });
+
+  it("parses supported llm_provider values", () => {
+    const payload = {
+      request_id: "req-provider",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      llm_provider: "  CODEX-CLI  ",
+    };
+
+    const parsed = deserializeSummaryRequest(makeBuffer(payload));
+    expect(parsed.llmProvider).toBe("codex-cli");
+  });
+
+  it("rejects unsupported llm_provider values", () => {
+    const payload = {
+      request_id: "req-provider-invalid",
+      requested_at: "2026-02-06T10:00:00.000Z",
+      type: 1,
+      llm_provider: "unknown-provider",
+    };
+
+    expect(() => deserializeSummaryRequest(makeBuffer(payload))).toThrow("Unsupported llm_provider");
+  });
+});

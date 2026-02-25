@@ -1,0 +1,57 @@
+# Dependencies (will be installed in container)
+node_modules
+**/node_modules
+
+# Build outputs (will be built in container)
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+coverage
+**/coverage
+
+# Git
+.git
+.gitignore
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE and editor
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files (secrets - mount at runtime)
+.env
+.env.*
+!.env.example
+
+# Test files (not needed in production)
+**/*.test.ts
+**/*.spec.ts
+**/__tests__
+
+# Documentation (not needed in container)
+*.md
+docs/
+
+# Local development
+docker-compose*.yml
+Makefile
+.claude/
+
+# Spec files (documentation only)
+**/spec/
+specs/
+
+# Prisma migrations applied separately
+**/prisma/migrations/

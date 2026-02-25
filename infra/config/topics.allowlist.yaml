@@ -1,0 +1,647 @@
+# Topics Allowlist Configuration
+# ==============================
+# This file defines the canonical topics tracked by the Rising Intelligence system.
+# Topics are matched against event title + text using keywords and regex patterns.
+#
+# Structure:
+# - topics[]: List of topic definitions
+#   - key: Canonical dotted key (e.g., "aws.bedrock")
+#   - display_name: Human-friendly name for dashboards
+#   - priority: Integer 1-100 (higher = more important, used for deterministic selection)
+#   - aliases: Alternative names (for UX and optional matching)
+#   - matchers: Rules for detecting this topic
+#     - type: "keyword" (case-insensitive substring) or "regex" (RE2-compatible)
+#     - value/pattern: The match value
+#
+# - suppression: Topics to exclude from trending/alerts
+# - defaults: Global settings
+#
+# IMPORTANT: When an event matches more than max_topics_per_event topics,
+# the topics with highest priority are kept. Topics with equal priority
+# are sorted alphabetically by key for determinism.
+#
+# PRECISION IMPROVEMENTS (2026-02-10):
+# - Generic topics (aws.general, ai.general, cloud.general) now require substantive context
+# - Short acronyms (RAG, EKS) require surrounding context to avoid false positives
+# - Removed over-broad keywords ("serverless", "container") that matched tangentially
+# - Lowered priority of fallback topics (general/broad topics) to 10-20 range
+# - Added specific services (aws.ecs, aws.fargate) to capture granular signals
+
+defaults:
+  # Maximum topics to extract per event (prevents over-tagging)
+  max_topics_per_event: 5
+  # Default regex flags (case-insensitive by default)
+  regex_case_insensitive: true
+  # Default priority for topics without explicit priority
+  default_priority: 50
+
+  # Priority Ranges (for reference):
+  # 90-100: Highest - specific AI services, critical infra (Bedrock, Agents)
+  # 75-85: High - specific cloud services, major platforms (EC2, ECS, SageMaker)
+  # 60-70: Medium - supporting tools, frameworks (Kubernetes, Terraform)
+  # 40-55: Low-Medium - languages, databases, general dev tools
+  # 20-30: Low - broad services that often co-occur (aws.general)
+  # 10-15: Lowest - catch-all categories (ai.general, cloud.general)
+
+topics:
+  # ===========================================================================
+  # AWS Core Services (Priority 80-90: High importance, specific)
+  # ===========================================================================
+  - key: aws.general
+    display_name: AWS (General)
+    priority: 20  # Very low priority - only when no specific service matches
+    aliases: ["Amazon Web Services"]
+    matchers:
+      # Only match full "Amazon Web Services" to avoid polluting specific service topics
+      - type: keyword
+        value: "Amazon Web Services"
+      - type: keyword
+        value: "CloudFront"
+      # Or AWS in platform/strategy context (not service-specific)
+      - type: regex
+        pattern: "\\bAWS\\b.*(platform strategy|cloud strategy|aws summit|re:invent|aws overview)"
+
+  - key: aws.bedrock
+    display_name: AWS Bedrock
+    priority: 90  # High priority - specific AI service
+    aliases: ["Bedrock", "Amazon Bedrock"]
+    matchers:
+      - type: keyword
+        value: "Bedrock"
+      - type: regex
+        pattern: "\\bBedrock\\b"
+
+  - key: aws.lambda
+    display_name: AWS Lambda
+    priority: 80
+    aliases: ["Lambda"]
+    matchers:
+      - type: regex
+        pattern: "\\b(AWS\\s+)?Lambda\\b"
+      # Removed generic "serverless" - too broad without context
+
+  - key: aws.ec2
+    display_name: AWS EC2
+    priority: 75
+    aliases: ["EC2", "Elastic Compute"]
+    matchers:
+      - type: keyword
+        value: "EC2"
+      - type: regex
+        pattern: "\\bEC2\\b"
+
+  - key: aws.s3
+    display_name: AWS S3
+    priority: 75
+    aliases: ["S3", "Simple Storage"]
+    matchers:
+      - type: keyword
+        value: "S3"
+      - type: regex
+        pattern: "\\bS3\\b"
+
+  - key: aws.eks
+    display_name: AWS EKS
+    priority: 80
+    aliases: ["EKS", "Elastic Kubernetes"]
+    matchers:
+      # Require EKS in AWS/Amazon context to avoid false positives
+      - type: regex
+        pattern: "\\b(AWS|Amazon)\\s+(EKS|Elastic\\s+Kubernetes)"
+      - type: regex
+        pattern: "\\bEKS\\b.*\\b(cluster|node|pod|deployment)"
+
+  - key: aws.sagemaker
+    display_name: AWS SageMaker
+    priority: 85
+    aliases: ["SageMaker"]
+    matchers:
+      - type: keyword
+        value: "SageMaker"
+
+  - key: aws.dynamodb
+    display_name: AWS DynamoDB
+    priority: 75
+    aliases: ["DynamoDB", "Dynamo"]
+    matchers:
+      - type: keyword
+        value: "DynamoDB"
+
+  - key: aws.ecs
+    display_name: AWS ECS
+    priority: 80
+    aliases: ["ECS", "Elastic Container Service"]
+    matchers:
+      - type: regex
+        pattern: "\\b(AWS\\s+)?ECS\\b"
+      - type: keyword
+        value: "Elastic Container Service"
+      - type: regex
+        pattern: "\\bECS\\b.*\\b(task|service|cluster|Fargate)"
+
+  - key: aws.fargate
+    display_name: AWS Fargate
+    priority: 75
+    aliases: ["Fargate"]
+    matchers:
+      - type: keyword
+        value: "Fargate"
+
+  # ===========================================================================
+  # AI / ML General (Priority 40-85: Varies by specificity)
+  # ===========================================================================
+  - key: ai.general
+    display_name: AI / ML
+    priority: 15  # Very low priority - only when no specific AI topic matches
+    aliases: ["Artificial Intelligence", "Machine Learning", "ML"]
+    matchers:
+      # Only match when AI/ML is the main subject (title context)
+      - type: regex
+        pattern: "^.*\\b(AI|artificial intelligence)\\b.*(breakthrough|research|model|advancement).*$"
+      - type: regex
+        pattern: "^.*\\bmachine learning\\b.*(algorithm|model|training|dataset).*$"
+      - type: regex
+        pattern: "\\bAI[- ]?(based|powered|tool|tools|system|systems|chip|chips|startup|agent|agents)\\b"
+
+  - key: ai.llm
+    display_name: Large Language Models
+    priority: 70
+    aliases: ["LLM", "Language Model"]
+    matchers:
+      - type: keyword
+        value: "LLM"
+      - type: keyword
+        value: "large language model"
+      - type: regex
+        pattern: "\\bGPT-?\\d"
+
+  - key: ai.genai
+    display_name: Generative AI
+    priority: 65
+    aliases: ["GenAI", "Generative"]
+    matchers:
+      - type: keyword
+        value: "generative AI"
+      - type: keyword
+        value: "GenAI"
+
+  - key: ai.agents
+    display_name: AI Agents
+    priority: 85  # High priority - hot topic
+    aliases: ["Agents", "Agentic"]
+    matchers:
+      - type: regex
+        pattern: "\\b(AI\\s+)?agents?\\b"
+      - type: keyword
+        value: "agentic"
+
+  - key: ai.rag
+    display_name: RAG (Retrieval-Augmented Generation)
+    priority: 80
+    aliases: ["RAG"]
+    matchers:
+      # Require full context to avoid false positives on "rag" abbreviation
+      - type: regex
+        pattern: "\\bRAG\\b.*\\b(retrieval|generation|embedding|vector)"
+      - type: keyword
+        value: "retrieval-augmented"
+      - type: keyword
+        value: "retrieval augmented"
+      - type: regex
+        pattern: "\\bretrieval.?augmented.?generation\\b"
+
+  # ===========================================================================
+  # AI Providers / Models (Priority 75-85: Specific providers)
+  # ===========================================================================
+  - key: ai.openai
+    display_name: OpenAI
+    priority: 85
+    aliases: ["GPT", "ChatGPT"]
+    matchers:
+      - type: keyword
+        value: "OpenAI"
+      - type: keyword
+        value: "ChatGPT"
+      - type: regex
+        pattern: "\\bGPT-?[34]"
+
+  - key: ai.anthropic
+    display_name: Anthropic
+    priority: 85
+    aliases: ["Claude"]
+    matchers:
+      - type: keyword
+        value: "Anthropic"
+      - type: keyword
+        value: "Claude"
+
+  - key: ai.google
+    display_name: Google AI
+    priority: 80
+    aliases: ["Gemini", "Bard", "PaLM"]
+    matchers:
+      - type: keyword
+        value: "Gemini"
+      - type: keyword
+        value: "Google AI"
+      - type: regex
+        pattern: "\\b(Bard|PaLM)\\b"
+
+  - key: ai.meta
+    display_name: Meta AI
+    priority: 75
+    aliases: ["LLaMA", "Llama"]
+    matchers:
+      - type: regex
+        pattern: "\\b(LLaMA|Llama\\s*\\d?)\\b"
+      - type: keyword
+        value: "Meta AI"
+
+  - key: ai.mistral
+    display_name: Mistral AI
+    priority: 80
+    aliases: ["Mistral", "Mixtral"]
+    matchers:
+      - type: keyword
+        value: "Mistral"
+      - type: keyword
+        value: "Mixtral"
+
+  # ===========================================================================
+  # Cloud / Infrastructure (Priority 60-70)
+  # ===========================================================================
+  - key: cloud.kubernetes
+    display_name: Kubernetes
+    priority: 70
+    aliases: ["K8s", "Kube"]
+    matchers:
+      - type: keyword
+        value: "Kubernetes"
+      - type: keyword
+        value: "K8s"
+      - type: keyword
+        value: "CNCF"
+
+  - key: cloud.docker
+    display_name: Docker
+    priority: 60
+    aliases: ["Container"]
+    matchers:
+      - type: keyword
+        value: "Docker"
+      - type: regex
+        pattern: "\\bDockerfile\\b"
+      # Removed generic "container" - too broad (matches ECS, K8s context)
+
+  - key: cloud.terraform
+    display_name: Terraform
+    priority: 65
+    aliases: ["IaC", "Infrastructure as Code"]
+    matchers:
+      - type: keyword
+        value: "Terraform"
+      - type: keyword
+        value: "OpenTofu"
+
+  # ===========================================================================
+  # Programming Languages / Frameworks (Priority 50-65)
+  # ===========================================================================
+  - key: lang.rust
+    display_name: Rust
+    priority: 65
+    aliases: []
+    matchers:
+      - type: regex
+        pattern: "\\bRust\\b(?!\\s+(Belt|bucket))"
+
+  - key: lang.go
+    display_name: Go (Golang)
+    priority: 60
+    aliases: ["Golang"]
+    matchers:
+      - type: keyword
+        value: "Golang"
+      - type: regex
+        pattern: "\\bGo\\s+(language|programming|1\\.\\d+)"
+
+  - key: lang.typescript
+    display_name: TypeScript
+    priority: 60
+    aliases: ["TS"]
+    matchers:
+      - type: keyword
+        value: "TypeScript"
+
+  - key: lang.python
+    display_name: Python
+    priority: 55
+    aliases: []
+    matchers:
+      - type: keyword
+        value: "Python"
+      - type: keyword
+        value: "Pandas"
+
+  - key: framework.react
+    display_name: React
+    priority: 55
+    aliases: ["React.js", "ReactJS"]
+    matchers:
+      - type: keyword
+        value: "React"
+      - type: keyword
+        value: "Next.js"
+
+  - key: framework.node
+    display_name: Node.js
+    priority: 50
+    aliases: ["Node", "NodeJS"]
+    matchers:
+      - type: keyword
+        value: "Node.js"
+      - type: keyword
+        value: "NodeJS"
+
+  # ===========================================================================
+  # Data / Databases (Priority 55-65)
+  # ===========================================================================
+  - key: data.postgres
+    display_name: PostgreSQL
+    priority: 60
+    aliases: ["Postgres", "PG"]
+    matchers:
+      - type: keyword
+        value: "PostgreSQL"
+      - type: keyword
+        value: "Postgres"
+
+  - key: data.kafka
+    display_name: Apache Kafka
+    priority: 65
+    aliases: ["Kafka"]
+    matchers:
+      - type: keyword
+        value: "Kafka"
+      - type: keyword
+        value: "Redpanda"
+
+  - key: data.redis
+    display_name: Redis
+    priority: 55
+    aliases: []
+    matchers:
+      - type: keyword
+        value: "Redis"
+
+  # ===========================================================================
+  # Observability (Priority 55-60)
+  # ===========================================================================
+  - key: observability.grafana
+    display_name: Grafana
+    priority: 60
+    aliases: ["Loki", "Mimir", "Tempo"]
+    matchers:
+      - type: keyword
+        value: "Grafana"
+      - type: keyword
+        value: "Loki"
+      - type: keyword
+        value: "Prometheus"
+
+  - key: observability.opentelemetry
+    display_name: OpenTelemetry
+    priority: 60
+    aliases: ["OTel"]
+    matchers:
+      - type: keyword
+        value: "OpenTelemetry"
+      - type: keyword
+        value: "OTel"
+
+  # ===========================================================================
+  # Other Cloud Providers (Priority 70-80)
+  # ===========================================================================
+  - key: cloud.gcp
+    display_name: Google Cloud Platform
+    priority: 80
+    aliases: ["GCP", "Google Cloud"]
+    matchers:
+      - type: keyword
+        value: "Google Cloud"
+      - type: keyword
+        value: "GCP"
+      - type: regex
+        pattern: "\\bBigQuery\\b"
+      - type: regex
+        pattern: "\\bCloud Run\\b"
+
+  - key: cloud.azure
+    display_name: Microsoft Azure
+    priority: 80
+    aliases: ["Azure"]
+    matchers:
+      - type: keyword
+        value: "Azure"
+      - type: keyword
+        value: "Microsoft Cloud"
+      - type: regex
+        pattern: "\\bAzure\\s+(Functions|DevOps|Kubernetes)\\b"
+
+  - key: cloud.cloudflare
+    display_name: Cloudflare
+    priority: 70
+    aliases: ["CF Workers"]
+    matchers:
+      - type: keyword
+        value: "Cloudflare"
+      - type: keyword
+        value: "CF Workers"
+      - type: keyword
+        value: "Cloudflare Workers"
+
+  - key: cloud.general
+    display_name: Cloud Computing
+    priority: 10  # Very low priority - only for cloud strategy discussions
+    aliases: ["Cloud"]
+    matchers:
+      # Only match substantive cloud strategy/architecture discussions
+      - type: regex
+        pattern: "\\b(multi-cloud|hybrid.cloud)\\b.*\\b(strategy|migration|architecture)"
+      - type: regex
+        pattern: "\\bcloud.native\\b.*\\b(architecture|design|pattern|application)"
+
+  # ===========================================================================
+  # Developer Tools & Platforms (Priority 60-75)
+  # ===========================================================================
+  - key: dev.github
+    display_name: GitHub
+    priority: 75
+    aliases: ["GH"]
+    matchers:
+      - type: keyword
+        value: "GitHub"
+      - type: keyword
+        value: "GitHub Actions"
+      - type: keyword
+        value: "GitHub Copilot"
+
+  - key: dev.vscode
+    display_name: VS Code
+    priority: 60
+    aliases: ["Visual Studio Code"]
+    matchers:
+      - type: keyword
+        value: "VS Code"
+      - type: keyword
+        value: "Visual Studio Code"
+      - type: keyword
+        value: "VSCode"
+
+  - key: dev.cursor
+    display_name: Cursor
+    priority: 70
+    aliases: ["Cursor IDE"]
+    matchers:
+      - type: keyword
+        value: "Cursor IDE"
+      - type: regex
+        pattern: "\\bCursor\\b.*\\b(AI|editor|IDE)\\b"
+
+  # ===========================================================================
+  # Security (Priority 70: Important but often noisy)
+  # ===========================================================================
+  - key: security.general
+    display_name: Security
+    priority: 70
+    aliases: ["Cybersecurity", "InfoSec"]
+    matchers:
+      - type: keyword
+        value: "cybersecurity"
+      - type: keyword
+        value: "vulnerability"
+      - type: keyword
+        value: "CVE-"
+      - type: keyword
+        value: "data breach"
+      - type: keyword
+        value: "data leak"
+      - type: keyword
+        value: "ransomware"
+      - type: regex
+        pattern: "\\bcyber[- ]?espionage\\b"
+
+  # ===========================================================================
+  # POS & Payments Intelligence (Priority 78-82)
+  # ===========================================================================
+  - key: market.pos
+    display_name: Point of Sale
+    priority: 82
+    aliases: ["POS", "Payment Terminal", "Card Present"]
+    matchers:
+      - type: keyword
+        value: "point of sale"
+      - type: keyword
+        value: "pos terminal"
+      - type: keyword
+        value: "payment terminal"
+      - type: keyword
+        value: "card present"
+      - type: keyword
+        value: "tap to pay"
+      - type: keyword
+        value: "contactless payment"
+      - type: regex
+        pattern: "\\b(payment(s)?|merchant)\\b.{0,30}\\b(terminal|checkout|acquir|gateway|processor|card[- ]present|contactless|tap to pay|pay later|bnpl)\\b"
+      - type: regex
+        pattern: "\\b(checkout|card[- ]present|contactless|tap to pay|pay later|bnpl)\\b.{0,30}\\bpayment(s)?\\b"
+
+  - key: payments.general
+    display_name: Merchant Payments
+    priority: 78
+    aliases: ["Payment Processing", "Merchant Acquiring"]
+    matchers:
+      - type: regex
+        pattern: "\\b(payment(s)?|merchant)\\b.{0,30}\\b(terminal|checkout|acquir|gateway|processor|card[- ]present|contactless|tap to pay)\\b"
+      - type: regex
+        pattern: "\\b(merchant|checkout|card[- ]present|contactless|tap to pay)\\b.{0,30}\\bpayment(s)?\\b"
+      - type: keyword
+        value: "merchant acquiring"
+      - type: keyword
+        value: "payment processor"
+      - type: keyword
+        value: "payment gateway"
+      - type: keyword
+        value: "interchange"
+
+suppression:
+  # Topics to exclude from trending/alerts (still tracked, just muted)
+  muted_topics: []
+  # Example: Mute general AI if it's too noisy
+  # muted_topics:
+  #   - ai.general
+
+# ===========================================================================
+# Topic Weight Overrides (Dynamic Adjustment)
+# ===========================================================================
+# Adjust topic importance without editing matchers. Useful for:
+# - Boosting topics you care about this week
+# - Suppressing noisy topics temporarily
+# - Adjusting for conferences/events
+#
+# Weights multiply the final score: 1.0 = normal, 2.0 = double, 0.5 = half
+# Set to 0.0 to effectively mute (or add to muted_topics above)
+#
+# These can be overridden at runtime via:
+# - Redis: SET topic_weight:{key} {value}
+# - CLI: riops topics set-weight aws.bedrock 2.0
+# - ENV: TOPIC_WEIGHT_OVERRIDE=aws.bedrock:2.0,ai.openai:0.5
+
+weights:
+  # Default weight for all topics (if not specified)
+  default: 1.0
+
+  # Per-topic overrides (static, from config)
+  overrides: {}
+  # Example: Boost Bedrock, suppress general AI
+  # overrides:
+  #   aws.bedrock: 1.5
+  #   ai.general: 0.3
+
+# ===========================================================================
+# Configuration Precedence (IMPORTANT)
+# ===========================================================================
+# Multiple configuration sources exist. Here's the resolution order (highest wins):
+#
+# TOPIC WEIGHTS:
+#   1. Redis key: `topic_weight:{key}` (runtime, via riops CLI or API)
+#   2. Environment: `TOPIC_WEIGHT_OVERRIDE=aws.bedrock:2.0,ai.openai:0.5`
+#   3. This file: `weights.overrides` section (below)
+#   4. Default: `weights.default` (1.0)
+#
+# TOPIC DEFINITIONS (matchers, aliases):
+#   - This file is the ONLY source. No runtime override.
+#   - To add/modify topics, edit this file and restart Collector.
+#
+# SUPPRESSION (muted_topics):
+#   - This file is the ONLY source. No runtime override.
+#   - To mute a topic, add to `suppression.muted_topics` and restart.
+#
+# EXAMPLES:
+#   # Temporarily boost Bedrock (via CLI, persists in Redis):
+#   riops topics set-weight aws.bedrock 2.0 --ttl 24h
+#
+#   # Boost via environment (set before starting service):
+#   export TOPIC_WEIGHT_OVERRIDE="aws.bedrock:2.0,ai.openai:1.5"
+#
+#   # Permanent boost (edit this file):
+#   weights:
+#     overrides:
+#       aws.bedrock: 1.5
+
+runtime:
+  # Enable Redis-based weight overrides
+  redis_overrides_enabled: true
+  # Key pattern for Redis lookups
+  redis_key_pattern: "topic_weight:{key}"
+  # TTL for Redis overrides (0 = no expiry, set via CLI --ttl flag)
+  redis_override_ttl_seconds: 0

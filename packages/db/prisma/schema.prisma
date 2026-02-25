@@ -1,0 +1,201 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum Source {
+  rss
+  news
+  hackernews
+  reddit
+  github
+  bluesky
+  mastodon
+}
+
+enum TrendWindow {
+  WINDOW_15M
+  WINDOW_60M
+  WINDOW_24H
+}
+
+enum BriefStatus {
+  success
+  failure
+}
+
+// =============================================================================
+// Raw Events (Persister writes, Grafana/Trends reads)
+// =============================================================================
+
+/// Queryable event archive. Events are immutable once written.
+model RawEvent {
+  id          BigInt    @id @default(autoincrement())
+  eventId     String    @unique @map("event_id")
+  source      Source
+  fetchedAt   DateTime  @map("fetched_at") @db.Timestamptz
+  publishedAt DateTime? @map("published_at") @db.Timestamptz
+
+  url   String?
+  title String?
+  text  String
+
+  // Denormalized author info
+  authorId          String? @map("author_id")
+  authorHandle      String? @map("author_handle")
+  authorDisplayName String? @map("author_display_name")
+
+  // Engagement metrics
+  engagementScore    Int? @map("engagement_score")
+  engagementComments Int? @map("engagement_comments")
+  engagementLikes    Int? @map("engagement_likes")
+  engagementShares   Int? @map("engagement_shares")
+
+  // Derived fields
+  lang              String?
+  tags              String[]
+  extractedHashtags String[] @map("extracted_hashtags")
+  extractedUrls     String[] @map("extracted_urls")
+  topics            String[] // Canonical topic keys (copied from wire `tags` by Persister in MVP; can be backfilled later)
+  searchVector      Unsupported("tsvector")? @map("search_vector")
+
+  // Free-form metadata
+  sourceMeta Json? @map("source_meta")
+
+  @@index([source, fetchedAt(sort: Desc)], name: "idx_raw_events_source_fetched")
+  @@index([fetchedAt(sort: Desc)], name: "idx_raw_events_fetched")
+  @@index([publishedAt(sort: Desc)], name: "idx_raw_events_published")
+  @@index([topics], name: "idx_raw_events_topics", type: Gin)
+  @@map("raw_events")
+}
+
+// Note: Full-text search index (search_vector) is created via raw SQL migration
+// because Prisma doesn't support generated columns. See migrations.
+
+// =============================================================================
+// Trend Snapshots (Trends writes, Grafana reads)
+// =============================================================================
+
+/// Append-only snapshot storage for historical trend charts.
+model TrendSnapshot {
+  id          BigInt      @id @default(autoincrement())
+  generatedAt DateTime    @map("generated_at") @db.Timestamptz
+  window      TrendWindow
+  snapshot    Json // Full TrendSnapshot protobuf as JSON
+
+  @@index([generatedAt(sort: Desc)], name: "idx_trend_snapshots_generated")
+  @@index([window, generatedAt(sort: Desc)], name: "idx_trend_snapshots_window_generated")
+  @@map("trend_snapshots")
+}
+
+// =============================================================================
+// Brief Results (Brief writes, Grafana reads)
+// =============================================================================
+
+/// Stores both success and failure results for audit.
+model BriefResult {
+  requestId  String      @id @map("request_id")
+  producedAt DateTime    @map("produced_at") @db.Timestamptz
+  status     BriefStatus
+  result     Json // Full BriefResult protobuf as JSON
+
+  @@index([producedAt(sort: Desc)], name: "idx_brief_results_produced")
+  @@map("brief_results")
+}
+
+/// Brief's local copy of trend snapshots consumed from Kafka.
+/// Used for query-mode lookback aggregation.
+model BriefTrendSnapshot {
+  id          BigInt      @id @default(autoincrement())
+  generatedAt DateTime    @map("generated_at") @db.Timestamptz
+  window      TrendWindow
+  snapshot    Json // Full TrendSnapshot protobuf as JSON
+
+  @@index([window, generatedAt(sort: Desc)], name: "idx_brief_trend_snapshots_window_generated")
+  @@map("brief_trend_snapshots")
+}
+
+/// Tracks daily LLM budget spending for Brief generation.
+model BriefBudgetTracking {
+  date         DateTime @id @db.Date // YYYY-MM-DD stored as date-only
+  spentUsd     Decimal  @default(0) @map("spent_usd") @db.Decimal(10, 4)
+  budgetUsd    Decimal  @map("budget_usd") @db.Decimal(10, 4)
+  requestCount Int      @default(0) @map("request_count")
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("brief_budget_tracking")
+}
+
+// =============================================================================
+// Consumer Lag (Persister/Trends writes, Trends reads for freshness check)
+// =============================================================================
+
+/// Tracks Kafka consumer progress for data freshness validation.
+model ConsumerLag {
+  consumerGroup String   @map("consumer_group")
+  topic         String
+  partition     Int
+  currentOffset BigInt   @map("current_offset")
+  latestOffset  BigInt   @map("latest_offset")
+  lagMessages   BigInt   @map("lag_messages")
+  updatedAt     DateTime @map("updated_at") @db.Timestamptz
+
+  @@id([consumerGroup, topic, partition])
+  @@map("consumer_lag")
+}
+
+// =============================================================================
+// Retention Policies (Seed script writes, Retention job reads)
+// =============================================================================
+
+/// Configures cleanup for each table.
+model RetentionPolicy {
+  tableName     String    @id @map("table_name")
+  retentionDays Int       @map("retention_days")
+  enabled       Boolean   @default(true)
+  lastCleanupAt DateTime? @map("last_cleanup_at") @db.Timestamptz
+
+  @@map("retention_policies")
+}
+
+// =============================================================================
+// Discovery Candidates (Trends writes, Operator reviews)
+// =============================================================================
+
+enum DiscoveryStatus {
+  pending // Awaiting review
+  added // Added to allowlist
+  ignored // Operator dismissed
+}
+
+/// Tracks emerging unknown terms that may warrant addition to the allowlist.
+/// Populated by Trends service when unknown terms exceed volume/acceleration thresholds.
+model DiscoveryCandidate {
+  term               String          @id
+  firstSeenAt        DateTime        @map("first_seen_at") @db.Timestamptz
+  lastSeenAt         DateTime        @map("last_seen_at") @db.Timestamptz
+  volume24h          Int             @map("volume_24h")
+  peakAcceleration   Float           @map("peak_acceleration")
+  sampleUrls         String[]        @map("sample_urls")
+  sampleEventIds     String[]        @map("sample_event_ids")
+  sources            Source[] // Which sources this term appeared in
+  status             DiscoveryStatus @default(pending)
+  addedToAllowlistAt DateTime?       @map("added_to_allowlist_at") @db.Timestamptz
+  ignoredAt          DateTime?       @map("ignored_at") @db.Timestamptz
+  notes              String? // Operator notes
+
+  @@index([status, volume24h(sort: Desc)], name: "idx_discovery_candidates_status_volume")
+  @@index([lastSeenAt(sort: Desc)], name: "idx_discovery_candidates_last_seen")
+  @@map("discovery_candidates")
+}

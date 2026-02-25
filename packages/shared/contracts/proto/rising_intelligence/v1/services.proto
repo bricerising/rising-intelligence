@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package rising_intelligence.v1;
+
+import "rising_intelligence/v1/contracts.proto";
+
+// Local-only gRPC surface for future UI/CLI integrations.
+// Non-goal: expose publicly on the internet.
+
+service IntelligenceService {
+  rpc GetLatestTrends(GetLatestTrendsRequest) returns (TrendSnapshot);
+  rpc GetLatestBrief(GetLatestBriefRequest) returns (Brief);
+  rpc TriggerBrief(TriggerBriefRequest) returns (TriggerBriefResponse);
+}
+
+message GetLatestTrendsRequest {
+  TrendWindow window = 1; // default: 60m
+}
+
+message GetLatestBriefRequest {
+  BriefWindow window = 1; // default: daily
+}
+
+message TriggerBriefRequest {
+  SummaryRequestType type = 1; // daily or threshold
+}
+
+message TriggerBriefResponse {
+  string request_id = 1;
+}

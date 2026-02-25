@@ -1,0 +1,16 @@
+-- =============================================================================
+-- Rising Intelligence - Postgres Bootstrap
+-- =============================================================================
+--
+-- NOTE: Schema is managed by Prisma in packages/db/prisma/schema.prisma
+--
+-- This file exists only for Postgres extensions or bootstrap operations that
+-- must run before Prisma migrations.
+--
+-- To apply the schema:
+--   cd packages/db && npm run db:migrate:deploy
+--
+-- =============================================================================
+
+-- Enable any required extensions here
+-- (none required for MVP)

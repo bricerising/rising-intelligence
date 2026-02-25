@@ -1,0 +1,37 @@
+{
+  "name": "rising-intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted, near-real-time personal intelligence system for monitoring tech/AI/AWS trends",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "pretest": "npm run build --workspaces --if-present",
+    "test": "npm run test:workspaces",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "test:e2e:brief": "node tests/e2e/brief-mock-llm.e2e.mjs",
+    "test:e2e:brief:compose": "./scripts/test-e2e-brief.sh",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present",
+    "db:migrate": "npm run db:migrate --workspace=@rising-intelligence/db",
+    "db:migrate:deploy": "npm run db:migrate:deploy --workspace=@rising-intelligence/db",
+    "db:push": "npm run db:push --workspace=@rising-intelligence/db",
+    "db:generate": "npm run db:generate --workspace=@rising-intelligence/db",
+    "db:seed": "npm run db:seed --workspace=@rising-intelligence/db",
+    "retention:cleanup": "npm run retention:cleanup --workspace=@rising-intelligence/db"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.0.0",
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "^4.57.1"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.54.0",
+    "eslint": "^9.39.2"
+  }
+}

@@ -1,0 +1,159 @@
+defaults:
+  poll_interval_seconds: 1800
+  priority: 70
+  enabled: true
+  market_gate: true
+  signal_tier: low_volume
+
+edgar_watchlist:
+  # Baseline POS/payments watchlist. Extend with operator-provided P1/P2/P3 entries as needed.
+  - name: EDGAR - Block, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001512673&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001512673"
+    topics: ["market.pos", "payments.block"]
+    entity_terms: ["cash app", "block inc", "squareup"]
+
+  - name: EDGAR - Fiserv, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000798354&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000798354"
+    topics: ["market.pos", "payments.fiserv"]
+    entity_terms: ["fiserv", "clover"]
+
+  - name: EDGAR - Global Payments Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001123360&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001123360"
+    topics: ["market.pos", "payments.globalpayments"]
+    entity_terms: ["global payments"]
+
+  - name: EDGAR - Adyen N.V./ADR
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001788707&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001788707"
+    topics: ["market.pos", "payments.adyen"]
+    entity_terms: ["adyen"]
+
+  - name: EDGAR - Toast, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001650164&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001650164"
+    topics: ["market.pos", "payments.toast"]
+    entity_terms: ["toast"]
+
+  - name: EDGAR - PayPal Holdings, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001633917&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001633917"
+    topics: ["market.pos", "payments.paypal"]
+    entity_terms: ["paypal"]
+
+  - name: EDGAR - Shopify Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001594805&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001594805"
+    topics: ["market.pos", "payments.shopify"]
+    entity_terms: ["shopify"]
+
+  - name: EDGAR - Fidelity National Information Services, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001136893&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001136893"
+    topics: ["market.pos", "payments.fis"]
+    entity_terms: ["fidelity national information services", "fis"]
+
+  - name: EDGAR - NCR Voyix Corp
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000070866&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000070866"
+    topics: ["market.pos", "merchant.ncr"]
+    entity_terms: ["ncr", "ncr voyix"]
+
+  - name: EDGAR - Marqeta, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001522540&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001522540"
+    topics: ["market.pos", "payments.marqeta"]
+    entity_terms: ["marqeta"]
+
+  - name: EDGAR - WEX Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001309108&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0001309108"
+    topics: ["market.pos", "payments.wex"]
+    entity_terms: ["wex"]
+
+  - name: EDGAR - ACI Worldwide, Inc.
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000935036&type=&owner=exclude&count=100&output=atom
+    source_type: edgar
+    cik: "0000935036"
+    topics: ["market.pos", "payments.aci"]
+    entity_terms: ["aci worldwide", "aci"]
+
+policy_feeds:
+  - name: SEC Press Releases
+    url: https://www.sec.gov/news/pressreleases.rss
+    source_type: policy
+    topics: ["regulation.sec", "market.pos"]
+
+  - name: Federal Reserve Press Releases
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    source_type: policy
+    topics: ["macro.fed", "market.pos"]
+
+  - name: BIS News and Speeches
+    url: https://www.bis.org/doclist/all_pressrels.rss
+    source_type: policy
+    topics: ["macro.bis", "market.pos"]
+
+security_feeds:
+  - name: CISA Alerts
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    source_type: security
+    topics: ["security.advisories", "market.pos"]
+
+merchant_feeds:
+  - name: Target Corporate Press Releases
+    url: https://corporate.target.com/press/feed
+    source_type: merchant
+    topics: ["merchant.target", "market.pos"]
+    entity_terms: ["target"]
+
+  - name: PYMNTS Payments News
+    url: https://www.pymnts.com/feed/
+    source_type: merchant
+    poll_interval_seconds: 900
+    topics: ["market.pos"]
+
+  - name: PaymentsJournal News
+    url: https://www.paymentsjournal.com/feed/
+    source_type: merchant
+    poll_interval_seconds: 900
+    topics: ["market.pos"]
+
+wire_feeds:
+  - name: PR Newswire All Releases
+    url: https://www.prnewswire.com/rss/news-releases-list.rss
+    source_type: wire
+    signal_tier: high_volume
+    poll_interval_seconds: 900
+    topics: ["market.pos"]
+    entity_terms:
+      - "adyen"
+      - "block inc"
+      - "fiserv"
+      - "fis"
+      - "global payments"
+      - "paypal"
+      - "marqeta"
+      - "toast"
+      - "ncr"
+      - "wex"
+      - "aci worldwide"
+      - "verifone"
+      - "ingenico"
+      - "stripe"
+      - "shopify"
+      - "cash app"
+      - "squareup"

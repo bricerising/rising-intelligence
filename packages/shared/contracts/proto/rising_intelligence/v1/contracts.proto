@@ -1,0 +1,262 @@
+syntax = "proto3";
+
+package rising_intelligence.v1;
+
+// NOTE: We intentionally avoid importing google/protobuf/* in MVP so schema registry
+// publication is trivial (no dependency references). All timestamps are ISO8601 strings.
+
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  SOURCE_RSS = 1;
+  SOURCE_NEWS = 2;
+  SOURCE_HACKERNEWS = 3;
+  SOURCE_REDDIT = 4;
+  SOURCE_GITHUB = 5;
+  // RESERVED: Twitter/X - DO NOT USE.
+  // API requires Enterprise tier ($42K+/year). Field number reserved for potential future use.
+  // Use SOURCE_BLUESKY or SOURCE_MASTODON for social signal instead.
+  reserved 6;
+  reserved "SOURCE_TWITTER";
+  // Bluesky: Open AT Protocol with free public API access. Good replacement for Twitter signal.
+  SOURCE_BLUESKY = 7;
+  // Mastodon: ActivityPub federation. Access via instance APIs or relays.
+  SOURCE_MASTODON = 8;
+}
+
+enum TrendWindow {
+  TREND_WINDOW_UNSPECIFIED = 0;
+  TREND_WINDOW_15M = 1;
+  TREND_WINDOW_60M = 2;
+  TREND_WINDOW_24H = 3;
+}
+
+enum BriefWindow {
+  BRIEF_WINDOW_UNSPECIFIED = 0;
+  BRIEF_WINDOW_DAILY = 1;
+  BRIEF_WINDOW_THRESHOLD = 2;
+}
+
+message Author {
+  string id = 1;
+  string handle = 2;
+  string display_name = 3;
+}
+
+message Engagement {
+  int32 score = 1;
+  int32 comments = 2;
+  int32 likes = 3;
+  int32 shares = 4;
+}
+
+message Extracted {
+  repeated string hashtags = 1;
+  repeated string urls = 2;
+}
+
+message RawEvent {
+  string event_id = 1;
+  Source source = 2;
+  string fetched_at = 3;
+  string published_at = 4;
+
+  string url = 5;
+  string title = 6;
+  string text = 7;
+
+  Author author = 8;
+  Engagement engagement = 9;
+
+  string lang = 10;
+  repeated string tags = 11;
+  Extracted extracted = 12;
+
+  // Free-form per-source metadata as JSON (object). Keep small; no secrets.
+  string source_meta_json = 20;
+}
+
+message DeadLetterEvent {
+  string dlq_id = 1;
+  string occurred_at = 2;
+
+  // Where this came from (e.g., "collector.rss").
+  string source = 3;
+
+  string error_code = 4;
+  string error_message = 5;
+
+  // Redacted debugging context (e.g., URL or a truncated payload sample).
+  string raw_reference = 6;
+  string raw_payload_excerpt = 7;
+}
+
+message TopicEvidence {
+  repeated string top_urls = 1;
+  repeated string top_event_ids = 2;
+}
+
+message TopicMetrics {
+  string topic = 1;
+  TrendWindow window = 2;
+  string window_end = 3;
+
+  int32 volume = 4;
+  int32 prev_volume = 5;
+  double acceleration = 6;
+  int32 baseline_volume = 7;
+  double baseline_delta = 8;
+
+  double score = 9;
+  TopicEvidence evidence = 10;
+}
+
+message TrendSnapshot {
+  string generated_at = 1;
+  TrendWindow window = 2;
+  repeated TopicMetrics topics = 3;
+}
+
+message BriefHighlight {
+  string topic = 1;
+  string why_it_matters = 2;
+  string what_happened = 3;
+  string suggested_action = 4;
+  repeated string citations = 5;
+}
+
+message BriefMeta {
+  string provider = 1; // e.g., "openai"
+  string model = 2; // e.g., "gpt-4.1"
+  int32 input_tokens = 3;
+  int32 output_tokens = 4;
+  double estimated_cost_usd = 5;
+}
+
+message Brief {
+  string brief_id = 1;
+  string generated_at = 2;
+  BriefWindow window = 3;
+
+  string title = 4;
+  repeated BriefHighlight highlights = 5;
+  string notes = 6;
+
+  BriefMeta meta = 10;
+}
+
+enum SummaryRequestType {
+  SUMMARY_REQUEST_TYPE_UNSPECIFIED = 0;
+  SUMMARY_REQUEST_TYPE_DAILY = 1;
+  SUMMARY_REQUEST_TYPE_THRESHOLD = 2;
+}
+
+message EvidenceItem {
+  string event_id = 1;
+  Source source = 2;
+  string url = 3;
+  string title = 4;
+  string published_at = 5;
+  string fetched_at = 6;
+  string text_excerpt = 7;
+  Engagement engagement = 8;
+}
+
+message TopicBriefInput {
+  string topic = 1; // canonical topic key, e.g. "aws.bedrock"
+  repeated TopicMetrics metrics = 2; // 60m + 24h (and/or 15m) context
+  repeated EvidenceItem evidence = 3; // bounded, deterministic selection
+}
+
+message SummaryBudget {
+  double daily_budget_usd = 1;
+  int32 max_topics = 2;
+  int32 max_evidence_per_topic = 3;
+  int32 max_output_tokens = 4;
+}
+
+message SummaryQuery {
+  int32 lookback_days = 1;
+  repeated string topic_globs = 2;
+  int32 max_events_per_topic = 3;
+}
+
+message SummaryRequest {
+  string request_id = 1;
+  string requested_at = 2;
+  SummaryRequestType type = 3;
+
+  // Which windows were used to build this request (helps auditing).
+  repeated TrendWindow windows = 4;
+
+  repeated TopicBriefInput topics = 5;
+  SummaryBudget budget = 6;
+  SummaryQuery query = 7;
+}
+
+message BriefFailure {
+  string error_code = 1;
+  string error_message = 2;
+  bool retryable = 3;
+}
+
+message BriefResult {
+  string request_id = 1;
+  string produced_at = 2;
+
+  oneof result {
+    Brief brief = 3;
+    BriefFailure failure = 4;
+  }
+}
+
+// =============================================================================
+// CollectorHeartbeat - Published to collector.heartbeat
+// =============================================================================
+
+enum CollectorStatus {
+  COLLECTOR_STATUS_UNSPECIFIED = 0;
+  COLLECTOR_STATUS_HEALTHY = 1;
+  COLLECTOR_STATUS_DEGRADED = 2;
+  COLLECTOR_STATUS_ERROR = 3;
+}
+
+// Heartbeat from collector per source, used for data freshness validation.
+// Trends service validates collector health before triggering briefs.
+// See specs/001 "Data Freshness Validation" section.
+message CollectorHeartbeat {
+  Source source = 1;
+  string timestamp = 2;          // ISO8601 - when this heartbeat was generated
+  string last_fetch_at = 3;      // ISO8601 - when source was last successfully fetched
+  int32 items_fetched = 4;       // Items fetched in last poll (0 is valid for quiet sources)
+  CollectorStatus status = 5;
+  string error_message = 6;      // Only set if status is DEGRADED or ERROR
+}
+
+// =============================================================================
+// DiscoveryCandidate (reference only - stored in Postgres, not Kafka)
+// =============================================================================
+
+// Tracks emerging unknown terms that may warrant addition to the allowlist.
+// This message is NOT published to Kafka - it's stored directly in Postgres.
+// Included here for documentation and potential future API use.
+enum DiscoveryStatus {
+  DISCOVERY_STATUS_UNSPECIFIED = 0;
+  DISCOVERY_STATUS_PENDING = 1;   // Awaiting operator review
+  DISCOVERY_STATUS_ADDED = 2;     // Added to allowlist
+  DISCOVERY_STATUS_IGNORED = 3;   // Operator dismissed
+}
+
+message DiscoveryCandidate {
+  string term = 1;
+  string first_seen_at = 2;
+  string last_seen_at = 3;
+  int32 volume_24h = 4;
+  float peak_acceleration = 5;
+  repeated string sample_urls = 6;
+  repeated string sample_event_ids = 7;
+  repeated Source sources = 8;
+  DiscoveryStatus status = 9;
+  string added_to_allowlist_at = 10;  // Only set if status is ADDED
+  string ignored_at = 11;             // Only set if status is IGNORED
+  string notes = 12;                  // Operator notes
+}

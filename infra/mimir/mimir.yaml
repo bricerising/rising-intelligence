@@ -1,0 +1,31 @@
+target: all
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+
+common:
+  storage:
+    backend: filesystem
+    filesystem:
+      dir: /tmp/mimir
+
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /tmp/mimir/blocks
+  bucket_store:
+    sync_dir: /tmp/mimir/tsdb-sync
+  tsdb:
+    dir: /tmp/mimir/tsdb
+
+compactor:
+  data_dir: /tmp/mimir/compactor
+
+ingester:
+  ring:
+    replication_factor: 1
+
+limits:
+  max_global_series_per_user: 0
+  max_global_series_per_metric: 0
