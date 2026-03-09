@@ -9,8 +9,5 @@
     "rootDir": "./src"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"],
-  "references": [
-    { "path": "../topics" }
-  ]
+  "exclude": ["node_modules", "dist"]
 }
