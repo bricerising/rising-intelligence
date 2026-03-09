@@ -15,7 +15,7 @@ import { generateDlqId as defaultGenerateDlqId } from "./serializer.js";
 import {
   extractTopics as defaultTopicExtractor,
   type CompiledAllowlist,
-} from "./topics/extractor.js";
+} from "@rising-intelligence/pipeline";
 import type { DeadLetterEvent, RawEvent, Source } from "./types.js";
 
 export type CollectorEventProcessResult =

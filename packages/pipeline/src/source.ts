@@ -10,6 +10,14 @@ export const SOURCE_ENUM_TO_KEY = {
 
 export type CanonicalSource = (typeof SOURCE_ENUM_TO_KEY)[keyof typeof SOURCE_ENUM_TO_KEY];
 
+/**
+ * Reverse mapping from canonical source key to proto enum value.
+ * Derived from SOURCE_ENUM_TO_KEY so the two never drift apart.
+ */
+export const SOURCE_KEY_TO_ENUM: Readonly<Record<CanonicalSource, number>> = Object.fromEntries(
+  Object.entries(SOURCE_ENUM_TO_KEY).map(([k, v]) => [v, Number(k)])
+) as Record<CanonicalSource, number>;
+
 const SOURCE_ALIAS_TO_KEY: Readonly<Record<string, CanonicalSource>> = {
   source_rss: "rss",
   rss: "rss",
@@ -56,4 +64,13 @@ export function parseCanonicalSource(value: number | string): CanonicalSource {
   }
 
   return parsed;
+}
+
+/**
+ * Resolve a source string (canonical or alias) to its proto enum value.
+ * Handles aliases like "lobsters" → 2 (news) so callers don't need their own mapping.
+ */
+export function sourceToProtoEnum(value: string): number {
+  const canonical = parseCanonicalSource(value);
+  return SOURCE_KEY_TO_ENUM[canonical];
 }

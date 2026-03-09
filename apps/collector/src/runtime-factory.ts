@@ -33,7 +33,7 @@ import {
   loadMarketFilterProfiles,
   type MarketFilterProfile,
 } from "./market-filters.js";
-import { loadAllowlist, type CompiledAllowlist } from "./topics/extractor.js";
+import { loadAllowlist, type CompiledAllowlist } from "@rising-intelligence/pipeline";
 import type { SourceAdapter } from "./types.js";
 
 type RuntimeLoggerComponent = "checkpoint";

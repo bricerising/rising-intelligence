@@ -1,16 +1,11 @@
+import type { CanonicalSource } from "@rising-intelligence/pipeline";
+
 /**
- * Source types matching the proto enum.
- * Note: 'twitter' is NOT included - API requires Enterprise tier ($42K+/year).
+ * Source values accepted by collector adapters.
+ * Extends the shared CanonicalSource contract with "lobsters", a collector-
+ * internal alias that the serializer resolves to "news" on the wire.
  */
-export type Source =
-  | "rss"
-  | "news"
-  | "hackernews"
-  | "reddit"
-  | "github"
-  | "bluesky"
-  | "mastodon"
-  | "lobsters";
+export type Source = CanonicalSource | "lobsters";
 
 export interface Author {
   id?: string;

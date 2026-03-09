@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
 import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "../topics/extractor.js";
+import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,

@@ -1,20 +1,5 @@
+import { sourceToProtoEnum } from "@rising-intelligence/pipeline";
 import type { RawEvent, DeadLetterEvent, CollectorHeartbeat, Source } from "./types.js";
-
-/**
- * Map Source string to proto enum value.
- * Must match rising_intelligence.v1.Source enum.
- */
-const SOURCE_TO_PROTO: Record<Source, number> = {
-  rss: 1,
-  news: 2,
-  hackernews: 3,
-  reddit: 4,
-  github: 5,
-  // twitter is reserved (6) - not used
-  bluesky: 7,
-  mastodon: 8,
-  lobsters: 2, // Lobsters is mapped to NEWS in proto
-};
 
 /**
  * Map CollectorStatus to proto enum value.
@@ -32,7 +17,7 @@ const STATUS_TO_PROTO: Record<string, number> = {
 export function serializeRawEvent(event: RawEvent): Buffer {
   const protoEvent = {
     event_id: event.event_id,
-    source: SOURCE_TO_PROTO[event.source] ?? 0,
+    source: sourceToProtoEnum(event.source),
     fetched_at: event.fetched_at,
     published_at: event.published_at ?? "",
     url: event.url ?? "",
@@ -81,7 +66,7 @@ export function serializeDeadLetterEvent(event: DeadLetterEvent): Buffer {
  */
 export function serializeHeartbeat(heartbeat: CollectorHeartbeat): Buffer {
   const protoHeartbeat = {
-    source: SOURCE_TO_PROTO[heartbeat.source] ?? 0,
+    source: sourceToProtoEnum(heartbeat.source),
     timestamp: heartbeat.timestamp,
     last_fetch_at: heartbeat.last_fetch_at,
     items_fetched: heartbeat.items_fetched,

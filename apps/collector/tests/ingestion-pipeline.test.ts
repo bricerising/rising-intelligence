@@ -5,7 +5,7 @@ import {
   createCollectorEventProcessor,
   type CollectorEventProcessResult,
 } from "../src/ingestion-pipeline.js";
-import type { CompiledAllowlist } from "../src/topics/extractor.js";
+import type { CompiledAllowlist } from "@rising-intelligence/pipeline";
 import type { DeadLetterEvent, RawEvent, Source } from "../src/types.js";
 
 function createLogger() {
