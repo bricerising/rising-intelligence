@@ -55,6 +55,7 @@ function createAdapterConfig(
   return {
     RSS_ENABLED: true,
     RSS_POLL_INTERVAL_SECONDS: 120,
+    EDGAR_ENABLED: true,
     FEEDS_CONFIG_PATH: "./config/feeds.yaml",
     EDGAR_FORMS_ALLOWLIST: "8-K,6-K,10-Q,10-K,20-F,40-F",
     EDGAR_FETCH_DETAIL_METADATA: true,
@@ -128,6 +129,7 @@ describe("collector adapter factory", () => {
         logger,
         contentFetcherConfig,
         marketFilterProfiles,
+        edgarEnabled: true,
         edgarFormsAllowlist: ["8-K", "6-K", "10-Q", "10-K", "20-F", "40-F"],
         edgarFetchDetailMetadata: true,
         edgarDownloadPrimaryDocs: false,

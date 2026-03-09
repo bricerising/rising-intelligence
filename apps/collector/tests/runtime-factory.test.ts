@@ -35,6 +35,7 @@ function createConfig(overrides: Partial<Config> = {}): Config {
     REDDIT_MAX_ITEMS_PER_POLL: 25,
     RSS_ENABLED: true,
     RSS_POLL_INTERVAL_SECONDS: 300,
+    EDGAR_ENABLED: true,
     EDGAR_FORMS_ALLOWLIST: "8-K,6-K,10-Q",
     EDGAR_FETCH_DETAIL_METADATA: true,
     EDGAR_DOWNLOAD_PRIMARY_DOCS: false,

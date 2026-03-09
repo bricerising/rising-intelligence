@@ -115,7 +115,7 @@ security_feeds:
 
 merchant_feeds:
   - name: Target Corporate Press Releases
-    url: https://corporate.target.com/press/feed
+    url: https://corporate.target.com/feeds/pressreleases
     source_type: merchant
     topics: ["merchant.target", "market.pos"]
     entity_terms: ["target"]

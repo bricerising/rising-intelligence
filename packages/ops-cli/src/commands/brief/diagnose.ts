@@ -131,7 +131,11 @@ export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
     briefHealthUrl: getStringFlag(flags, "brief-health-url") || DEFAULT_BRIEF_HEALTH_URL,
     lookbackDays: parsePositiveIntegerStrict(lookbackDaysRaw, "--lookback-days"),
     topicGlobs: parseTopicGlobs(topicGlobsRaw),
-    llmProvider: getStringFlag(flags, "llm-provider") || getEnvString("LLM_PROVIDER") || "codex-cli",
+    llmProvider:
+      getStringFlag(flags, "llm-provider") ||
+      getEnvString("BRIEF_LLM_PROVIDER") ||
+      getEnvString("LLM_PROVIDER") ||
+      "codex-cli",
     skipTrigger: getBooleanFlag(flags, "skip-trigger"),
     skipLogs: getBooleanFlag(flags, "skip-logs"),
     dockerComposeFile: getStringFlag(flags, "docker-compose-file") || DEFAULT_DOCKER_COMPOSE_FILE,

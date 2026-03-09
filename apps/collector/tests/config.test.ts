@@ -87,6 +87,7 @@ describe("config", () => {
 
       expect(config.RSS_ENABLED).toBe(true);
       expect(config.RSS_POLL_INTERVAL_SECONDS).toBe(300);
+      expect(config.EDGAR_ENABLED).toBe(true);
       expect(config.EDGAR_FORMS_ALLOWLIST).toBe("8-K,6-K,10-Q,10-K,20-F,40-F");
       expect(config.EDGAR_FETCH_DETAIL_METADATA).toBe(true);
       expect(config.EDGAR_DOWNLOAD_PRIMARY_DOCS).toBe(false);
@@ -111,6 +112,7 @@ describe("config", () => {
       process.env.LOG_LEVEL = "debug";
       process.env.KAFKA_BROKERS = "kafka1:9092,kafka2:9092";
       process.env.HN_ENABLED = "false";
+      process.env.EDGAR_ENABLED = "false";
       process.env.HN_MODE = "best";
       process.env.LOBSTERS_MAX_ITEMS_PER_POLL = "50";
       process.env.SEC_USER_AGENT = "Unit Test test@example.com";
@@ -124,6 +126,7 @@ describe("config", () => {
       expect(config.LOG_LEVEL).toBe("debug");
       expect(config.KAFKA_BROKERS).toBe("kafka1:9092,kafka2:9092");
       expect(config.HN_ENABLED).toBe(false);
+      expect(config.EDGAR_ENABLED).toBe(false);
       expect(config.HN_MODE).toBe("best");
       expect(config.LOBSTERS_MAX_ITEMS_PER_POLL).toBe(50);
       expect(config.SEC_USER_AGENT).toBe("Unit Test test@example.com");

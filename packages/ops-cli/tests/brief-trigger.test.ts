@@ -4,6 +4,9 @@ import {
   evaluateConsumerLagFreshness,
 } from "../src/commands/brief/trigger.js";
 
+const ORIGINAL_BRIEF_LLM_PROVIDER = process.env.BRIEF_LLM_PROVIDER;
+const ORIGINAL_LLM_PROVIDER = process.env.LLM_PROVIDER;
+
 function findJsonPayload(logCalls: Array<unknown[]>): Record<string, unknown> {
   for (const call of logCalls) {
     const [firstArg] = call;
@@ -23,6 +26,16 @@ describe("brief trigger mode handling", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     delete process.env.DATABASE_URL;
+    if (ORIGINAL_BRIEF_LLM_PROVIDER === undefined) {
+      delete process.env.BRIEF_LLM_PROVIDER;
+    } else {
+      process.env.BRIEF_LLM_PROVIDER = ORIGINAL_BRIEF_LLM_PROVIDER;
+    }
+    if (ORIGINAL_LLM_PROVIDER === undefined) {
+      delete process.env.LLM_PROVIDER;
+    } else {
+      process.env.LLM_PROVIDER = ORIGINAL_LLM_PROVIDER;
+    }
   });
 
   it("forces query mode to TREND_WINDOW_60M", async () => {
@@ -59,6 +72,24 @@ describe("brief trigger mode handling", () => {
 
     expect(findJsonPayload(logSpy.mock.calls).mode).toBe("query");
     expect(warnSpy).not.toHaveBeenCalledWith("⚠️  Data freshness warnings:");
+  });
+
+  it("defaults llm_provider to codex-cli when no env or flag override is set", async () => {
+    delete process.env.BRIEF_LLM_PROVIDER;
+    delete process.env.LLM_PROVIDER;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await briefTrigger({
+      "dry-run": true,
+      "request-id": "query-default-provider-test",
+    });
+
+    const payload = findJsonPayload(logSpy.mock.calls);
+    const body = payload.payload as Record<string, unknown>;
+
+    expect(body.llm_provider).toBe("codex-cli");
   });
 
   it("rejects query mode when window 2 is not requested", async () => {

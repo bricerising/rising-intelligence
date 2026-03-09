@@ -25,6 +25,7 @@ import {
 const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
   "RSS_ENABLED",
   "RSS_POLL_INTERVAL_SECONDS",
+  "EDGAR_ENABLED",
   "FEEDS_CONFIG_PATH",
   "EDGAR_FORMS_ALLOWLIST",
   "EDGAR_FETCH_DETAIL_METADATA",
@@ -179,6 +180,7 @@ function createRssAdapterInput(input: BuildCollectorAdaptersInput): CreateRSSAda
     logger: createAdapterLogger(logger, "rss"),
     contentFetcherConfig,
     marketFilterProfiles,
+    edgarEnabled: config.EDGAR_ENABLED,
     edgarFormsAllowlist: parseCsvValues(config.EDGAR_FORMS_ALLOWLIST),
     edgarFetchDetailMetadata: config.EDGAR_FETCH_DETAIL_METADATA,
     edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,

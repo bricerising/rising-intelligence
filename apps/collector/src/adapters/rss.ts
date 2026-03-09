@@ -63,6 +63,7 @@ export interface RSSFeedErrorReport {
 }
 
 export interface RSSAdapterOptions {
+  edgarEnabled?: boolean;
   marketFilterProfiles?: readonly MarketFilterProfile[];
   edgarFormsAllowlist?: readonly string[];
   edgarFetchDetailMetadata?: boolean;
@@ -471,7 +472,18 @@ export class RSSAdapter implements SourceAdapter {
         Accept: "*/*",
       },
     });
-    this.feeds = loadFeedsConfig(feedsConfigPath);
+    const configuredFeeds = loadFeedsConfig(feedsConfigPath);
+    const edgarEnabled = options.edgarEnabled ?? true;
+    this.feeds = edgarEnabled
+      ? configuredFeeds
+      : configuredFeeds.filter((feed) => feed.source_type !== "edgar");
+    if (!edgarEnabled) {
+      const disabledFeedCount = configuredFeeds.length - this.feeds.length;
+      this.logger.info(
+        { disabledFeedCount },
+        "EDGAR feeds disabled"
+      );
+    }
     this.watchlistEntityTerms = dedupeEntityTerms(
       this.feeds
         .filter((feed) => feed.source_type === "edgar")
@@ -839,6 +851,7 @@ export interface CreateRSSAdapterInput {
   contentFetcherConfig?: ContentFetcherConfig;
   onFeedError?: (report: RSSFeedErrorReport) => void;
   marketFilterProfiles?: readonly MarketFilterProfile[];
+  edgarEnabled?: boolean;
   edgarFormsAllowlist?: readonly string[];
   edgarFetchDetailMetadata?: boolean;
   edgarDownloadPrimaryDocs?: boolean;
@@ -857,6 +870,7 @@ export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
     input.onFeedError,
     {
       marketFilterProfiles: input.marketFilterProfiles,
+      edgarEnabled: input.edgarEnabled,
       edgarFormsAllowlist: input.edgarFormsAllowlist,
       edgarFetchDetailMetadata: input.edgarFetchDetailMetadata,
       edgarDownloadPrimaryDocs: input.edgarDownloadPrimaryDocs,

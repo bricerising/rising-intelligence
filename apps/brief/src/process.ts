@@ -1114,6 +1114,27 @@ function buildInternalSuccessResult(
   );
 }
 
+function normalizeLlmMetaString(value: string | undefined): string | null {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const lowerCased = normalized.toLowerCase();
+  if (
+    lowerCased === "unknown" ||
+    lowerCased === "n/a" ||
+    lowerCased === "na" ||
+    lowerCased === "none" ||
+    lowerCased === "null" ||
+    lowerCased === "unspecified"
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
 function buildLlmBackedSuccessResult(
   request: ParsedSummaryRequest,
   producedAt: Date,
@@ -1159,6 +1180,12 @@ function buildLlmBackedSuccessResult(
     : llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
   notes = appendCoverageWarnings(notes, request);
   notes = groundingFacade.enforceGroundedNotes(request, notes, toGroundingError);
+  const provider = usedInternalFallback
+    ? "internal"
+    : normalizeLlmMetaString(llmResponse.meta?.provider) ?? defaultProvider;
+  const model = usedInternalFallback
+    ? "rule-based-fallback-v1"
+    : normalizeLlmMetaString(llmResponse.meta?.model) ?? defaultModel;
 
   return buildSuccessPayload(
     request,
@@ -1166,8 +1193,8 @@ function buildLlmBackedSuccessResult(
     llmResponse.title,
     highlights,
     notes,
-    usedInternalFallback ? "internal" : llmResponse.meta?.provider?.trim() || defaultProvider,
-    usedInternalFallback ? "rule-based-fallback-v1" : llmResponse.meta?.model?.trim() || defaultModel,
+    provider,
+    model,
     inputTokens,
     outputTokens,
     normalizeUsd(llmResponse.meta?.estimated_cost_usd ?? estimatedCostUsd)

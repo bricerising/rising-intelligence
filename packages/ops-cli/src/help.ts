@@ -145,7 +145,7 @@ Flags (brief trigger):
   --max-topics <n>                 Default: $BRIEF_MAX_TOPICS or 5 (caps top-level topic groups in query mode)
   --max-evidence-per-topic <n>     Default: $BRIEF_MAX_EVIDENCE_PER_TOPIC or 3
   --max-output-tokens <n>          Default: $BRIEF_MAX_OUTPUT_TOKENS or 1200
-  --llm-provider <name>            Default: $LLM_PROVIDER or codex-cli
+  --llm-provider <name>            Default: $BRIEF_LLM_PROVIDER or $LLM_PROVIDER or codex-cli
   --dry-run                        Print request payload without publishing
 
 Flags (brief diagnose):
@@ -158,7 +158,7 @@ Flags (brief diagnose):
   --brief-health-url <url>         Default: http://localhost:3005/health
   --lookback-days <n>              Default: 2
   --topic-globs <csv>              Default: *
-  --llm-provider <name>            Default: $LLM_PROVIDER or codex-cli
+  --llm-provider <name>            Default: $BRIEF_LLM_PROVIDER or $LLM_PROVIDER or codex-cli
   --skip-trigger                   Diagnose listeners/checks without publishing a request
   --skip-logs                      Skip docker-compose log collection on failures/timeouts
   --docker-compose-file <path>     Default: docker-compose.yml

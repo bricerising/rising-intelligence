@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolveDiagnoseConfig } from "../src/commands/brief/diagnose.js";
+
+const ORIGINAL_BRIEF_LLM_PROVIDER = process.env.BRIEF_LLM_PROVIDER;
+const ORIGINAL_LLM_PROVIDER = process.env.LLM_PROVIDER;
+
+afterEach(() => {
+  if (ORIGINAL_BRIEF_LLM_PROVIDER === undefined) {
+    delete process.env.BRIEF_LLM_PROVIDER;
+  } else {
+    process.env.BRIEF_LLM_PROVIDER = ORIGINAL_BRIEF_LLM_PROVIDER;
+  }
+
+  if (ORIGINAL_LLM_PROVIDER === undefined) {
+    delete process.env.LLM_PROVIDER;
+  } else {
+    process.env.LLM_PROVIDER = ORIGINAL_LLM_PROVIDER;
+  }
+});
 
 describe("resolveDiagnoseConfig", () => {
   it("applies defaults", () => {
@@ -14,6 +31,14 @@ describe("resolveDiagnoseConfig", () => {
     expect(config.topicGlobs).toEqual(["*"]);
     expect(config.llmProvider).toBe("codex-cli");
     expect(config.dockerComposeProject).toBeUndefined();
+  });
+
+  it("prefers BRIEF_LLM_PROVIDER env when flag is not set", () => {
+    process.env.BRIEF_LLM_PROVIDER = "codex-cli";
+    delete process.env.LLM_PROVIDER;
+
+    const config = resolveDiagnoseConfig({});
+    expect(config.llmProvider).toBe("codex-cli");
   });
 
   it("parses explicit flags", () => {

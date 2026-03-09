@@ -48,6 +48,7 @@ const ConfigSchema = z.object({
   // RSS
   RSS_ENABLED: zBooleanEnv("true"),
   RSS_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  EDGAR_ENABLED: zBooleanEnv("true"),
   EDGAR_FORMS_ALLOWLIST: z.string().default("8-K,6-K,10-Q,10-K,20-F,40-F"),
   EDGAR_FETCH_DETAIL_METADATA: zBooleanEnv("true"),
   EDGAR_DOWNLOAD_PRIMARY_DOCS: zBooleanEnv("false"),

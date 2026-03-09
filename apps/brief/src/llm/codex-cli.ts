@@ -234,7 +234,7 @@ function tryParseOutputMessage(message: string): { ok: true; value: unknown } | 
 }
 
 async function createCodexTempDir(logger: pino.Logger): Promise<string> {
-  const candidateRoots = [join(process.cwd(), ".tmp"), tmpdir(), join(homedir(), ".codex-tmp")];
+  const candidateRoots = [tmpdir(), join(process.cwd(), ".tmp"), join(homedir(), ".codex-tmp")];
   let lastError: unknown;
   for (const candidateRoot of candidateRoots) {
     try {

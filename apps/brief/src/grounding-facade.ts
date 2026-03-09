@@ -9,6 +9,8 @@ import type {
 
 const NOTES_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
 export const EVIDENCE_EXCERPT_MAX_LENGTH = 2000;
+const TARGET_TOTAL_EVIDENCE_EXCERPT_CHARS = 10_000;
+const MIN_EVIDENCE_EXCERPT_LENGTH = 160;
 const TITLE_MAX_LENGTH = 200;
 const EXCERPT_CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 const TITLE_CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/g;
@@ -40,7 +42,7 @@ interface CitationGroundingAdapter {
 
 interface EvidenceSanitizerAdapter {
   sanitizeTitle(value: string | null): string;
-  sanitizeExcerpt(value: string | null): string;
+  sanitizeExcerpt(value: string | null, maxLength?: number): string;
   findSuspiciousPattern(title: string | null, excerpt: string | null): string | null;
 }
 
@@ -145,7 +147,7 @@ function createEvidenceSanitizerAdapter(): EvidenceSanitizerAdapter {
         .trim();
       return sanitized.length > 0 ? sanitized : "[No title]";
     },
-    sanitizeExcerpt(value) {
+    sanitizeExcerpt(value, maxLength = EVIDENCE_EXCERPT_MAX_LENGTH) {
       if (!value || value.trim().length === 0) {
         return "";
       }
@@ -153,7 +155,7 @@ function createEvidenceSanitizerAdapter(): EvidenceSanitizerAdapter {
       const sanitized = value
         .replace(EXCERPT_CONTROL_CHAR_PATTERN, "")
         .replace(/\s{3,}/g, "  ")
-        .slice(0, EVIDENCE_EXCERPT_MAX_LENGTH)
+        .slice(0, maxLength)
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(INSTRUCTION_MARKER_PATTERN, "")
@@ -182,10 +184,31 @@ interface SummaryPayloadAdapters {
   evidenceSanitizer: EvidenceSanitizerAdapter;
 }
 
+function countEvidenceItems(request: ParsedSummaryRequest): number {
+  return request.topics.reduce((count, topic) => count + topic.evidence.length, 0);
+}
+
+function resolvePayloadExcerptMaxLength(request: ParsedSummaryRequest): number {
+  const evidenceCount = countEvidenceItems(request);
+  if (evidenceCount <= 0) {
+    return EVIDENCE_EXCERPT_MAX_LENGTH;
+  }
+
+  const budgetBasedLimit = Math.floor(
+    TARGET_TOTAL_EVIDENCE_EXCERPT_CHARS / evidenceCount
+  );
+
+  return Math.max(
+    MIN_EVIDENCE_EXCERPT_LENGTH,
+    Math.min(EVIDENCE_EXCERPT_MAX_LENGTH, budgetBasedLimit)
+  );
+}
+
 function mapEvidenceToPayload(
   request: ParsedSummaryRequest,
   topic: ParsedSummaryTopic,
   evidence: ParsedSummaryEvidence,
+  excerptMaxLength: number,
   options: SummaryRequestPayloadOptions,
   adapters: SummaryPayloadAdapters
 ): Record<string, unknown> {
@@ -215,7 +238,10 @@ function mapEvidenceToPayload(
     title: adapters.evidenceSanitizer.sanitizeTitle(evidence.title),
     published_at: evidence.publishedAt ? evidence.publishedAt.toISOString() : "",
     fetched_at: evidence.fetchedAt ? evidence.fetchedAt.toISOString() : "",
-    text_excerpt: adapters.evidenceSanitizer.sanitizeExcerpt(evidence.textExcerpt),
+    text_excerpt: adapters.evidenceSanitizer.sanitizeExcerpt(
+      evidence.textExcerpt,
+      excerptMaxLength
+    ),
   };
 }
 
@@ -223,7 +249,8 @@ function mapTopicToPayload(
   request: ParsedSummaryRequest,
   topic: ParsedSummaryTopic,
   options: SummaryRequestPayloadOptions,
-  adapters: SummaryPayloadAdapters
+  adapters: SummaryPayloadAdapters,
+  excerptMaxLength: number
 ): Record<string, unknown> {
   return {
     topic: topic.topic,
@@ -235,7 +262,7 @@ function mapTopicToPayload(
       acceleration: metric.acceleration,
     })),
     evidence: topic.evidence.map((evidence) =>
-      mapEvidenceToPayload(request, topic, evidence, options, adapters)
+      mapEvidenceToPayload(request, topic, evidence, excerptMaxLength, options, adapters)
     ),
   };
 }
@@ -245,13 +272,15 @@ function buildSummaryRequestPayload(
   options: SummaryRequestPayloadOptions,
   adapters: SummaryPayloadAdapters
 ): Record<string, unknown> {
+  const excerptMaxLength = resolvePayloadExcerptMaxLength(request);
+
   return {
     request_id: request.requestId,
     requested_at: request.requestedAt.toISOString(),
     type: request.type,
     windows: request.windows,
     topics: request.topics.map((topic) =>
-      mapTopicToPayload(request, topic, options, adapters)
+      mapTopicToPayload(request, topic, options, adapters, excerptMaxLength)
     ),
     budget: request.budget
       ? {

@@ -372,6 +372,250 @@ cloud_service_health:
     notes: "Public Azure status RSS feed"
 
 # =============================================================================
+# Apple Official, Developer, and Security Signals
+# =============================================================================
+apple_official_updates:
+
+  - name: Apple Newsroom Press Releases
+    url: https://www.apple.com/newsroom/rss-feed.rss
+    poll_interval_seconds: 1800
+    priority: 94
+    category: official_blog
+    topics: ["apple.general", "apple.official"]
+    notes: "Canonical Apple announcements for product, policy, and executive updates"
+
+  - name: Apple Developer News and Updates
+    url: https://developer.apple.com/news/rss/news.rss
+    poll_interval_seconds: 1800
+    priority: 95
+    category: official_blog
+    topics: ["apple.developer"]
+    notes: "Official Apple Developer news stream for policy and program changes"
+
+  - name: Apple Developer Releases
+    url: https://developer.apple.com/news/releases/rss/releases.rss
+    poll_interval_seconds: 1800
+    priority: 95
+    category: release_notes
+    topics: ["apple.developer", "apple.releases", "apple.xcode"]
+    notes: "Official Apple release stream for SDK, Xcode, and platform release updates"
+
+  - name: WebKit Blog
+    url: https://webkit.org/blog/feed/
+    poll_interval_seconds: 3600
+    priority: 86
+    category: official_blog
+    topics: ["apple.webkit", "browser.webkit"]
+    notes: "WebKit platform updates impacting Safari behavior and web compatibility"
+
+  - name: Apple Developer Forums (Xcode tag)
+    url: https://developer.apple.com/forums/tags/rssFeed/xcode
+    poll_interval_seconds: 1800
+    priority: 82
+    category: community_signal
+    topics: ["apple.developer", "apple.xcode"]
+    notes: "Early warning signal for Xcode build, signing, and tooling breakages"
+
+  - name: Apple Developer Forums (App Store Connect tag)
+    url: https://developer.apple.com/forums/tags/rssFeed/app-store-connect
+    poll_interval_seconds: 1800
+    priority: 82
+    category: community_signal
+    topics: ["apple.developer", "apple.app-store-connect"]
+    notes: "Operational signal for App Store Connect, distribution, and review pipeline issues"
+
+  - name: Apple Developer Forums (APNS tag)
+    url: https://developer.apple.com/forums/tags/rssFeed/apns
+    poll_interval_seconds: 1800
+    priority: 80
+    category: community_signal
+    topics: ["apple.developer", "apple.apns"]
+    notes: "Community-reported APNS behavior changes and outage signals"
+
+  - name: Apple Developer Forums (Technotes tag)
+    url: https://developer.apple.com/forums/tags/rssFeed/technotes
+    poll_interval_seconds: 3600
+    priority: 76
+    category: community_signal
+    topics: ["apple.developer", "apple.technotes"]
+    notes: "Technote-driven updates and remediation guidance discussed in the forums"
+
+apple_security_advisories:
+
+  - name: Apple Security Announce (Mail-Archive mirror)
+    url: https://www.mail-archive.com/security-announce@lists.apple.com/maillist.xml
+    poll_interval_seconds: 1800
+    priority: 96
+    category: security_bulletin
+    topics: ["apple.security", "security.advisories"]
+    notes: "Practical RSS mirror of Apple security-announce advisories for patch workflows"
+
+  - name: Apple Security Announce (lists.apple.com)
+    url: https://lists.apple.com/rss/security-announce.rss
+    poll_interval_seconds: 3600
+    priority: 70
+    category: security_bulletin
+    enabled: false
+    topics: ["apple.security", "security.advisories"]
+    notes: "First-party endpoint; keep disabled unless feed health is confirmed (often blocked)"
+
+  - name: Apple Security Announce (rss.lists.apple.com)
+    url: https://rss.lists.apple.com/security-announce.rss
+    poll_interval_seconds: 3600
+    priority: 70
+    category: security_bulletin
+    enabled: false
+    topics: ["apple.security", "security.advisories"]
+    notes: "Alternate first-party endpoint; historically intermittent for automated fetchers"
+
+apple_ecosystem_news:
+
+  - name: 9to5Mac
+    url: https://9to5mac.com/feed/
+    poll_interval_seconds: 3600
+    priority: 74
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Fast Apple ecosystem signal for product, policy, and release-cycle changes"
+
+  - name: MacRumors
+    url: http://feeds.macrumors.com/MacRumors-All
+    poll_interval_seconds: 3600
+    priority: 72
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Broad Apple news and release-window tracking across hardware and software"
+
+  - name: The Verge
+    url: https://www.theverge.com/rss/index.xml
+    poll_interval_seconds: 7200
+    priority: 64
+    category: aggregator
+    topics: ["apple.ecosystem", "tech.policy"]
+    notes: "Broader tech and policy context for Apple ecosystem developments"
+
+  - name: AppleInsider
+    url: https://appleinsider.com/rss/news
+    poll_interval_seconds: 3600
+    priority: 62
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Apple feature and rollout coverage (moderate signal, medium noise)"
+
+  - name: Macworld
+    url: https://www.macworld.com/feed
+    poll_interval_seconds: 7200
+    priority: 60
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Apple operational and how-to coverage relevant for fleet and support teams"
+
+  - name: Cult of Mac
+    url: https://www.cultofmac.com/feed/
+    poll_interval_seconds: 7200
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "High-frequency Apple updates; disabled by default to limit noise"
+
+  - name: Daring Fireball
+    url: https://daringfireball.net/feeds/main
+    poll_interval_seconds: 10800
+    priority: 68
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Curated analysis of Apple platform and policy shifts"
+
+  - name: MacStories
+    url: https://www.macstories.net/feed/
+    poll_interval_seconds: 10800
+    priority: 66
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "In-depth Apple platform analysis with practical developer context"
+
+  - name: Six Colors
+    url: https://feedpress.me/sixcolors
+    poll_interval_seconds: 10800
+    priority: 64
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.general"]
+    notes: "Independent Apple ecosystem analysis and commentary"
+
+  - name: Xcode Releases
+    url: https://xcodereleases.com/api/all.rss
+    poll_interval_seconds: 1800
+    priority: 88
+    category: release_notes
+    topics: ["apple.developer", "apple.xcode", "apple.releases"]
+    notes: "Rapid third-party tracker for Xcode build and release updates"
+
+  - name: Mr. Macintosh
+    url: https://mrmacintosh.com/feed/
+    poll_interval_seconds: 3600
+    priority: 76
+    category: community_signal
+    topics: ["apple.ecosystem", "apple.macos"]
+    notes: "macOS and Apple patch-cycle operational coverage"
+
+apple_community_signals:
+
+  - name: Stack Overflow (iOS tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=ios
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.developer", "developer.q-and-a"]
+    notes: "Newest iOS developer questions (high-volume early pain signal)"
+
+  - name: Stack Overflow (Swift tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=swift
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.developer", "developer.q-and-a"]
+    notes: "Newest Swift developer questions (high-volume)"
+
+  - name: Stack Overflow (Xcode tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=xcode
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.xcode", "developer.q-and-a"]
+    notes: "Newest Xcode questions, useful for build/signing issue discovery"
+
+  - name: Stack Overflow (macOS tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=macos
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.macos", "developer.q-and-a"]
+    notes: "Newest macOS developer questions (high-volume)"
+
+  - name: Stack Overflow (APNS tag)
+    url: https://stackoverflow.com/feeds/tag?sort=newest&tagnames=apns
+    poll_interval_seconds: 3600
+    priority: 55
+    category: community_signal
+    enabled: false
+    topics: ["apple.apns", "developer.q-and-a"]
+    notes: "Newest APNS implementation and delivery issue reports"
+
+  - name: Reddit r/apple (RSS)
+    url: https://www.reddit.com/r/apple/.rss
+    poll_interval_seconds: 3600
+    priority: 45
+    category: community_signal
+    enabled: false
+    topics: ["apple.ecosystem", "community.reddit"]
+    notes: "High-volume community chatter; disabled by default due noise"
+
+# =============================================================================
 # Indirect Cloud Signals (Optional/Curated)
 # =============================================================================
 cloud_indirect_signals:
@@ -514,7 +758,7 @@ aggregators:
 
   # Ars Technica (optional)
   - name: Ars Technica
-    url: https://arstechnica.com/feed/
+    url: https://feeds.arstechnica.com/arstechnica/index/
     poll_interval_seconds: 7200  # Every 2 hours
     priority: 55
     category: aggregator
@@ -731,5 +975,5 @@ hnrss_custom:
 # Every 2-4 hours: Security bulletins, research blogs, InfoQ, lower-priority sources
 # Daily: GitHub trending, GitHub releases
 #
-# Total sources (default enabled): ~48 RSS feeds + HN + 8 subreddits
-# Estimated daily RSS polls (enabled feeds): ~1100 (well within rate limits)
+# Total sources (default enabled): ~67 RSS feeds + HN + 8 subreddits
+# Estimated daily RSS polls (enabled feeds): ~1650 (well within rate limits)

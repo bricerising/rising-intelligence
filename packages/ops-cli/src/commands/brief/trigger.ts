@@ -707,6 +707,7 @@ class TriggerBriefConfigBuilder {
       reportEndAtIso,
       llmProvider:
         getStringFlag(this.flags, "llm-provider")
+        || getEnvString("BRIEF_LLM_PROVIDER")
         || getEnvString("LLM_PROVIDER")
         || "codex-cli",
       dryRun: getBooleanFlag(this.flags, "dry-run"),
