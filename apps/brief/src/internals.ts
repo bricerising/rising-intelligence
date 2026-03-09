@@ -1,21 +1,52 @@
 /**
  * Brief service internal barrel.
  *
- * Consolidates all foundation modules — config, health, domain types, error
- * classification, evidence grounding, budget tracking, persistence, publishing,
- * query-mode resolution, deserialization, and Kafka message routing — behind a
- * single import surface.
+ * Consolidates all foundation modules behind a single import surface.
+ * Higher-level orchestrators (process.ts, runtime-factory.ts) import from
+ * here rather than reaching into individual internal modules.
  *
- * Higher-level orchestrators (process.ts, runtime-factory.ts) import from here
- * rather than reaching into individual internal modules.  The outer service
- * barrel (service.ts) re-exports this surface together with the orchestration
- * layer to form the full public API.
+ * The outer service barrel (service.ts) re-exports a curated subset of this
+ * surface to form the public API visible to the entrypoint and message handler.
+ *
+ * Internal layering (bottom → top):
+ *
+ *   Layer 1 — Config & types        (config, types, processing-errors)
+ *   Layer 2 — Health & monitoring    (health, postgres-health-proxy)
+ *   Layer 3 — Infrastructure adapters (redis, budget-mirror, budget-ledger,
+ *             deserialize, topic-message-handlers, topic-glob,
+ *             result-payload-adapter, result-store-facade,
+ *             publishing-facade, llm/codex-cli)
+ *   Layer 4 — Domain logic           (grounding-facade, query-mode-selection,
+ *             internal-highlight-strategy, query-mode-request-facade)
  */
 
-// --- Config ---
+// ─── Layer 1: Config & types ────────────────────────────────────────────────
+
 export { getConfig, loadConfig, type Config } from "./config.js";
 
-// --- Health / metrics ---
+export type {
+  ParsedSummaryRequest,
+  ParsedSummaryEvidence,
+  ParsedSummaryTopic,
+  ParsedSummaryMetric,
+  ParsedSummaryQuery,
+  ParsedSummaryReport,
+  ParsedTrendSnapshot,
+  SummaryRequestType,
+  EvidenceStrategy,
+  LlmProvider,
+} from "./types.js";
+
+export {
+  LlmGenerationError,
+  NonRetryableProcessingError,
+  toGroundingError,
+  toNoCoverageError,
+  classifyRetryableFailureCode,
+} from "./processing-errors.js";
+
+// ─── Layer 2: Health & monitoring ───────────────────────────────────────────
+
 export {
   createHealthContext,
   startHealthServer,
@@ -40,18 +71,12 @@ export {
   type Metrics,
 } from "./health.js";
 
-// --- Postgres health proxy ---
 export { createPostgresHealthProxy } from "./postgres-health-proxy.js";
 
-// --- Grounding facade ---
-export {
-  createSummaryRequestGroundingFacade,
-  EVIDENCE_EXCERPT_MAX_LENGTH,
-  type SummaryRequestGroundingFacade,
-  type SummaryRequestPayloadOptions,
-} from "./grounding-facade.js";
+// ─── Layer 3: Infrastructure adapters ───────────────────────────────────────
 
-// --- Budget ledger ---
+export { createRedisClient, disconnectRedis } from "./redis.js";
+
 export {
   createBriefBudgetLedger,
   type BriefBudgetLedger,
@@ -62,77 +87,11 @@ export {
   type SettleBudgetInput,
 } from "./budget-ledger.js";
 
-// --- Domain types ---
-export type {
-  ParsedSummaryRequest,
-  ParsedSummaryEvidence,
-  ParsedSummaryTopic,
-  ParsedSummaryMetric,
-  ParsedSummaryQuery,
-  ParsedSummaryReport,
-  ParsedTrendSnapshot,
-  SummaryRequestType,
-  EvidenceStrategy,
-  LlmProvider,
-} from "./types.js";
-
-// --- Processing errors ---
-export {
-  LlmGenerationError,
-  NonRetryableProcessingError,
-  toGroundingError,
-  toNoCoverageError,
-  classifyRetryableFailureCode,
-} from "./processing-errors.js";
-
-// --- Result payload / store ---
-export {
-  parseBriefResultPayload,
-  buildFailureBriefResultPayload,
-  type BriefResultPayload,
-} from "./result-payload-adapter.js";
-export {
-  createBriefResultStore,
-  type BriefResultStore,
-  type StoredBriefResult,
-  type PersistBriefResultOutcome,
-} from "./result-store-facade.js";
-
-// --- Publishing ---
-export {
-  createBriefResultPublisher,
-  type BriefResultPublisher,
-  type CreateBriefResultPublisherInput,
-} from "./publishing-facade.js";
-
-// --- Query-mode resolution ---
-export {
-  createQueryModeRequestResolver,
-  type QueryModeRequestResolver,
-  type QueryModeRequestResolverContext,
-} from "./query-mode-request-facade.js";
-
-// --- Query-mode selection helpers ---
-export {
-  countTopicRelevanceTermMatches,
-  getTopLevelTopicGroup,
-} from "./query-mode-selection.js";
-
-// --- Internal highlight strategy ---
-export {
-  buildInternalSuggestedAction,
-  buildInternalWhyItMatters,
-  detectSignalCategories,
-  type SignalCategory,
-} from "./internal-highlight-strategy.js";
-
-// --- Deserialisation ---
 export {
   deserializeSummaryRequest,
   deserializeTrendSnapshot,
 } from "./deserialize.js";
 
-// --- Topic message handlers ---
 export {
   createTopicMessageHandlerMap,
   runWithInFlightHeartbeats,
@@ -141,8 +100,50 @@ export {
   type TopicMessageHandler,
 } from "./topic-message-handlers.js";
 
-// --- Redis ---
-export { createRedisClient, disconnectRedis } from "./redis.js";
+export {
+  parseBriefResultPayload,
+  buildFailureBriefResultPayload,
+  type BriefResultPayload,
+} from "./result-payload-adapter.js";
 
-// --- LLM / Codex CLI ---
+export {
+  createBriefResultStore,
+  type BriefResultStore,
+  type StoredBriefResult,
+  type PersistBriefResultOutcome,
+} from "./result-store-facade.js";
+
+export {
+  createBriefResultPublisher,
+  type BriefResultPublisher,
+  type CreateBriefResultPublisherInput,
+} from "./publishing-facade.js";
+
 export { executeCodexCli } from "./llm/codex-cli.js";
+
+// ─── Layer 4: Domain logic ──────────────────────────────────────────────────
+
+export {
+  createSummaryRequestGroundingFacade,
+  EVIDENCE_EXCERPT_MAX_LENGTH,
+  type SummaryRequestGroundingFacade,
+  type SummaryRequestPayloadOptions,
+} from "./grounding-facade.js";
+
+export {
+  countTopicRelevanceTermMatches,
+  getTopLevelTopicGroup,
+} from "./query-mode-selection.js";
+
+export {
+  buildInternalSuggestedAction,
+  buildInternalWhyItMatters,
+  detectSignalCategories,
+  type SignalCategory,
+} from "./internal-highlight-strategy.js";
+
+export {
+  createQueryModeRequestResolver,
+  type QueryModeRequestResolver,
+  type QueryModeRequestResolverContext,
+} from "./query-mode-request-facade.js";

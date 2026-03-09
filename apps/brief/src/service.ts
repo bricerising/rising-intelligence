@@ -1,30 +1,57 @@
 /**
  * Brief service boundary.
  *
- * This barrel consolidates all brief-service concerns — process orchestration,
- * grounding, budget ledger, config, health, and LLM integration — behind a
- * single ownership surface.  Consumers (index.ts, brief-service.ts) import
- * from here rather than reaching into individual internal modules.
+ * This barrel is the single public API of the brief service.  The entrypoint
+ * (index.ts) and message handler (brief-service.ts) import exclusively from
+ * here.  Internal orchestrators (process.ts, runtime-factory.ts) import from
+ * the narrower internals barrel instead.
  *
- * Internally the service is organized in two layers:
+ * Layering (entrypoint → orchestration → domain → infrastructure):
  *
- *   internals  — foundation modules (config, health, types, errors,
- *                grounding, budget, persistence, publishing, query-mode,
- *                deserialization, topic handlers, redis, LLM adapters)
+ *   service.ts          ← public boundary (this file)
+ *     ├─ process.ts          ← orchestration
+ *     ├─ runtime-factory.ts  ← orchestration / composition root
+ *     └─ internals.ts        ← foundation barrel
+ *          ├─ config, types, processing-errors     (config & types)
+ *          ├─ health, postgres-health-proxy         (health / metrics)
+ *          ├─ redis, budget-ledger, deserialize,    (infrastructure adapters)
+ *          │  topic-message-handlers, result-*,
+ *          │  publishing-facade, llm/codex-cli
+ *          └─ grounding-facade, query-mode-*,       (domain logic)
+ *             internal-highlight-strategy
  *
- *   process / runtime-factory — orchestration that depends on the internals
- *
- * This file re-exports both layers as the full public API.
+ * Only symbols required by the entrypoint and message handler are re-exported
+ * here.  Orchestration-internal symbols (e.g. executeCodexCli,
+ * countTopicRelevanceTermMatches, buildInternalSuggestedAction) remain
+ * accessible only through internals.ts.
  */
 
-// --- Foundation (internals barrel) ---
+// ── Config & types (from internals) ─────────────────────────────────────────
+
 export {
-  // Config
   getConfig,
   loadConfig,
   type Config,
+  type ParsedSummaryRequest,
+  type ParsedSummaryEvidence,
+  type ParsedSummaryTopic,
+  type ParsedSummaryMetric,
+  type ParsedSummaryQuery,
+  type ParsedSummaryReport,
+  type ParsedTrendSnapshot,
+  type SummaryRequestType,
+  type EvidenceStrategy,
+  type LlmProvider,
+  LlmGenerationError,
+  NonRetryableProcessingError,
+  toGroundingError,
+  toNoCoverageError,
+  classifyRetryableFailureCode,
+} from "./internals.js";
 
-  // Health / metrics
+// ── Health & monitoring (from internals) ────────────────────────────────────
+
+export {
   createHealthContext,
   startHealthServer,
   getHealthStatus,
@@ -46,10 +73,12 @@ export {
   type BriefGenerationStatus,
   type TokenDirection,
   type Metrics,
-
-  // Postgres health proxy
   createPostgresHealthProxy,
+} from "./internals.js";
 
+// ── Infrastructure adapters (from internals) ────────────────────────────────
+
+export {
   // Grounding facade
   createSummaryRequestGroundingFacade,
   EVIDENCE_EXCERPT_MAX_LENGTH,
@@ -64,25 +93,6 @@ export {
   type ReserveBudgetInput,
   type ReleaseBudgetInput,
   type SettleBudgetInput,
-
-  // Domain types
-  type ParsedSummaryRequest,
-  type ParsedSummaryEvidence,
-  type ParsedSummaryTopic,
-  type ParsedSummaryMetric,
-  type ParsedSummaryQuery,
-  type ParsedSummaryReport,
-  type ParsedTrendSnapshot,
-  type SummaryRequestType,
-  type EvidenceStrategy,
-  type LlmProvider,
-
-  // Processing errors
-  LlmGenerationError,
-  NonRetryableProcessingError,
-  toGroundingError,
-  toNoCoverageError,
-  classifyRetryableFailureCode,
 
   // Result payload / store
   parseBriefResultPayload,
@@ -119,7 +129,8 @@ export {
   disconnectRedis,
 } from "./internals.js";
 
-// --- Process orchestration ---
+// ── Process orchestration ───────────────────────────────────────────────────
+
 export {
   processSummaryRequest,
   createSummaryRequestProcessor,
@@ -127,7 +138,8 @@ export {
   type SummaryRequestProcessor,
 } from "./process.js";
 
-// --- Runtime factory ---
+// ── Runtime factory ─────────────────────────────────────────────────────────
+
 export {
   createBriefRuntimeFactory,
   type BriefRuntimeContext,
