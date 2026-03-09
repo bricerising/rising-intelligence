@@ -69,6 +69,10 @@ export interface CollectorAdapterBuildResult {
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
 }
 
+export interface CollectorAdapterCatalog {
+  buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
+}
+
 type AdapterEnabledPredicate = (config: CollectorAdapterFactoryConfig) => boolean;
 
 interface AdapterConstructors {
@@ -255,7 +259,7 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
 
 const DEFAULT_ADAPTER_DEFINITIONS = createAdapterDefinitions();
 
-export class CollectorAdapterFactory {
+export class CollectorAdapterFactory implements CollectorAdapterCatalog {
   private readonly constructors: AdapterConstructors;
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
@@ -268,7 +272,9 @@ export class CollectorAdapterFactory {
     this.definitions = DEFAULT_ADAPTER_DEFINITIONS;
   }
 
-  build(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult {
+  buildIngestionAdapters(
+    input: BuildCollectorAdaptersInput
+  ): CollectorAdapterBuildResult {
     const adapters: SourceAdapter[] = [];
     const unsupportedEnabledAdapters: UnsupportedAdapterName[] = [];
 
@@ -289,6 +295,10 @@ export class CollectorAdapterFactory {
       adapters,
       unsupportedEnabledAdapters,
     };
+  }
+
+  build(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult {
+    return this.buildIngestionAdapters(input);
   }
 }
 

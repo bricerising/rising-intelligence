@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBriefBudgetLedger } from "../src/budget-ledger.js";
+import {
+  createBriefBudgetGovernor,
+  createBriefBudgetLedger,
+} from "../src/budget-ledger.js";
 
 function makeLogger() {
   return {
@@ -185,5 +188,43 @@ describe("createBriefBudgetLedger", () => {
     expect(released).toBe(1.1);
     expect(settled).toBe(0);
     expect(redis.set).toHaveBeenCalledWith("brief:budget:2026-02-06", "0", "EX", 172800);
+  });
+
+  it("exposes a budget governor contract over the ledger", async () => {
+    const state: BudgetState = { spentUsd: 0.5 };
+    const prisma = makePrisma(state);
+    const redis = makeRedis();
+    const logger = makeLogger();
+    const mirrorCommand = { execute: vi.fn().mockResolvedValue(undefined) };
+
+    redis.eval.mockResolvedValue([1, "0.75"]);
+
+    const governor = createBriefBudgetGovernor({
+      prisma,
+      redis,
+      logger,
+      mirrorCommand,
+    });
+
+    const decision = await governor.authorize({
+      dateKey: "2026-02-06",
+      dailyBudgetUsd: 5,
+      estimatedCostUsd: 0.25,
+    });
+    const rolledBack = await governor.rollback(decision);
+    const settled = await governor.settle({
+      decision,
+      actualCostUsd: 0.1,
+    });
+
+    expect(decision).toEqual({
+      authorized: true,
+      dateKey: "2026-02-06",
+      dailyBudgetUsd: 5,
+      reservedCostUsd: 0.25,
+      spentUsd: 0.75,
+    });
+    expect(rolledBack).toBe(0.25);
+    expect(settled).toBe(0.1);
   });
 });

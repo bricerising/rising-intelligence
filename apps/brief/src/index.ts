@@ -26,6 +26,13 @@ const briefService = createBriefService();
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
 
+function createBriefConsumerTopics(ctx: RuntimeContext): [string, string] {
+  return [
+    ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS,
+    ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS,
+  ];
+}
+
 function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessageHandler> {
   const commands: readonly TopicMessageCommand[] = [
     {
@@ -110,7 +117,7 @@ async function createRuntime(): Promise<RuntimeContext> {
 
 async function runConsumer(ctx: RuntimeContext): Promise<void> {
   await ctx.kafkaConsumerContext.consumer.consume({
-    topics: [ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS, ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS],
+    topics: createBriefConsumerTopics(ctx),
     ctx,
     strategy: createBatchTopicHandlers(ctx),
     fromBeginning: false,

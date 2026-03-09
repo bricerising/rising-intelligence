@@ -1,7 +1,7 @@
 import { Prisma, Source } from "@rising-intelligence/db";
 import { z } from "zod";
 import type { EvidenceStrategy } from "./types.js";
-import { matchesAnyTopicGlob } from "./topic-glob.js";
+import type { TopicGlobMatcherSet } from "./topic-glob.js";
 
 export interface RawEventForSelection {
   eventId: string;
@@ -453,7 +453,7 @@ export function selectTopLevelTopicGroups(
 export function rankTopicsFromSnapshots(
   snapshots: ReadonlyArray<{ generatedAt: Date; snapshot: Prisma.JsonValue }>,
   requestedAt: Date,
-  topicMatchers: readonly RegExp[]
+  topicMatchers: TopicGlobMatcherSet
 ): RankedTopicScore[] {
   const byTopic = new Map<string, RankedTopicAccumulator>();
 
@@ -467,7 +467,7 @@ export function rankTopicsFromSnapshots(
     const generatedAtMs = row.generatedAt.getTime();
     for (const metric of parsedSnapshot.data.topics) {
       const topic = metric.topic.trim();
-      if (!topic || !matchesAnyTopicGlob(topic, topicMatchers)) {
+      if (!topic || !topicMatchers.matches(topic)) {
         continue;
       }
 

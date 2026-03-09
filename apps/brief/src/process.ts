@@ -22,8 +22,8 @@ import {
 } from "@rising-intelligence/shared/lifecycle";
 import type pino from "pino";
 import {
-  createBriefBudgetLedger,
-  type BriefBudgetLedger,
+  createBriefBudgetGovernor,
+  type BriefBudgetGovernor,
   type CreateBriefBudgetLedgerInput,
   type Config,
   type HealthContext,
@@ -79,7 +79,7 @@ export interface SummaryRequestProcessor {
 }
 
 interface SummaryRequestProcessorDependencies {
-  createBriefBudgetLedger(input: CreateBriefBudgetLedgerInput): BriefBudgetLedger;
+  createBriefBudgetGovernor(input: CreateBriefBudgetLedgerInput): BriefBudgetGovernor;
   createBriefResultPublisher(input: CreateBriefResultPublisherInput): BriefResultPublisher;
   createBriefResultStore(
     prisma: PrismaClient,
@@ -99,7 +99,7 @@ interface SummaryRequestRuntime {
 }
 
 const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
-  createBriefBudgetLedger,
+  createBriefBudgetGovernor,
   createBriefResultPublisher(input): BriefResultPublisher {
     return createBriefResultPublisher(input);
   },
@@ -133,7 +133,7 @@ class SummaryRequestRuntimeFactory {
     };
 
     const orchestratorRuntime: OrchestratorRuntime = {
-      budgetLedger: this.dependencies.createBriefBudgetLedger({
+      budgetGovernor: this.dependencies.createBriefBudgetGovernor({
         prisma: ctx.prisma,
         redis: ctx.redis,
         logger,

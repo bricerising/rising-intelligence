@@ -15,7 +15,11 @@ import {
 import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
 import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
 import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
-import { createCollectorPublisher } from "./publishing-facade.js";
+import {
+  createCollectorHeartbeatPublisher,
+  createCollectorIngestionPublisher,
+  createCollectorPublisher,
+} from "./publishing-facade.js";
 import {
   createCollectorRuntimeFactory,
   type CollectorRuntimeContext,
@@ -57,6 +61,8 @@ async function runAdapter(
     connection: kafkaContext.producer,
     logger: adapterLogger,
   });
+  const ingestionPublisher = createCollectorIngestionPublisher(publisher);
+  const heartbeatPublisher = createCollectorHeartbeatPublisher(publisher);
   const backoff = new BackoffManager(adapter.name, adapterLogger);
   const errorPolicy = createAdapterErrorPolicy();
   const eventProcessor = createCollectorEventProcessor({
@@ -66,8 +72,7 @@ async function runAdapter(
     checkpointStore,
     healthContext,
     logger: adapterLogger,
-    publishRawEvent: (event) => publisher.publishRawEvent(event),
-    publishDeadLetterEvent: (event) => publisher.publishDeadLetterEvent(event),
+    publisher: ingestionPublisher,
   });
 
   while (!ctx.shutdownRequested) {
@@ -119,7 +124,7 @@ async function runAdapter(
         items_fetched: batchCount,
         status: "healthy",
       };
-      await publisher.publishHeartbeat(heartbeat);
+      await heartbeatPublisher.publishSourceHeartbeat(heartbeat);
 
       adapterLogger.info({ batchCount }, "Poll cycle complete");
       backoff.reset();
@@ -148,7 +153,7 @@ async function runAdapter(
         error_message: error instanceof Error ? error.message : String(error),
       };
       try {
-        await publisher.publishHeartbeat(heartbeat);
+        await heartbeatPublisher.publishSourceHeartbeat(heartbeat);
       } catch {
         // Ignore heartbeat publish errors
       }

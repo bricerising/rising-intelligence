@@ -10,7 +10,8 @@ import { BriefStatus } from "@rising-intelligence/db";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import type {
-  BriefBudgetLedger,
+  BriefBudgetDecision,
+  BriefBudgetGovernor,
 } from "./budget-ledger.js";
 import type { HealthContext } from "./health.js";
 import {
@@ -52,7 +53,7 @@ export interface OrchestratorContext {
 // ── Runtime collaborators built per-request ─────────────────────────────────
 
 export interface OrchestratorRuntime {
-  budgetLedger: BriefBudgetLedger;
+  budgetGovernor: BriefBudgetGovernor;
   publisher: BriefResultPublisher;
   resultStore: BriefResultStore;
   generationFacade: SummaryRequestGenerationFacade;
@@ -93,20 +94,28 @@ async function republishPersistedResult(
   return existing.status;
 }
 
+function requireBudgetDecision(
+  decision: BriefBudgetDecision | null
+): BriefBudgetDecision {
+  if (!decision) {
+    throw new Error("Budget decision is required");
+  }
+
+  return decision;
+}
+
 async function rollbackBudgetReservation(
   ctx: OrchestratorContext,
-  budgetLedger: BriefBudgetLedger,
+  budgetGovernor: BriefBudgetGovernor,
   logger: pino.Logger,
-  dateKey: string,
-  reservedAmountUsd: number,
-  dailyBudgetUsd: number
+  decision: BriefBudgetDecision
 ): Promise<void> {
-  const spentBudgetUsd = await budgetLedger.release({
-    dateKey,
-    amountUsd: reservedAmountUsd,
-  });
+  const spentBudgetUsd = await budgetGovernor.rollback(decision);
   ctx.healthContext.redisHealthy = true;
-  setBudgetRemainingUsd(ctx.healthContext, Math.max(0, dailyBudgetUsd - spentBudgetUsd));
+  setBudgetRemainingUsd(
+    ctx.healthContext,
+    Math.max(0, decision.dailyBudgetUsd - spentBudgetUsd)
+  );
   logger.info({ spentBudgetUsd }, "Rolled back brief budget reservation");
 }
 
@@ -131,7 +140,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
     input: PreparedBriefingRequest
   ): Promise<void> {
     const {
-      budgetLedger,
+      budgetGovernor,
       publisher,
       resultStore,
       generationFacade,
@@ -172,18 +181,16 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
     const dailyBudgetUsd =
       input.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
     const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(input));
-    let budgetReserved = false;
+    let budgetDecision: BriefBudgetDecision | null = null;
     let spentBudgetUsd = 0;
-    let reservedCostUsd = estimatedCostUsd;
 
     try {
-      const reservation = await budgetLedger.reserve({
+      budgetDecision = await budgetGovernor.authorize({
         dateKey,
         dailyBudgetUsd,
-        amountUsd: reservedCostUsd,
+        estimatedCostUsd,
       });
-      budgetReserved = reservation.reserved;
-      spentBudgetUsd = reservation.spentUsd;
+      spentBudgetUsd = budgetDecision.spentUsd;
       ctx.healthContext.redisHealthy = true;
       setBudgetRemainingUsd(
         ctx.healthContext,
@@ -196,7 +203,9 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       throw error;
     }
 
-    if (!budgetReserved) {
+    const currentBudgetDecision = requireBudgetDecision(budgetDecision);
+
+    if (!currentBudgetDecision.authorized) {
       incrementBudgetExceeded(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
       await emitFailureResult(
@@ -212,7 +221,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       logger.info(
         {
           spentBudgetUsd,
-          reservedCostUsd,
+          reservedCostUsd: currentBudgetDecision.reservedCostUsd,
           dailyBudgetUsd,
         },
         "Skipped summary request due to budget limit"
@@ -233,13 +242,11 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       if (persisted === "duplicate") {
         await rollbackBudgetReservation(
           ctx,
-          budgetLedger,
+          budgetGovernor,
           logger,
-          dateKey,
-          reservedCostUsd,
-          dailyBudgetUsd
+          requireBudgetDecision(budgetDecision)
         );
-        budgetReserved = false;
+        budgetDecision = null;
         incrementDuplicatesSkipped(ctx.healthContext);
         incrementGeneration(ctx.healthContext, "skipped");
         const republishedStatus = await republishPersistedResult(
@@ -256,14 +263,15 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       persistedCreated = true;
 
       // ── Phase 4: Budget settlement ────────────────────────────────────
-      const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
+      const costDeltaUsd = normalizeUsdDelta(
+        successResult.metrics.costUsd - requireBudgetDecision(budgetDecision).reservedCostUsd
+      );
       if (costDeltaUsd !== 0) {
         try {
-          spentBudgetUsd = await budgetLedger.settle({
-            dateKey,
-            deltaUsd: costDeltaUsd,
+          spentBudgetUsd = await budgetGovernor.settle({
+            decision: requireBudgetDecision(budgetDecision),
+            actualCostUsd: successResult.metrics.costUsd,
           });
-          reservedCostUsd = normalizeUsd(successResult.metrics.costUsd);
           ctx.healthContext.redisHealthy = true;
         } catch (error) {
           ctx.healthContext.redisHealthy = false;
@@ -297,17 +305,15 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       );
     } catch (error) {
       // ── Phase 6: Failure handling ─────────────────────────────────────
-      if (budgetReserved && !persistedCreated) {
+      if (budgetDecision?.authorized && !persistedCreated) {
         try {
           await rollbackBudgetReservation(
             ctx,
-            budgetLedger,
+            budgetGovernor,
             logger,
-            dateKey,
-            reservedCostUsd,
-            dailyBudgetUsd
+            requireBudgetDecision(budgetDecision)
           );
-          budgetReserved = false;
+          budgetDecision = null;
         } catch (rollbackError) {
           ctx.healthContext.redisHealthy = false;
           incrementError(ctx.healthContext, "redis_error");

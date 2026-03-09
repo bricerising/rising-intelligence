@@ -16,6 +16,7 @@ import {
   extractTopics as defaultTopicExtractor,
   type CompiledAllowlist,
 } from "@rising-intelligence/pipeline";
+import type { CollectorIngestionPublisher } from "./publishing-facade.js";
 import type { DeadLetterEvent, RawEvent, Source } from "./types.js";
 
 export type CollectorEventProcessResult =
@@ -38,8 +39,7 @@ export interface CollectorEventProcessorInput {
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
   healthContext: HealthContext;
   logger: Logger;
-  publishRawEvent(event: RawEvent): Promise<void>;
-  publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
+  publisher: CollectorIngestionPublisher;
   now?: () => Date;
   generateDlqId?: () => string;
   topicExtractor?: (
@@ -79,8 +79,7 @@ interface RuntimeContext {
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
   healthContext: HealthContext;
   logger: Logger;
-  publishRawEvent(event: RawEvent): Promise<void>;
-  publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
+  publisher: CollectorIngestionPublisher;
   now: () => Date;
   generateDlqId: () => string;
   topicExtractor: (
@@ -220,7 +219,7 @@ function createValidationStep(): ProcessingStep {
         raw_reference: state.event.url ?? state.event.event_id,
       };
 
-      await runtime.publishDeadLetterEvent(dlqEvent);
+      await runtime.publisher.publishRejectedEvent(dlqEvent);
       runtime.validationFailureStrategy.handle({
         runtime,
         event: state.event,
@@ -258,7 +257,7 @@ function createPublishStep(): ProcessingStep {
   return {
     name: "publish",
     async execute({ runtime, state }): Promise<CollectorEventProcessResult> {
-      await runtime.publishRawEvent(state.event);
+      await runtime.publisher.publishAcceptedEvent(state.event);
       runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.event_id);
       incrementEventsIngested(runtime.healthContext, runtime.adapterSource);
       runtime.healthContext.lastEventAt = runtime.now();

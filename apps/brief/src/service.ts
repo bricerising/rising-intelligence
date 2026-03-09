@@ -86,14 +86,13 @@ export {
   EVIDENCE_EXCERPT_MAX_LENGTH,
   type SummaryRequestGroundingFacade,
 
-  // Budget ledger
-  createBriefBudgetLedger,
-  type BriefBudgetLedger,
+  // Budget governance
+  createBriefBudgetGovernor,
+  type BriefBudgetDecision,
+  type BriefBudgetGovernor,
   type CreateBriefBudgetLedgerInput,
-  type BudgetReservationResult,
-  type ReserveBudgetInput,
-  type ReleaseBudgetInput,
-  type SettleBudgetInput,
+  type AuthorizeBudgetInput,
+  type SettleBudgetDecisionInput,
 
   // Result payload / store
   parseBriefResultPayload,

@@ -62,8 +62,8 @@ interface TestHarness {
   processor: ReturnType<typeof createCollectorEventProcessor>;
   healthContext: ReturnType<typeof createHealthContext>;
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
-  publishRawEvent: ReturnType<typeof vi.fn>;
-  publishDeadLetterEvent: ReturnType<typeof vi.fn>;
+  publishAcceptedEvent: ReturnType<typeof vi.fn>;
+  publishRejectedEvent: ReturnType<typeof vi.fn>;
 }
 
 interface CreateHarnessOptions {
@@ -79,8 +79,8 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
 
   const checkpointStore = createCheckpointStore(hasSeen);
   const healthContext = createHealthContext();
-  const publishRawEvent = vi.fn(async (_event: RawEvent) => undefined);
-  const publishDeadLetterEvent = vi.fn(async (_event: DeadLetterEvent) => undefined);
+  const publishAcceptedEvent = vi.fn(async (_event: RawEvent) => undefined);
+  const publishRejectedEvent = vi.fn(async (_event: DeadLetterEvent) => undefined);
 
   const fixedNow = new Date("2026-02-10T12:00:00.000Z");
   const processor = createCollectorEventProcessor({
@@ -90,8 +90,10 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
     checkpointStore,
     healthContext,
     logger: createLogger(),
-    publishRawEvent,
-    publishDeadLetterEvent,
+    publisher: {
+      publishAcceptedEvent,
+      publishRejectedEvent,
+    },
     now: () => fixedNow,
     generateDlqId: () => "dlq:test",
   });
@@ -100,8 +102,8 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
     processor,
     healthContext,
     checkpointStore,
-    publishRawEvent,
-    publishDeadLetterEvent,
+    publishAcceptedEvent,
+    publishRejectedEvent,
   };
 }
 
@@ -111,8 +113,8 @@ describe("collector ingestion pipeline", () => {
       processor,
       healthContext,
       checkpointStore,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness();
 
     const event = createEvent();
@@ -122,8 +124,8 @@ describe("collector ingestion pipeline", () => {
       status: "ingested",
       topics: ["aws"],
     });
-    expect(publishRawEvent).toHaveBeenCalledWith(event);
-    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(publishRejectedEvent).not.toHaveBeenCalled();
     expect(checkpointStore.markSeen).toHaveBeenCalledWith("rss", "evt-1");
     expect(event.tags).toEqual(["aws"]);
     expect(healthContext.metrics.eventsIngested.get("rss")).toBe(1);
@@ -136,8 +138,8 @@ describe("collector ingestion pipeline", () => {
   it("preserves existing market tags while adding canonical topics", async () => {
     const {
       processor,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness();
 
     const event = createEvent({
@@ -150,15 +152,15 @@ describe("collector ingestion pipeline", () => {
       topics: ["aws"],
     });
     expect(event.tags).toEqual(["market.pos", "aws"]);
-    expect(publishRawEvent).toHaveBeenCalledWith(event);
-    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(publishRejectedEvent).not.toHaveBeenCalled();
   });
 
   it("normalizes and deduplicates existing tags before publishing", async () => {
     const {
       processor,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness();
 
     const event = createEvent({
@@ -171,8 +173,8 @@ describe("collector ingestion pipeline", () => {
       topics: ["aws"],
     });
     expect(event.tags).toEqual(["market.pos", "aws"]);
-    expect(publishRawEvent).toHaveBeenCalledWith(event);
-    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(publishRejectedEvent).not.toHaveBeenCalled();
   });
 
   it("short-circuits duplicates before validation and publishing", async () => {
@@ -180,8 +182,8 @@ describe("collector ingestion pipeline", () => {
       processor,
       healthContext,
       checkpointStore,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness({ hasSeen: true });
 
     const result = await processor.process(createEvent());
@@ -189,8 +191,8 @@ describe("collector ingestion pipeline", () => {
     expect(result).toEqual<CollectorEventProcessResult>({ status: "duplicate" });
     expect(checkpointStore.hasSeen).toHaveBeenCalledWith("rss", "evt-1");
     expect(checkpointStore.markSeen).not.toHaveBeenCalled();
-    expect(publishRawEvent).not.toHaveBeenCalled();
-    expect(publishDeadLetterEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).not.toHaveBeenCalled();
+    expect(publishRejectedEvent).not.toHaveBeenCalled();
     expect(healthContext.metrics.eventsIngested.size).toBe(0);
     expect(healthContext.metrics.eventsFailed.size).toBe(0);
     expect(healthContext.metrics.topicsExtracted.size).toBe(0);
@@ -202,8 +204,8 @@ describe("collector ingestion pipeline", () => {
       processor,
       healthContext,
       checkpointStore,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness();
 
     const invalidEvent = createEvent({
@@ -218,9 +220,9 @@ describe("collector ingestion pipeline", () => {
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });
-    expect(publishRawEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).not.toHaveBeenCalled();
     expect(checkpointStore.markSeen).not.toHaveBeenCalled();
-    expect(publishDeadLetterEvent).toHaveBeenCalledWith(
+    expect(publishRejectedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         dlq_id: "dlq:test",
         source: "rss",
@@ -247,8 +249,8 @@ describe("collector ingestion pipeline", () => {
       processor,
       healthContext,
       checkpointStore,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness({
       adapterName: "hackernews",
       adapterSource: "hackernews",
@@ -269,9 +271,9 @@ describe("collector ingestion pipeline", () => {
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });
-    expect(publishRawEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).not.toHaveBeenCalled();
     expect(checkpointStore.markSeen).not.toHaveBeenCalled();
-    expect(publishDeadLetterEvent).toHaveBeenCalledWith(
+    expect(publishRejectedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "hackernews",
         error_code: "VALIDATION_FAILED",
@@ -302,8 +304,8 @@ describe("collector ingestion pipeline", () => {
       processor,
       healthContext,
       checkpointStore,
-      publishRawEvent,
-      publishDeadLetterEvent,
+      publishAcceptedEvent,
+      publishRejectedEvent,
     } = createHarness();
 
     const result = await processor.process(event);
@@ -312,9 +314,9 @@ describe("collector ingestion pipeline", () => {
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });
-    expect(publishRawEvent).not.toHaveBeenCalled();
+    expect(publishAcceptedEvent).not.toHaveBeenCalled();
     expect(checkpointStore.markSeen).not.toHaveBeenCalled();
-    expect(publishDeadLetterEvent).toHaveBeenCalledWith(
+    expect(publishRejectedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         dlq_id: "dlq:test",
         source: "rss",

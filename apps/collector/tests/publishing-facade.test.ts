@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
-import { TOPICS, createCollectorPublisher } from "../src/publishing-facade.js";
+import {
+  TOPICS,
+  createCollectorHeartbeatPublisher,
+  createCollectorIngestionPublisher,
+  createCollectorPublisher,
+} from "../src/publishing-facade.js";
 import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "../src/types.js";
 
 function createTestLogger() {
@@ -100,5 +105,60 @@ describe("collector publishing facade", () => {
       status: 1,
       items_fetched: 2,
     });
+  });
+
+  it("narrows to an ingestion publisher contract", async () => {
+    const logger = createTestLogger();
+    const connection = createMockConnection();
+    const publisher = createCollectorPublisher({ connection, logger });
+    const ingestionPublisher = createCollectorIngestionPublisher(publisher);
+
+    await ingestionPublisher.publishAcceptedEvent({
+      event_id: "evt-2",
+      source: "rss",
+      fetched_at: "2026-02-10T00:00:00.000Z",
+      text: "Ingested payload",
+    });
+    await ingestionPublisher.publishRejectedEvent({
+      dlq_id: "dlq:2",
+      occurred_at: "2026-02-10T00:00:00.000Z",
+      source: "rss",
+      error_code: "VALIDATION_FAILED",
+      error_message: "invalid",
+    });
+
+    expect(connection.publish).toHaveBeenNthCalledWith(
+      1,
+      TOPICS.RAW_EVENTS,
+      "evt-2",
+      expect.any(Buffer)
+    );
+    expect(connection.publish).toHaveBeenNthCalledWith(
+      2,
+      TOPICS.DLQ,
+      "dlq:2",
+      expect.any(Buffer)
+    );
+  });
+
+  it("narrows to a heartbeat publisher contract", async () => {
+    const logger = createTestLogger();
+    const connection = createMockConnection();
+    const publisher = createCollectorPublisher({ connection, logger });
+    const heartbeatPublisher = createCollectorHeartbeatPublisher(publisher);
+
+    await heartbeatPublisher.publishSourceHeartbeat({
+      source: "rss",
+      timestamp: "2026-02-10T00:00:00.000Z",
+      last_fetch_at: "2026-02-10T00:00:00.000Z",
+      items_fetched: 1,
+      status: "healthy",
+    });
+
+    expect(connection.publish).toHaveBeenCalledWith(
+      TOPICS.HEARTBEAT,
+      "rss",
+      expect.any(Buffer)
+    );
   });
 });

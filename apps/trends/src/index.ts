@@ -18,6 +18,15 @@ import { publishSnapshots } from "./snapshot.js";
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createTrendsRuntimeFactory();
 
+function getCollectorSignalTopics(
+  ctx: TrendsRuntimeContext
+): [string, string] {
+  return [
+    ctx.config.KAFKA_TOPIC_RAW_EVENTS,
+    ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
+  ];
+}
+
 async function initializeTrends(): Promise<TrendsRuntimeContext> {
   const config = bootstrap.getConfig();
   const logger = bootstrap.getLogger();
@@ -62,10 +71,7 @@ async function runSnapshotLoop(ctx: TrendsRuntimeContext): Promise<void> {
 
 async function runConsumer(ctx: TrendsRuntimeContext): Promise<void> {
   await ctx.kafkaConsumerContext.consumer.consume({
-    topics: [
-      ctx.config.KAFKA_TOPIC_RAW_EVENTS,
-      ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-    ],
+    topics: getCollectorSignalTopics(ctx),
     ctx,
     strategy: createBatchStrategies(ctx),
     fromBeginning: false,

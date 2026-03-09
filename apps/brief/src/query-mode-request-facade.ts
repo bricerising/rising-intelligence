@@ -15,7 +15,7 @@ import {
   selectTopLevelTopicGroups,
   type QueryModeRawEvent,
 } from "./query-mode-selection.js";
-import { compileTopicGlobMatchers } from "./topic-glob.js";
+import { createTopicGlobMatcherSet } from "./topic-glob.js";
 import type {
   EvidenceStrategy,
   ParsedSummaryRequest,
@@ -242,9 +242,9 @@ async function loadRankedTopics(
   parameters: ResolvedQueryModeParameters,
   logger: Logger
 ): Promise<RankedTopicSelection> {
-  let topicMatchers: RegExp[];
+  let topicMatchers: ReturnType<typeof createTopicGlobMatcherSet>;
   try {
-    topicMatchers = compileTopicGlobMatchers(parameters.topicGlobs);
+    topicMatchers = createTopicGlobMatcherSet(parameters.topicGlobs);
   } catch (error) {
     throw new NonRetryableProcessingError(
       `Invalid topic glob filter: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -282,7 +282,7 @@ async function loadRankedTopics(
   if (selectedRankedTopics.length === 0) {
     logger.warn(
       {
-        topicGlobCount: parameters.topicGlobs.length,
+        topicGlobCount: topicMatchers.globs.length,
         lookbackDays: parameters.lookbackDays,
       },
       "No topics matched query filters"

@@ -22,6 +22,15 @@ export interface CollectorPublisher {
   publishHeartbeat(event: CollectorHeartbeat): Promise<void>;
 }
 
+export interface CollectorIngestionPublisher {
+  publishAcceptedEvent(event: RawEvent): Promise<void>;
+  publishRejectedEvent(event: DeadLetterEvent): Promise<void>;
+}
+
+export interface CollectorHeartbeatPublisher {
+  publishSourceHeartbeat(event: CollectorHeartbeat): Promise<void>;
+}
+
 export interface CreateCollectorPublisherInput {
   connection: ProducerConnection;
   logger: Logger;
@@ -69,6 +78,29 @@ export function createCollectorPublisher(
     },
     async publishHeartbeat(event: CollectorHeartbeat): Promise<void> {
       await heartbeatPublisher.publish(event);
+    },
+  };
+}
+
+export function createCollectorIngestionPublisher(
+  publisher: Pick<CollectorPublisher, "publishRawEvent" | "publishDeadLetterEvent">
+): CollectorIngestionPublisher {
+  return {
+    async publishAcceptedEvent(event: RawEvent): Promise<void> {
+      await publisher.publishRawEvent(event);
+    },
+    async publishRejectedEvent(event: DeadLetterEvent): Promise<void> {
+      await publisher.publishDeadLetterEvent(event);
+    },
+  };
+}
+
+export function createCollectorHeartbeatPublisher(
+  publisher: Pick<CollectorPublisher, "publishHeartbeat">
+): CollectorHeartbeatPublisher {
+  return {
+    async publishSourceHeartbeat(event: CollectorHeartbeat): Promise<void> {
+      await publisher.publishHeartbeat(event);
     },
   };
 }
