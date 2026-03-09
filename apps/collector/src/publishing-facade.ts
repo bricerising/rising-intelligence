@@ -8,7 +8,14 @@ import {
   serializeHeartbeat,
   serializeRawEvent,
 } from "./serializer.js";
-import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "./types.js";
+import {
+  normalizeCollectorIngestionEvent,
+  toRawEvent,
+  type CollectorAcceptedEvent,
+  type CollectorHeartbeat,
+  type DeadLetterEvent,
+  type RawEvent,
+} from "./types.js";
 
 export const TOPICS = {
   RAW_EVENTS: "events.raw",
@@ -23,7 +30,7 @@ export interface CollectorPublisher {
 }
 
 export interface CollectorIngestionPublisher {
-  publishAcceptedEvent(event: RawEvent): Promise<void>;
+  publishAcceptedEvent(event: CollectorAcceptedEvent): Promise<void>;
   publishRejectedEvent(event: DeadLetterEvent): Promise<void>;
 }
 
@@ -86,8 +93,10 @@ export function createCollectorIngestionPublisher(
   publisher: Pick<CollectorPublisher, "publishRawEvent" | "publishDeadLetterEvent">
 ): CollectorIngestionPublisher {
   return {
-    async publishAcceptedEvent(event: RawEvent): Promise<void> {
-      await publisher.publishRawEvent(event);
+    async publishAcceptedEvent(event: CollectorAcceptedEvent): Promise<void> {
+      await publisher.publishRawEvent(
+        toRawEvent(normalizeCollectorIngestionEvent(event))
+      );
     },
     async publishRejectedEvent(event: DeadLetterEvent): Promise<void> {
       await publisher.publishDeadLetterEvent(event);

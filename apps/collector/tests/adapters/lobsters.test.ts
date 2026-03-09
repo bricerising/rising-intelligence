@@ -259,7 +259,7 @@ describe("LobstersAdapter", () => {
 
       const logger = createTestLogger();
       const adapter = new LobstersAdapter(600000, 25, createMockCheckpoints(), logger);
-      vi.spyOn(adapter as any, "itemToRawEvent").mockImplementationOnce(async () => {
+      vi.spyOn(adapter as any, "itemToCollectedContent").mockImplementationOnce(async () => {
         throw new Error("bad item");
       });
 

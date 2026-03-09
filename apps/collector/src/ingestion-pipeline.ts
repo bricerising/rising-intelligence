@@ -17,7 +17,14 @@ import {
   type CompiledAllowlist,
 } from "@rising-intelligence/pipeline";
 import type { CollectorIngestionPublisher } from "./publishing-facade.js";
-import type { DeadLetterEvent, RawEvent, Source } from "./types.js";
+import {
+  isRawEvent,
+  normalizeCollectorIngestionEvent,
+  type CollectorAcceptedEvent,
+  type CollectorIngestionEvent,
+  type DeadLetterEvent,
+  type Source,
+} from "./types.js";
 
 /**
  * Collector-internal event processing chain.
@@ -53,11 +60,12 @@ export interface CollectorEventProcessorInput {
 }
 
 export interface CollectorEventProcessor {
-  process(event: RawEvent): Promise<CollectorEventProcessResult>;
+  process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult>;
 }
 
 interface ProcessingState {
-  event: RawEvent;
+  event: CollectorIngestionEvent;
+  acceptedEvent: CollectorAcceptedEvent;
   topics: string[];
 }
 
@@ -102,7 +110,7 @@ type ProcessingStep = AsyncChainStep<ProcessingContext, CollectorEventProcessRes
 
 interface ValidationFailureStrategyContext {
   runtime: RuntimeContext;
-  event: RawEvent;
+  event: CollectorIngestionEvent;
 }
 
 interface ValidationFailureStrategy {
@@ -114,8 +122,8 @@ function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
 
-function hasRequiredFields(event: RawEvent): boolean {
-  return isNonBlank(event.event_id) && isNonBlank(event.text);
+function hasRequiredFields(event: CollectorIngestionEvent): boolean {
+  return isNonBlank(event.eventId) && isNonBlank(event.text);
 }
 
 interface RssFeedMetadata {
@@ -123,7 +131,9 @@ interface RssFeedMetadata {
   feedUrl: string;
 }
 
-function parseRssFeedMetadata(sourceMeta: RawEvent["source_meta"]): RssFeedMetadata | null {
+function parseRssFeedMetadata(
+  sourceMeta: CollectorIngestionEvent["sourceMeta"]
+): RssFeedMetadata | null {
   if (!sourceMeta || typeof sourceMeta !== "object") {
     return null;
   }
@@ -153,7 +163,7 @@ const RECORD_PARSE_ERROR_STRATEGY: ValidationFailureStrategy = {
 const RECORD_RSS_FEED_ERROR_STRATEGY: ValidationFailureStrategy = {
   name: "record-rss-feed-error",
   handle({ runtime, event }): void {
-    const feedMetadata = parseRssFeedMetadata(event.source_meta);
+    const feedMetadata = parseRssFeedMetadata(event.sourceMeta);
     if (!feedMetadata) {
       return;
     }
@@ -193,9 +203,9 @@ function createDeduplicateStep(): ProcessingStep {
   return {
     name: "deduplicate",
     async execute({ runtime, state }, next): Promise<CollectorEventProcessResult> {
-      if (runtime.checkpointStore.hasSeen(runtime.adapterSource, state.event.event_id)) {
+      if (runtime.checkpointStore.hasSeen(runtime.adapterSource, state.event.eventId)) {
         runtime.logger.debug(
-          { eventId: state.event.event_id },
+          { eventId: state.event.eventId },
           "Duplicate event skipped"
         );
         return { status: "duplicate" };
@@ -220,7 +230,7 @@ function createValidationStep(): ProcessingStep {
         source: runtime.adapterName,
         error_code: "VALIDATION_FAILED",
         error_message: "Missing required fields: event_id or text",
-        raw_reference: state.event.url ?? state.event.event_id,
+        raw_reference: state.event.url ?? state.event.eventId,
       };
 
       await runtime.publisher.publishRejectedEvent(dlqEvent);
@@ -247,6 +257,9 @@ function createTopicExtractionStep(): ProcessingStep {
       );
       state.topics = topics;
       state.event.tags = mergeTags(state.event.tags, topics);
+      if (isRawEvent(state.acceptedEvent)) {
+        state.acceptedEvent.tags = state.event.tags;
+      }
 
       for (const topic of topics) {
         incrementTopicsExtracted(runtime.healthContext, topic);
@@ -261,8 +274,8 @@ function createPublishStep(): ProcessingStep {
   return {
     name: "publish",
     async execute({ runtime, state }): Promise<CollectorEventProcessResult> {
-      await runtime.publisher.publishAcceptedEvent(state.event);
-      runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.event_id);
+      await runtime.publisher.publishAcceptedEvent(state.acceptedEvent);
+      runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.eventId);
       incrementEventsIngested(runtime.healthContext, runtime.adapterSource);
       runtime.healthContext.lastEventAt = runtime.now();
 
@@ -293,12 +306,21 @@ export function createCollectorEventProcessor(
   ];
 
   return {
-    async process(event: RawEvent): Promise<CollectorEventProcessResult> {
+    async process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult> {
+      const normalizedEvent = normalizeCollectorIngestionEvent(event);
+      const acceptedEvent = isRawEvent(event)
+        ? event
+        : normalizedEvent;
+
       return runAsyncChain(
         steps,
         {
           runtime,
-          state: { event, topics: [] },
+          state: {
+            event: normalizedEvent,
+            acceptedEvent,
+            topics: [],
+          },
         },
         {
           onEnd() {

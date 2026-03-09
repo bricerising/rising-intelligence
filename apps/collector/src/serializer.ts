@@ -3,8 +3,10 @@ import {
   sourceToProtoEnum,
 } from "@rising-intelligence/pipeline";
 import {
+  normalizeCollectorIngestionEvent,
   normalizeCollectedContent,
-  toCollectedContent,
+  type CollectorAcceptedEvent,
+  type CollectorIngestionEvent,
   type CollectedContent,
   type RawEvent,
   type DeadLetterEvent,
@@ -101,12 +103,26 @@ export function serializeCollectedContent(content: CollectedContent): Buffer {
   return Buffer.from(JSON.stringify(toRawEventWirePayload(content)));
 }
 
+export function serializeCollectorIngestionEvent(
+  event: CollectorIngestionEvent
+): Buffer {
+  return serializeCollectedContent(event);
+}
+
+export function serializeCollectorAcceptedEvent(
+  event: CollectorAcceptedEvent
+): Buffer {
+  return serializeCollectorIngestionEvent(
+    normalizeCollectorIngestionEvent(event)
+  );
+}
+
 /**
  * Serialize RawEvent to JSON for Kafka.
  * In MVP, we use JSON encoding. Can switch to protobuf binary later.
  */
 export function serializeRawEvent(event: RawEvent): Buffer {
-  return serializeCollectedContent(toCollectedContent(event));
+  return serializeCollectorAcceptedEvent(event);
 }
 
 /**

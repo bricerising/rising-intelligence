@@ -3,7 +3,8 @@
  *
  * Mediates between prepared briefing input and the brief service's internal
  * subsystems (budgeting, generation, persistence, publishing, failure
- * handling, metrics).
+ * handling, metrics). Source ingestion stays outside this boundary as a
+ * collector-owned capability.
  */
 
 import { BriefStatus } from "@rising-intelligence/db";

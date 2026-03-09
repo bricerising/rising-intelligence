@@ -61,6 +61,13 @@ export interface CollectedContent {
 }
 
 /**
+ * Collector-owned ingestion contract consumed by runtime orchestration.
+ * Source adapters emit this shape; RawEvent materialization stays at the
+ * collector publication boundary.
+ */
+export type CollectorIngestionEvent = CollectedContent;
+
+/**
  * Canonical RawEvent schema matching the proto contract.
  * All ingested items are normalized to this format before publishing to Kafka.
  */
@@ -353,6 +360,20 @@ export function toCollectedContent(event: RawEvent): CollectedContent {
   });
 }
 
+export type CollectorAcceptedEvent = CollectorIngestionEvent | RawEvent;
+
+export function isRawEvent(event: CollectorAcceptedEvent): event is RawEvent {
+  return "event_id" in event;
+}
+
+export function normalizeCollectorIngestionEvent(
+  event: CollectorAcceptedEvent
+): CollectorIngestionEvent {
+  return isRawEvent(event)
+    ? toCollectedContent(event)
+    : normalizeCollectedContent(event);
+}
+
 export function createRawEvent(input: CreateRawEventInput): RawEvent {
   return toRawEvent(
     createCollectedContent({
@@ -409,11 +430,11 @@ export interface CollectorHeartbeat {
 /**
  * Adapter interface for source-specific ingestion logic.
  */
-export interface SourceAdapter {
+export interface CollectorSourceAdapter {
   /** Unique name for this adapter (used in logs and metrics) */
   readonly name: string;
 
-  /** Source type for RawEvent */
+  /** Source identity reported by this adapter */
   readonly source: Source;
 
   /** Poll interval in milliseconds */
@@ -429,8 +450,33 @@ export interface SourceAdapter {
   shutdown(): Promise<void>;
 }
 
-export interface FetchResult {
-  event: RawEvent;
+export type SourceAdapter = CollectorSourceAdapter;
+
+export interface CollectorSourceRecord {
+  content: CollectorIngestionEvent;
   checkpointKey: string;
   checkpointValue: string;
+}
+
+export interface FetchResult extends CollectorSourceRecord {
+  /**
+   * @deprecated Use `content`; this alias remains for callers migrating off
+   * RawEvent internals.
+   */
+  event: RawEvent;
+}
+
+export interface CreateCollectorSourceRecordInput extends CollectorSourceRecord {}
+
+export function createCollectorSourceRecord(
+  input: CreateCollectorSourceRecordInput
+): FetchResult {
+  const content = normalizeCollectorIngestionEvent(input.content);
+
+  return {
+    content,
+    event: toRawEvent(content),
+    checkpointKey: input.checkpointKey,
+    checkpointValue: input.checkpointValue,
+  };
 }

@@ -7,7 +7,7 @@ import type { CheckpointStore } from "../checkpoint.js";
 import type { Config } from "../config.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import type { MarketFilterProfile } from "../market-filters.js";
-import type { SourceAdapter } from "../types.js";
+import type { CollectorSourceAdapter } from "../types.js";
 import {
   createHackerNewsAdapter,
   type CreateHackerNewsAdapterInput,
@@ -65,11 +65,16 @@ type UnsupportedAdapterName = "reddit" | "bluesky" | "mastodon" | "github";
 type AdapterName = ImplementedAdapterName | UnsupportedAdapterName;
 
 export interface CollectorAdapterBuildResult {
-  adapters: SourceAdapter[];
+  adapters: CollectorSourceAdapter[];
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
 }
 
-export interface CollectorIngestionAdapterFactory {
+export interface CollectorSourceAdapterFactory {
+  buildSourceAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
+}
+
+export interface CollectorIngestionAdapterFactory
+  extends CollectorSourceAdapterFactory {
   buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
 }
 
@@ -98,7 +103,10 @@ interface AdapterDefinition<Name extends AdapterName> {
 interface ImplementedAdapterDefinition
   extends AdapterDefinition<ImplementedAdapterName> {
   readonly kind: "implemented";
-  create(input: BuildCollectorAdaptersInput, constructors: AdapterConstructors): SourceAdapter;
+  create(
+    input: BuildCollectorAdaptersInput,
+    constructors: AdapterConstructors
+  ): CollectorSourceAdapter;
 }
 
 interface UnsupportedAdapterDefinition
@@ -275,7 +283,13 @@ export class CollectorAdapterFactory implements CollectorIngestionAdapterFactory
   buildIngestionAdapters(
     input: BuildCollectorAdaptersInput
   ): CollectorAdapterBuildResult {
-    const adapters: SourceAdapter[] = [];
+    return this.buildSourceAdapters(input);
+  }
+
+  buildSourceAdapters(
+    input: BuildCollectorAdaptersInput
+  ): CollectorAdapterBuildResult {
+    const adapters: CollectorSourceAdapter[] = [];
     const unsupportedEnabledAdapters: UnsupportedAdapterName[] = [];
 
     for (const definition of this.definitions) {

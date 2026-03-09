@@ -5,9 +5,8 @@ import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
 import {
   createCollectedContent,
-  toRawEvent,
-  type SourceAdapter,
-  type RawEvent,
+  createCollectorSourceRecord,
+  type CollectorSourceAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -411,9 +410,9 @@ interface EdgarMetaResult {
 
 /**
  * RSS/Atom feed adapter.
- * Polls configured feeds and yields RawEvents for new items.
+ * Polls configured feeds and yields collector source records for new items.
  */
-export class RSSAdapter implements SourceAdapter {
+export class RSSAdapter implements CollectorSourceAdapter {
   readonly name = "rss";
   readonly source: Source = "rss";
   readonly pollIntervalMs: number;
@@ -818,7 +817,7 @@ export class RSSAdapter implements SourceAdapter {
         };
       }
 
-      const event = toRawEvent(createCollectedContent({
+      const content = createCollectedContent({
         eventId,
         source: "rss",
         fetchedAt: new Date().toISOString(),
@@ -835,13 +834,13 @@ export class RSSAdapter implements SourceAdapter {
           hashtags: extractHashtags(`${title} ${text}`),
         },
         sourceMeta: sourceMeta,
-      }));
+      });
 
-      yield {
-        event,
+      yield createCollectorSourceRecord({
+        content,
         checkpointKey,
         checkpointValue: guid,
-      };
+      });
     }
   }
 
@@ -867,7 +866,9 @@ export interface CreateRSSAdapterInput {
   secUserAgent?: string;
 }
 
-export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
+export function createRSSAdapter(
+  input: CreateRSSAdapterInput
+): CollectorSourceAdapter {
   return new RSSAdapter(
     input.feedsConfigPath,
     input.pollIntervalMs,

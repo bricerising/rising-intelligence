@@ -14,7 +14,7 @@ import {
   incrementCheckpointUpdated,
 } from "./health.js";
 import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
-import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
+import type { CollectorHeartbeat, CollectorSourceAdapter } from "./types.js";
 import {
   createCollectorHeartbeatPublisher,
   createCollectorIngestionPublisher,
@@ -53,7 +53,7 @@ async function initializeCollector(): Promise<CollectorContext> {
 
 async function runAdapter(
   ctx: CollectorContext,
-  adapter: SourceAdapter
+  adapter: CollectorSourceAdapter
 ): Promise<void> {
   const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
   const adapterLogger = ctx.logger.child({ adapter: adapter.name });
@@ -82,13 +82,13 @@ async function runAdapter(
       let lastCheckpointKey: string | null = null;
       let lastCheckpointValue: string | null = null;
 
-      for await (const { event, checkpointKey, checkpointValue } of adapter.fetch()) {
+      for await (const { content, checkpointKey, checkpointValue } of adapter.fetch()) {
         if (ctx.shutdownRequested) break;
 
         lastCheckpointKey = checkpointKey;
         lastCheckpointValue = checkpointValue;
 
-        const processingResult = await ingestion.ingest(event);
+        const processingResult = await ingestion.ingest(content);
         if (processingResult.status === "ingested") {
           batchCount++;
         }

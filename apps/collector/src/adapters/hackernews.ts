@@ -1,9 +1,9 @@
 import type { Logger } from "pino";
 import {
   createCollectedContent,
-  toRawEvent,
-  type SourceAdapter,
-  type RawEvent,
+  createCollectorSourceRecord,
+  type CollectorIngestionEvent,
+  type CollectorSourceAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -200,7 +200,7 @@ async function delayBetweenStoryRequests(): Promise<void> {
  * Hacker News adapter.
  * Polls HN Firebase API for top/new/best stories.
  */
-export class HackerNewsAdapter implements SourceAdapter {
+export class HackerNewsAdapter implements CollectorSourceAdapter {
   readonly name = "hackernews";
   readonly source: Source = "hackernews";
   readonly pollIntervalMs: number;
@@ -291,15 +291,15 @@ export class HackerNewsAdapter implements SourceAdapter {
           continue;
         }
 
-        const event = await this.itemToRawEvent(item);
+        const content = await this.itemToCollectedContent(item);
         this.pollModeBehavior.onStoryProcessed(checkpointState, storyId);
 
-        if (event !== null) {
-          yield {
-            event,
+        if (content !== null) {
+          yield createCollectorSourceRecord({
+            content,
             checkpointKey,
             checkpointValue: checkpointState.cursor.toString(),
-          };
+          });
         }
       } catch (error) {
         this.logger.warn(
@@ -313,7 +313,9 @@ export class HackerNewsAdapter implements SourceAdapter {
     }
   }
 
-  private async itemToRawEvent(item: HNItem): Promise<RawEvent | null> {
+  private async itemToCollectedContent(
+    item: HNItem
+  ): Promise<CollectorIngestionEvent | null> {
     if (!item.id) return null;
 
     const title = item.title ?? "";
@@ -333,7 +335,7 @@ export class HackerNewsAdapter implements SourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    const event = toRawEvent(createCollectedContent({
+    return createCollectedContent({
       eventId: `hn:${item.id}`,
       source: "hackernews",
       fetchedAt: new Date().toISOString(),
@@ -362,9 +364,7 @@ export class HackerNewsAdapter implements SourceAdapter {
         hn_type: item.type,
         mode: this.mode,
       },
-    }));
-
-    return event;
+    });
   }
 
   async shutdown(): Promise<void> {
@@ -387,7 +387,7 @@ export interface CreateHackerNewsAdapterInput {
 
 export function createHackerNewsAdapter(
   input: CreateHackerNewsAdapterInput
-): SourceAdapter {
+): CollectorSourceAdapter {
   return new HackerNewsAdapter(
     parseHnMode(input.mode),
     input.pollIntervalMs,

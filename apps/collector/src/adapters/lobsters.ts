@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import type { Logger } from "pino";
 import {
   createCollectedContent,
-  toRawEvent,
-  type SourceAdapter,
-  type RawEvent,
+  createCollectorSourceRecord,
+  type CollectorIngestionEvent,
+  type CollectorSourceAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -76,7 +76,7 @@ function parseDate(dateStr: string | undefined): string | undefined {
  * Polls Lobsters RSS feed for new stories.
  * Lobsters is a high-signal, computing-focused community.
  */
-export class LobstersAdapter implements SourceAdapter {
+export class LobstersAdapter implements CollectorSourceAdapter {
   readonly name = "lobsters";
   readonly source: Source = "lobsters";
   readonly pollIntervalMs: number;
@@ -173,13 +173,13 @@ export class LobstersAdapter implements SourceAdapter {
       if (!guid) continue;
 
       try {
-        const event = await this.itemToRawEvent(item, guid);
-        if (event) {
-          yield {
-            event,
+        const content = await this.itemToCollectedContent(item, guid);
+        if (content) {
+          yield createCollectorSourceRecord({
+            content,
             checkpointKey,
             checkpointValue: guid,
-          };
+          });
         }
       } catch (error) {
         this.logger.warn({ guid, error }, "Failed to normalize Lobsters item");
@@ -187,10 +187,10 @@ export class LobstersAdapter implements SourceAdapter {
     }
   }
 
-  private async itemToRawEvent(
+  private async itemToCollectedContent(
     item: Parser.Item,
     guid: string
-  ): Promise<RawEvent | null> {
+  ): Promise<CollectorIngestionEvent | null> {
     const title = item.title ?? "";
     let text = item.contentSnippet ?? item.content ?? "";
 
@@ -204,7 +204,7 @@ export class LobstersAdapter implements SourceAdapter {
 
     const communityTags = normalizeLobstersCommunityTags(item.categories);
 
-    const event = toRawEvent(createCollectedContent({
+    return createCollectedContent({
       eventId: `lobsters:${hashString(guid)}`,
       source: "lobsters",
       fetchedAt: new Date().toISOString(),
@@ -223,9 +223,7 @@ export class LobstersAdapter implements SourceAdapter {
         hashtags: extractHashtags(combinedText),
       },
       sourceMeta: buildLobstersSourceMeta(guid, communityTags, item),
-    }));
-
-    return event;
+    });
   }
 
   async shutdown(): Promise<void> {
@@ -246,7 +244,7 @@ export interface CreateLobstersAdapterInput {
 
 export function createLobstersAdapter(
   input: CreateLobstersAdapterInput
-): SourceAdapter {
+): CollectorSourceAdapter {
   return new LobstersAdapter(
     input.pollIntervalMs,
     input.maxItems,
