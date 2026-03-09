@@ -1,12 +1,8 @@
 import type { BatchStrategy, MessageStrategy } from "@rising-intelligence/pipeline/transport";
 import { createMessageBatchStrategy } from "@rising-intelligence/pipeline/transport";
-import {
-  createServiceBootstrap,
-  runService,
-  runShutdownSteps,
-} from "@rising-intelligence/shared/lifecycle";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
+import { runShutdownSteps } from "@rising-intelligence/shared/runtime";
 import {
   getConfig,
   disconnectRedis,
@@ -18,6 +14,10 @@ import {
   type TopicMessageHandler,
 } from "./service.js";
 import { createBriefService } from "./brief-service.js";
+import {
+  createServiceBootstrap,
+  runService,
+} from "./service-runtime.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createBriefRuntimeFactory();

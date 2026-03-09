@@ -19,7 +19,7 @@ import type { Redis } from "ioredis";
 import {
   buildFunctionDependencies,
   type FunctionDependencyOverrides,
-} from "@rising-intelligence/shared/lifecycle";
+} from "@rising-intelligence/shared/runtime";
 import type pino from "pino";
 import {
   createBriefBudgetGovernor,

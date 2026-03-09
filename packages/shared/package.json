@@ -25,6 +25,10 @@
       "types": "./dist/lifecycle.d.ts",
       "default": "./dist/lifecycle.js"
     },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
     "./logging": {
       "types": "./dist/logging.d.ts",
       "default": "./dist/logging.js"

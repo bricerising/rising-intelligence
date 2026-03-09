@@ -1,10 +1,6 @@
-import {
-  createServiceBootstrap,
-  runService,
-  runShutdownSteps,
-} from "@rising-intelligence/shared/lifecycle";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
+import { runShutdownSteps } from "@rising-intelligence/shared/runtime";
 import { getConfig } from "./config.js";
 import { incrementError } from "./health.js";
 import { disconnectRedis } from "./redis.js";
@@ -14,6 +10,10 @@ import {
   type TrendsRuntimeContext,
 } from "./runtime-factory.js";
 import { publishSnapshots } from "./snapshot.js";
+import {
+  createServiceBootstrap,
+  runService,
+} from "./service-runtime.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createTrendsRuntimeFactory();
