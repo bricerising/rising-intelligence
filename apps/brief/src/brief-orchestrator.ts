@@ -1,10 +1,10 @@
 /**
  * Brief orchestration boundary.
  *
- * Mediates between prepared briefing input and the brief service's internal
- * subsystems (budgeting, generation, persistence, publishing, failure
- * handling, metrics). Source ingestion stays outside this boundary as a
- * collector-owned capability.
+ * Mediates between translated brief orchestration input and the brief
+ * service's internal subsystems (budgeting, generation, persistence,
+ * publishing, failure handling, metrics). Source ingestion stays outside this
+ * boundary as a collector-owned capability.
  */
 
 import { BriefStatus } from "@rising-intelligence/db";
@@ -35,7 +35,7 @@ import {
   handleSummaryRequestFailure,
 } from "./failure-handling.js";
 import type { Config } from "./config.js";
-import type { PreparedBriefingRequest } from "./types.js";
+import type { BriefOrchestrationRequest } from "./types.js";
 import type { PrismaClient } from "@rising-intelligence/db";
 import type { Redis } from "ioredis";
 
@@ -63,13 +63,13 @@ export interface OrchestratorRuntime {
 
 export interface BriefOrchestrator {
   /**
-   * Runs the prepared briefing lifecycle:
+   * Runs the brief orchestration lifecycle:
    * idempotency → budget → generation → persistence → publishing → metrics.
    */
   execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    input: PreparedBriefingRequest
+    input: BriefOrchestrationRequest
   ): Promise<void>;
 }
 
@@ -136,7 +136,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
   async execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    input: PreparedBriefingRequest
+    input: BriefOrchestrationRequest
   ): Promise<void> {
     const {
       budgetGovernor,

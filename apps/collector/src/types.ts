@@ -11,11 +11,13 @@ import {
 export type Source = CanonicalSource | "lobsters";
 export type RawEventSource = CanonicalSource;
 
-export interface CollectedContentAuthor {
+export interface CollectionIngestionAuthor {
   id?: string;
   handle?: string;
   displayName?: string;
 }
+
+export type CollectedContentAuthor = CollectionIngestionAuthor;
 
 export interface Author {
   id?: string;
@@ -36,11 +38,11 @@ export interface Extracted {
 }
 
 /**
- * Stable collected-content contract used between source adaptation and
- * collector serialization. The raw-event wire shape is derived from this
- * contract at the publication boundary.
+ * Published collection-ingestion contract used between source adaptation,
+ * downstream consumers, and collector publication. The raw-event wire shape
+ * is derived from this contract at the publication boundary.
  */
-export interface CollectedContent {
+export interface CollectionIngestion {
   eventId: string;
   source: RawEventSource;
   fetchedAt: string; // ISO8601
@@ -50,7 +52,7 @@ export interface CollectedContent {
   title?: string;
   text: string;
 
-  author?: CollectedContentAuthor;
+  author?: CollectionIngestionAuthor;
   engagement?: Engagement;
 
   lang?: string;
@@ -60,12 +62,14 @@ export interface CollectedContent {
   sourceMeta?: Record<string, unknown>;
 }
 
+export type CollectedContent = CollectionIngestion;
+
 /**
  * Collector-owned ingestion contract consumed by runtime orchestration.
  * Source adapters emit this shape; RawEvent materialization stays at the
  * collector publication boundary.
  */
-export type CollectorIngestionEvent = CollectedContent;
+export type CollectorIngestionEvent = CollectionIngestion;
 
 /**
  * Canonical RawEvent schema matching the proto contract.
@@ -97,11 +101,13 @@ export interface RawEventAuthorInput {
   display_name?: string | null;
 }
 
-export interface CollectedContentAuthorInput {
+export interface CollectionIngestionAuthorInput {
   id?: string | null;
   handle?: string | null;
   displayName?: string | null;
 }
+
+export type CollectedContentAuthorInput = CollectionIngestionAuthorInput;
 
 export interface RawEventEngagementInput {
   score?: number | null;
@@ -131,7 +137,7 @@ export interface CreateRawEventInput {
   source_meta?: Record<string, unknown> | null;
 }
 
-export interface CreateCollectedContentInput {
+export interface CreateCollectionIngestionInput {
   eventId: string;
   source: Source;
   fetchedAt: string;
@@ -139,13 +145,15 @@ export interface CreateCollectedContentInput {
   url?: string | null;
   title?: string | null;
   text: string;
-  author?: CollectedContentAuthorInput | null;
+  author?: CollectionIngestionAuthorInput | null;
   engagement?: RawEventEngagementInput | null;
   lang?: string | null;
   tags?: Array<string | null | undefined> | null;
   extracted?: RawEventExtractedInput | null;
   sourceMeta?: Record<string, unknown> | null;
 }
+
+export type CreateCollectedContentInput = CreateCollectionIngestionInput;
 
 export function normalizeRawEventSource(source: Source): RawEventSource {
   return parseCanonicalSource(source);
@@ -181,14 +189,14 @@ function normalizeStringArray(
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeCollectedContentAuthor(
-  author: CollectedContentAuthorInput | null | undefined
-): CollectedContentAuthor | undefined {
+function normalizeCollectionIngestionAuthor(
+  author: CollectionIngestionAuthorInput | null | undefined
+): CollectionIngestionAuthor | undefined {
   if (!author) {
     return undefined;
   }
 
-  const normalized: CollectedContentAuthor = {};
+  const normalized: CollectionIngestionAuthor = {};
   const id = normalizeOptionalString(author.id);
   const handle = normalizeOptionalString(author.handle);
   const displayName = normalizeOptionalString(author.displayName);
@@ -255,16 +263,16 @@ function normalizeExtracted(
   };
 }
 
-export function createCollectedContent(
-  input: CreateCollectedContentInput
-): CollectedContent {
+export function createCollectionIngestion(
+  input: CreateCollectionIngestionInput
+): CollectionIngestion {
   const publishedAt = normalizeOptionalString(input.publishedAt);
   const url = normalizeOptionalString(input.url);
   const title = normalizeOptionalString(input.title);
   const lang = normalizeOptionalString(input.lang);
   const tags = normalizeStringArray(input.tags);
   const extracted = normalizeExtracted(input.extracted);
-  const author = normalizeCollectedContentAuthor(input.author);
+  const author = normalizeCollectionIngestionAuthor(input.author);
   const engagement = normalizeEngagement(input.engagement);
 
   return {
@@ -284,10 +292,10 @@ export function createCollectedContent(
   };
 }
 
-export function normalizeCollectedContent(
-  content: CollectedContent
-): CollectedContent {
-  return createCollectedContent({
+export function normalizeCollectionIngestion(
+  content: CollectionIngestion
+): CollectionIngestion {
+  return createCollectionIngestion({
     eventId: content.eventId,
     source: content.source,
     fetchedAt: content.fetchedAt,
@@ -310,8 +318,8 @@ export function normalizeCollectedContent(
   });
 }
 
-export function toRawEvent(content: CollectedContent): RawEvent {
-  const normalized = normalizeCollectedContent(content);
+export function toRawEvent(content: CollectionIngestion): RawEvent {
+  const normalized = normalizeCollectionIngestion(content);
 
   return {
     event_id: normalized.eventId,
@@ -336,8 +344,8 @@ export function toRawEvent(content: CollectedContent): RawEvent {
   };
 }
 
-export function toCollectedContent(event: RawEvent): CollectedContent {
-  return createCollectedContent({
+export function toCollectionIngestion(event: RawEvent): CollectionIngestion {
+  return createCollectionIngestion({
     eventId: event.event_id,
     source: event.source,
     fetchedAt: event.fetched_at,
@@ -370,13 +378,13 @@ export function normalizeCollectorIngestionEvent(
   event: CollectorAcceptedEvent
 ): CollectorIngestionEvent {
   return isRawEvent(event)
-    ? toCollectedContent(event)
-    : normalizeCollectedContent(event);
+    ? toCollectionIngestion(event)
+    : normalizeCollectionIngestion(event);
 }
 
 export function createRawEvent(input: CreateRawEventInput): RawEvent {
   return toRawEvent(
-    createCollectedContent({
+    createCollectionIngestion({
       eventId: input.event_id,
       source: input.source,
       fetchedAt: input.fetched_at,
@@ -399,6 +407,10 @@ export function createRawEvent(input: CreateRawEventInput): RawEvent {
     })
   );
 }
+
+export const createCollectedContent = createCollectionIngestion;
+export const normalizeCollectedContent = normalizeCollectionIngestion;
+export const toCollectedContent = toCollectionIngestion;
 
 /**
  * Dead letter event for failed parse/normalize.

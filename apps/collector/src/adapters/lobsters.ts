@@ -2,9 +2,9 @@ import Parser from "rss-parser";
 import { createHash } from "node:crypto";
 import type { Logger } from "pino";
 import {
-  createCollectedContent,
+  createCollectionIngestion,
   createCollectorSourceRecord,
-  type CollectorIngestionEvent,
+  type CollectionIngestion,
   type CollectorSourceAdapter,
   type FetchResult,
   type Source,
@@ -190,7 +190,7 @@ export class LobstersAdapter implements CollectorSourceAdapter {
   private async itemToCollectedContent(
     item: Parser.Item,
     guid: string
-  ): Promise<CollectorIngestionEvent | null> {
+  ): Promise<CollectionIngestion | null> {
     const title = item.title ?? "";
     let text = item.contentSnippet ?? item.content ?? "";
 
@@ -204,7 +204,7 @@ export class LobstersAdapter implements CollectorSourceAdapter {
 
     const communityTags = normalizeLobstersCommunityTags(item.categories);
 
-    return createCollectedContent({
+    return createCollectionIngestion({
       eventId: `lobsters:${hashString(guid)}`,
       source: "lobsters",
       fetchedAt: new Date().toISOString(),

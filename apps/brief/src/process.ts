@@ -2,13 +2,13 @@
  * Summary request processing orchestrator.
  *
  * Coordinates the end-to-end lifecycle of a summary request:
- * request-scoped logging → query-mode resolution → prepared briefing execution.
+ * request-scoped logging → query-mode resolution → brief orchestration execution.
  *
  * Domain concerns (evidence scoring, grounding enforcement, LLM provider
  * strategies, failure handling) are delegated to focused internal modules
  * behind the internals barrel.
  *
- * Once request preparation is complete, budgeting, generation, persistence,
+ * Once request translation is complete, budgeting, generation, persistence,
  * publishing, failure handling, and metrics are mediated through the
  * BriefOrchestrator boundary.
  */
@@ -53,8 +53,8 @@ import {
 } from "./brief-orchestrator.js";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import {
-  prepareBriefingRequest,
-  type PreparedBriefingRequest,
+  createBriefOrchestrationRequest,
+  type BriefOrchestrationRequest,
 } from "./types.js";
 
 export interface ProcessContext {
@@ -93,7 +93,7 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
-  preparedRequest: PreparedBriefingRequest;
+  orchestrationRequest: BriefOrchestrationRequest;
   orchestratorContext: OrchestratorContext;
   orchestratorRuntime: OrchestratorRuntime;
 }
@@ -176,13 +176,13 @@ class SummaryRequestRuntimeFactory {
       incrementGeneration(orchestratorContext.healthContext, "failure");
       logger.error(
         { error: serializeError(error) },
-        "Failed to resolve summary request into briefing input"
+        "Failed to resolve summary request into brief orchestration input"
       );
       throw error;
     }
 
     return {
-      preparedRequest: prepareBriefingRequest(resolvedRequest),
+      orchestrationRequest: createBriefOrchestrationRequest(resolvedRequest),
       orchestratorContext,
       orchestratorRuntime,
     };
@@ -207,12 +207,12 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       return;
     }
 
-    const { preparedRequest, orchestratorContext, orchestratorRuntime } = runtime;
+    const { orchestrationRequest, orchestratorContext, orchestratorRuntime } = runtime;
 
     await this.orchestrator.execute(
       orchestratorContext,
       orchestratorRuntime,
-      preparedRequest
+      orchestrationRequest
     );
   }
 }

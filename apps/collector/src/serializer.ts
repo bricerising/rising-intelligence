@@ -4,10 +4,10 @@ import {
 } from "@rising-intelligence/pipeline";
 import {
   normalizeCollectorIngestionEvent,
-  normalizeCollectedContent,
+  normalizeCollectionIngestion,
   type CollectorAcceptedEvent,
   type CollectorIngestionEvent,
-  type CollectedContent,
+  type CollectionIngestion,
   type RawEvent,
   type DeadLetterEvent,
   type CollectorHeartbeat,
@@ -58,9 +58,9 @@ interface RawEventWirePayload {
 }
 
 export function toRawEventWirePayload(
-  content: CollectedContent
+  content: CollectionIngestion
 ): RawEventWirePayload {
-  const normalizedContent = normalizeCollectedContent(content);
+  const normalizedContent = normalizeCollectionIngestion(content);
 
   return {
     event_id: normalizedContent.eventId,
@@ -99,14 +99,16 @@ export function toRawEventWirePayload(
   };
 }
 
-export function serializeCollectedContent(content: CollectedContent): Buffer {
+export function serializeCollectionIngestion(
+  content: CollectionIngestion
+): Buffer {
   return Buffer.from(JSON.stringify(toRawEventWirePayload(content)));
 }
 
 export function serializeCollectorIngestionEvent(
   event: CollectorIngestionEvent
 ): Buffer {
-  return serializeCollectedContent(event);
+  return serializeCollectionIngestion(event);
 }
 
 export function serializeCollectorAcceptedEvent(
@@ -124,6 +126,8 @@ export function serializeCollectorAcceptedEvent(
 export function serializeRawEvent(event: RawEvent): Buffer {
   return serializeCollectorAcceptedEvent(event);
 }
+
+export const serializeCollectedContent = serializeCollectionIngestion;
 
 /**
  * Serialize DeadLetterEvent to JSON for Kafka.
