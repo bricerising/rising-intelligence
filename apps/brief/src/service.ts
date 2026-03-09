@@ -17,8 +17,10 @@
  *          ├─ redis, budget-ledger, deserialize,    (infrastructure adapters)
  *          │  topic-message-handlers, result-*,
  *          │  publishing-facade, llm/codex-cli
- *          └─ grounding-facade, query-mode-*,       (domain logic)
- *             internal-highlight-strategy
+ *          ├─ grounding-facade, query-mode-*,       (domain logic)
+ *          │  internal-highlight-strategy
+ *          └─ evidence-scoring, grounding-enforcement, (orchestration support)
+ *             llm/generation-facade, failure-handling
  *
  * Only symbols required by the entrypoint and message handler are re-exported
  * here.  Orchestration-internal symbols (e.g. executeCodexCli,

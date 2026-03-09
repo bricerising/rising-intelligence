@@ -17,7 +17,9 @@
  *             result-payload-adapter, result-store-facade,
  *             publishing-facade, llm/codex-cli)
  *   Layer 4 — Domain logic           (grounding-facade, query-mode-selection,
- *             internal-highlight-strategy, query-mode-request-facade)
+ *             internal-highlight-strategy, query-mode-request-facade,
+ *             evidence-scoring, grounding-enforcement,
+ *             llm/generation-facade, failure-handling)
  */
 
 // ─── Layer 1: Config & types ────────────────────────────────────────────────
@@ -147,3 +149,49 @@ export {
   type QueryModeRequestResolver,
   type QueryModeRequestResolverContext,
 } from "./query-mode-request-facade.js";
+
+// Evidence scoring & highlight building
+export {
+  buildEvidenceInsight,
+  collectTopEvidenceInsights,
+  buildInternalHighlight,
+  normalizeTopicKey,
+  normalizeTextFingerprint,
+  normalizeWhitespace as normalizeEvidenceWhitespace,
+  ensureSentenceEnding,
+  isLowSignalTitle,
+  extractFirstMeaningfulSentence,
+  truncateText,
+  type EvidenceInsight,
+  type NormalizedHighlight,
+} from "./evidence-scoring.js";
+
+// Grounding enforcement
+export {
+  enforceGroundedHighlights,
+  normalizeLlmHighlight,
+} from "./grounding-enforcement.js";
+
+// LLM generation facade
+export {
+  createSummaryRequestGenerationFacade,
+  estimateTokenCount,
+  estimateRequestCostUsd,
+  normalizeUsd,
+  normalizeUsdDelta,
+  type SummaryRequestGenerationFacade,
+  type SuccessResult,
+  type BuildSuccessResultInput,
+  type BuildSuccessResultContext,
+} from "./llm/generation-facade.js";
+
+// Failure handling
+export {
+  emitFailureResult,
+  handleNonRetryableFailure,
+  handleSummaryRequestFailure,
+  type FailureHandlingProcessContext,
+  type HandleNonRetryableFailureInput,
+  type SummaryRequestFailureHandlerOutcome,
+  type SummaryRequestFailureHandlingContext,
+} from "./failure-handling.js";
