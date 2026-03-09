@@ -12,9 +12,7 @@ import {
   createBriefBudgetLedger,
   type BriefBudgetLedger,
   type CreateBriefBudgetLedgerInput,
-} from "./budget-ledger.js";
-import type { Config } from "./config.js";
-import {
+  type Config,
   incrementBudgetExceeded,
   incrementDuplicatesSkipped,
   incrementError,
@@ -25,52 +23,34 @@ import {
   observeHighlightsCount,
   setBudgetRemainingUsd,
   type HealthContext,
-} from "./health.js";
-import {
   createSummaryRequestGroundingFacade,
   type SummaryRequestGroundingFacade,
-} from "./grounding-facade.js";
-import { executeCodexCli } from "./llm/codex-cli.js";
-import {
+  executeCodexCli,
   classifyRetryableFailureCode,
   LlmGenerationError,
   NonRetryableProcessingError,
   toGroundingError,
-} from "./processing-errors.js";
-import {
   createBriefResultPublisher,
   type CreateBriefResultPublisherInput,
   type BriefResultPublisher,
-} from "./publishing-facade.js";
-import {
   createQueryModeRequestResolver,
   type QueryModeRequestResolver,
-} from "./query-mode-request-facade.js";
-import {
   buildFailureBriefResultPayload,
   type BriefResultPayload,
-} from "./result-payload-adapter.js";
-import {
   createBriefResultStore,
   type BriefResultStore,
   type StoredBriefResult,
-} from "./result-store-facade.js";
-import type {
-  LlmProvider,
-  ParsedSummaryEvidence,
-  ParsedSummaryRequest,
-  ParsedSummaryTopic,
-} from "./types.js";
-import {
+  type LlmProvider,
+  type ParsedSummaryEvidence,
+  type ParsedSummaryRequest,
+  type ParsedSummaryTopic,
   countTopicRelevanceTermMatches,
   getTopLevelTopicGroup,
-} from "./query-mode-selection.js";
-import {
   buildInternalSuggestedAction,
   buildInternalWhyItMatters,
   detectSignalCategories,
   type SignalCategory,
-} from "./internal-highlight-strategy.js";
+} from "./internals.js";
 
 export interface ProcessContext {
   config: Config;

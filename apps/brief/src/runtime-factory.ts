@@ -23,17 +23,15 @@ import {
 import { closeServer } from "@rising-intelligence/shared/http";
 import { createComponentLoggerFactory } from "@rising-intelligence/shared/logging";
 import type pino from "pino";
-import type { Config } from "./config.js";
 import {
+  type Config,
   createHealthContext,
   setBudgetRemainingUsd,
   startHealthServer,
   type HealthContext,
-} from "./health.js";
-import {
   createRedisClient as createRedisConnection,
   disconnectRedis,
-} from "./redis.js";
+} from "./internals.js";
 
 export interface KafkaConsumerContext {
   consumer: ConsumerConnection;
