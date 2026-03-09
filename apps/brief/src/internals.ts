@@ -19,7 +19,8 @@
  *   Layer 4 — Domain logic           (grounding-facade, query-mode-selection,
  *             internal-highlight-strategy, query-mode-request-facade,
  *             evidence-scoring, grounding-enforcement,
- *             llm/generation-facade, failure-handling)
+ *             llm/generation-facade, failure-handling,
+ *             brief-orchestrator)
  */
 
 // ─── Layer 1: Config & types ────────────────────────────────────────────────
@@ -195,3 +196,11 @@ export {
   type SummaryRequestFailureHandlerOutcome,
   type SummaryRequestFailureHandlingContext,
 } from "./failure-handling.js";
+
+// Orchestration boundary
+export {
+  createBriefOrchestrator,
+  type BriefOrchestrator,
+  type OrchestratorContext,
+  type OrchestratorRuntime,
+} from "./brief-orchestrator.js";
