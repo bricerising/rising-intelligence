@@ -26,7 +26,6 @@ import {
   observeHighlightsCount,
   setBudgetRemainingUsd,
 } from "./health.js";
-import type { BriefResultPayload } from "./result-payload-adapter.js";
 import type { BriefResultPublisher } from "./publishing-facade.js";
 import type { BriefResultStore, StoredBriefResult } from "./result-store-facade.js";
 import type { SummaryRequestGenerationFacade, SuccessResult } from "./llm/generation-facade.js";
@@ -59,7 +58,7 @@ export interface OrchestratorContext {
 
 export interface OrchestratorRuntime {
   budgetLedger: BriefBudgetLedger;
-  publisher: BriefResultPublisher<BriefResultPayload>;
+  publisher: BriefResultPublisher;
   resultStore: BriefResultStore;
   queryModeRequestResolver: QueryModeRequestResolver;
   generationFacade: SummaryRequestGenerationFacade;
@@ -90,7 +89,7 @@ function getBudgetDateKey(date: Date): string {
 async function republishPersistedResult(
   resultStore: BriefResultStore,
   requestId: string,
-  publisher: BriefResultPublisher<BriefResultPayload>
+  publisher: BriefResultPublisher
 ): Promise<StoredBriefResult["status"] | null> {
   const existing = await resultStore.load(requestId);
   if (!existing) {

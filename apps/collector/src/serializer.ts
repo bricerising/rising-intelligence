@@ -1,5 +1,11 @@
 import { sourceToProtoEnum } from "@rising-intelligence/pipeline";
-import type { RawEvent, DeadLetterEvent, CollectorHeartbeat, Source } from "./types.js";
+import {
+  createRawEvent,
+  type RawEvent,
+  type DeadLetterEvent,
+  type CollectorHeartbeat,
+  type Source,
+} from "./types.js";
 
 /**
  * Map CollectorStatus to proto enum value.
@@ -15,39 +21,40 @@ const STATUS_TO_PROTO: Record<string, number> = {
  * In MVP, we use JSON encoding. Can switch to protobuf binary later.
  */
 export function serializeRawEvent(event: RawEvent): Buffer {
+  const normalizedEvent = createRawEvent(event);
   const protoEvent = {
-    event_id: event.event_id,
-    source: sourceToProtoEnum(event.source),
-    fetched_at: event.fetched_at,
-    published_at: event.published_at ?? "",
-    url: event.url ?? "",
-    title: event.title ?? "",
-    text: event.text,
-    author: event.author
+    event_id: normalizedEvent.event_id,
+    source: sourceToProtoEnum(normalizedEvent.source),
+    fetched_at: normalizedEvent.fetched_at,
+    published_at: normalizedEvent.published_at ?? "",
+    url: normalizedEvent.url ?? "",
+    title: normalizedEvent.title ?? "",
+    text: normalizedEvent.text,
+    author: normalizedEvent.author
       ? {
-          id: event.author.id ?? "",
-          handle: event.author.handle ?? "",
-          display_name: event.author.display_name ?? "",
+          id: normalizedEvent.author.id ?? "",
+          handle: normalizedEvent.author.handle ?? "",
+          display_name: normalizedEvent.author.display_name ?? "",
         }
       : undefined,
-    engagement: event.engagement
+    engagement: normalizedEvent.engagement
       ? {
-          score: event.engagement.score ?? 0,
-          comments: event.engagement.comments ?? 0,
-          likes: event.engagement.likes ?? 0,
-          shares: event.engagement.shares ?? 0,
+          score: normalizedEvent.engagement.score ?? 0,
+          comments: normalizedEvent.engagement.comments ?? 0,
+          likes: normalizedEvent.engagement.likes ?? 0,
+          shares: normalizedEvent.engagement.shares ?? 0,
         }
       : undefined,
-    lang: event.lang ?? "",
-    tags: event.tags ?? [],
-    extracted: event.extracted
+    lang: normalizedEvent.lang ?? "",
+    tags: normalizedEvent.tags ?? [],
+    extracted: normalizedEvent.extracted
       ? {
-          hashtags: event.extracted.hashtags ?? [],
-          urls: event.extracted.urls ?? [],
+          hashtags: normalizedEvent.extracted.hashtags ?? [],
+          urls: normalizedEvent.extracted.urls ?? [],
         }
       : undefined,
-    source_meta_json: event.source_meta
-      ? JSON.stringify(event.source_meta)
+    source_meta_json: normalizedEvent.source_meta
+      ? JSON.stringify(normalizedEvent.source_meta)
       : "",
   };
 

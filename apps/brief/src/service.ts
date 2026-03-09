@@ -85,7 +85,6 @@ export {
   createSummaryRequestGroundingFacade,
   EVIDENCE_EXCERPT_MAX_LENGTH,
   type SummaryRequestGroundingFacade,
-  type SummaryRequestPayloadOptions,
 
   // Budget ledger
   createBriefBudgetLedger,

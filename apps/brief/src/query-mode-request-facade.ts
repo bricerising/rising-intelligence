@@ -1,8 +1,11 @@
+import {
+  buildBriefEvidenceRecordFromRawEvent,
+  BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
+} from "@rising-intelligence/pipeline";
 import { TrendWindow, type Prisma, type PrismaClient } from "@rising-intelligence/db";
 import type { Logger } from "pino";
 import type { Config } from "./config.js";
 import type { HealthContext } from "./health.js";
-import { EVIDENCE_EXCERPT_MAX_LENGTH } from "./grounding-facade.js";
 import { toNoCoverageError, NonRetryableProcessingError } from "./processing-errors.js";
 import {
   getTopLevelTopicGroup,
@@ -361,15 +364,22 @@ async function hydrateTopics(
           acceleration: rankedTopic.acceleration,
         },
       ],
-      evidence: selectedEvents.map((event) => ({
-        eventId: event.eventId,
-        source: event.source,
-        url: event.url,
-        title: event.title ?? null,
-        publishedAt: event.publishedAt,
-        fetchedAt: event.fetchedAt,
-        textExcerpt: event.text.slice(0, EVIDENCE_EXCERPT_MAX_LENGTH),
-      })),
+      evidence: selectedEvents.map((event) =>
+        buildBriefEvidenceRecordFromRawEvent(
+          {
+            event_id: event.eventId,
+            source: event.source,
+            url: event.url,
+            title: event.title,
+            published_at: event.publishedAt,
+            fetched_at: event.fetchedAt,
+            text: event.text,
+          },
+          {
+            excerptMaxLength: BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
+          }
+        )
+      ),
     };
   });
 

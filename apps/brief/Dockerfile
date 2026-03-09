@@ -13,6 +13,7 @@ COPY package.json package-lock.json* ./
 
 # Copy workspace package files
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/topics/package.json ./packages/topics/
 COPY packages/pipeline/package.json ./packages/pipeline/
 COPY packages/db/package.json ./packages/db/
 COPY apps/brief/package.json ./apps/brief/
@@ -20,6 +21,7 @@ COPY apps/brief/package.json ./apps/brief/
 # Install dependencies for all workspaces needed by this service build
 RUN npm ci \
     --workspace=@rising-intelligence/shared \
+    --workspace=@rising-intelligence/topics \
     --workspace=@rising-intelligence/pipeline \
     --workspace=@rising-intelligence/db \
     --workspace=@rising-intelligence/brief
@@ -41,6 +43,7 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY packages/shared ./packages/shared
+COPY packages/topics ./packages/topics
 COPY packages/pipeline ./packages/pipeline
 COPY packages/db ./packages/db
 COPY apps/brief ./apps/brief
@@ -48,6 +51,7 @@ COPY tsconfig.json tsconfig.base.json ./
 
 # Build shared packages first
 RUN npm run build --workspace=@rising-intelligence/shared
+RUN npm run build --workspace=@rising-intelligence/topics
 RUN npm run build --workspace=@rising-intelligence/pipeline
 RUN npm run build --workspace=@rising-intelligence/db
 
@@ -76,6 +80,8 @@ RUN npm install -g @openai/codex@${CODEX_CLI_VERSION}
 # Copy built artifacts
 COPY --from=builder --chown=brief:nodejs /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder --chown=brief:nodejs /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder --chown=brief:nodejs /app/packages/topics/dist ./packages/topics/dist
+COPY --from=builder --chown=brief:nodejs /app/packages/topics/package.json ./packages/topics/
 COPY --from=builder --chown=brief:nodejs /app/packages/pipeline/dist ./packages/pipeline/dist
 COPY --from=builder --chown=brief:nodejs /app/packages/pipeline/package.json ./packages/pipeline/
 COPY --from=builder --chown=brief:nodejs /app/packages/db/dist ./packages/db/dist

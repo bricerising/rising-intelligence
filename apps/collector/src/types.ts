@@ -49,6 +49,171 @@ export interface RawEvent {
   source_meta?: Record<string, unknown>;
 }
 
+export interface RawEventAuthorInput {
+  id?: string | null;
+  handle?: string | null;
+  display_name?: string | null;
+}
+
+export interface RawEventEngagementInput {
+  score?: number | null;
+  comments?: number | null;
+  likes?: number | null;
+  shares?: number | null;
+}
+
+export interface RawEventExtractedInput {
+  hashtags?: Array<string | null | undefined> | null;
+  urls?: Array<string | null | undefined> | null;
+}
+
+export interface CreateRawEventInput {
+  event_id: string;
+  source: Source;
+  fetched_at: string;
+  published_at?: string | null;
+  url?: string | null;
+  title?: string | null;
+  text: string;
+  author?: RawEventAuthorInput | null;
+  engagement?: RawEventEngagementInput | null;
+  lang?: string | null;
+  tags?: Array<string | null | undefined> | null;
+  extracted?: RawEventExtractedInput | null;
+  source_meta?: Record<string, unknown> | null;
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeStringArray(
+  values: Array<string | null | undefined> | null | undefined
+): string[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = normalizeOptionalString(value);
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeAuthor(
+  author: RawEventAuthorInput | null | undefined
+): Author | undefined {
+  if (!author) {
+    return undefined;
+  }
+
+  const normalized: Author = {};
+  const id = normalizeOptionalString(author.id);
+  const handle = normalizeOptionalString(author.handle);
+  const displayName = normalizeOptionalString(author.display_name);
+
+  if (id) {
+    normalized.id = id;
+  }
+  if (handle) {
+    normalized.handle = handle;
+  }
+  if (displayName) {
+    normalized.display_name = displayName;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeEngagement(
+  engagement: RawEventEngagementInput | null | undefined
+): Engagement | undefined {
+  if (!engagement) {
+    return undefined;
+  }
+
+  const normalized: Engagement = {};
+  if (typeof engagement.score === "number" && Number.isFinite(engagement.score)) {
+    normalized.score = engagement.score;
+  }
+  if (
+    typeof engagement.comments === "number" &&
+    Number.isFinite(engagement.comments)
+  ) {
+    normalized.comments = engagement.comments;
+  }
+  if (typeof engagement.likes === "number" && Number.isFinite(engagement.likes)) {
+    normalized.likes = engagement.likes;
+  }
+  if (
+    typeof engagement.shares === "number" &&
+    Number.isFinite(engagement.shares)
+  ) {
+    normalized.shares = engagement.shares;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeExtracted(
+  extracted: RawEventExtractedInput | null | undefined
+): Extracted | undefined {
+  if (!extracted) {
+    return undefined;
+  }
+
+  const hashtags = normalizeStringArray(extracted.hashtags);
+  const urls = normalizeStringArray(extracted.urls);
+  if (!hashtags && !urls) {
+    return undefined;
+  }
+
+  return {
+    hashtags,
+    urls,
+  };
+}
+
+export function createRawEvent(input: CreateRawEventInput): RawEvent {
+  const publishedAt = normalizeOptionalString(input.published_at);
+  const url = normalizeOptionalString(input.url);
+  const title = normalizeOptionalString(input.title);
+  const lang = normalizeOptionalString(input.lang);
+  const tags = normalizeStringArray(input.tags);
+  const extracted = normalizeExtracted(input.extracted);
+  const author = normalizeAuthor(input.author);
+  const engagement = normalizeEngagement(input.engagement);
+
+  return {
+    event_id: input.event_id.trim(),
+    source: input.source,
+    fetched_at: input.fetched_at.trim(),
+    published_at: publishedAt,
+    url,
+    title,
+    text: input.text.trim(),
+    author,
+    engagement,
+    lang,
+    tags,
+    extracted,
+    source_meta: input.source_meta ?? undefined,
+  };
+}
+
 /**
  * Dead letter event for failed parse/normalize.
  */

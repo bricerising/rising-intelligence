@@ -422,7 +422,7 @@ describe("LobstersAdapter", () => {
       }
 
       expect(results).toHaveLength(1);
-      expect(results[0].event.title).toBe("");
+      expect(results[0].event.title).toBeUndefined();
       expect(results[0].event.text).toBe("");
       expect(results[0].event.author).toBeUndefined();
       expect(results[0].event.published_at).toBeUndefined();

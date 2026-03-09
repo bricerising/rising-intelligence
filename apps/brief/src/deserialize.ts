@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { parseCanonicalSource } from "@rising-intelligence/pipeline";
+import {
+  buildBriefEvidenceRecord,
+  parseCanonicalSource,
+} from "@rising-intelligence/pipeline";
 import type {
   EvidenceStrategy,
   LlmProvider,
@@ -320,15 +323,17 @@ export function deserializeSummaryRequest(messageValue: Buffer): ParsedSummaryRe
           volume: metric.volume ?? 0,
           acceleration: metric.acceleration ?? 0,
         })),
-        evidence: (topic.evidence ?? []).map((evidence) => ({
-          eventId: evidence.event_id?.trim() ?? "",
-          source: parseEvidenceSource(evidence.source),
-          url: evidence.url?.trim() || null,
-          title: evidence.title?.trim() || null,
-          publishedAt: parseOptionalDate(evidence.published_at, "published_at"),
-          fetchedAt: parseOptionalDate(evidence.fetched_at, "fetched_at"),
-          textExcerpt: evidence.text_excerpt?.trim() || null,
-        })),
+        evidence: (topic.evidence ?? []).map((evidence) =>
+          buildBriefEvidenceRecord({
+            eventId: evidence.event_id?.trim() ?? "",
+            source: parseEvidenceSource(evidence.source),
+            url: evidence.url,
+            title: evidence.title,
+            publishedAt: parseOptionalDate(evidence.published_at, "published_at"),
+            fetchedAt: parseOptionalDate(evidence.fetched_at, "fetched_at"),
+            textExcerpt: evidence.text_excerpt,
+          })
+        ),
       };
     }),
   };

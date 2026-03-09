@@ -1,3 +1,5 @@
+import type { BriefEvidenceRecord } from "@rising-intelligence/pipeline";
+
 export type SummaryRequestType = "daily" | "threshold";
 
 export interface ParsedSummaryMetric {
@@ -8,15 +10,7 @@ export interface ParsedSummaryMetric {
   acceleration: number;
 }
 
-export interface ParsedSummaryEvidence {
-  eventId: string;
-  source: string;
-  url: string | null;
-  title: string | null;
-  publishedAt: Date | null;
-  fetchedAt: Date | null;
-  textExcerpt: string | null;
-}
+export type ParsedSummaryEvidence = BriefEvidenceRecord;
 
 export interface ParsedSummaryTopic {
   topic: string;

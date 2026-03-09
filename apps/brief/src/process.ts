@@ -36,7 +36,6 @@ import {
   type BriefResultPublisher,
   createQueryModeRequestResolver,
   type QueryModeRequestResolver,
-  type BriefResultPayload,
   createBriefResultStore,
   type BriefResultStore,
   type ParsedSummaryRequest,
@@ -74,9 +73,7 @@ export interface SummaryRequestProcessor {
 
 interface SummaryRequestProcessorDependencies {
   createBriefBudgetLedger(input: CreateBriefBudgetLedgerInput): BriefBudgetLedger;
-  createBriefResultPublisher(
-    input: CreateBriefResultPublisherInput
-  ): BriefResultPublisher<BriefResultPayload>;
+  createBriefResultPublisher(input: CreateBriefResultPublisherInput): BriefResultPublisher;
   createBriefResultStore(
     prisma: PrismaClient,
     healthContext: HealthContext
@@ -96,8 +93,8 @@ interface SummaryRequestRuntime {
 
 const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
   createBriefBudgetLedger,
-  createBriefResultPublisher(input): BriefResultPublisher<BriefResultPayload> {
-    return createBriefResultPublisher<BriefResultPayload>(input);
+  createBriefResultPublisher(input): BriefResultPublisher {
+    return createBriefResultPublisher(input);
   },
   createBriefResultStore,
   createQueryModeRequestResolver,

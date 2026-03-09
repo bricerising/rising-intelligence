@@ -130,7 +130,6 @@ export {
   createSummaryRequestGroundingFacade,
   EVIDENCE_EXCERPT_MAX_LENGTH,
   type SummaryRequestGroundingFacade,
-  type SummaryRequestPayloadOptions,
 } from "./grounding-facade.js";
 
 export {

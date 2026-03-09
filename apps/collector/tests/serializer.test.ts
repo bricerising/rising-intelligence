@@ -46,6 +46,31 @@ describe("serializer", () => {
     expect(obj.source_meta_json).toBe(JSON.stringify({ feed_name: "Test", n: 1 }));
   });
 
+  it("normalizes raw events before serializing them", () => {
+    const buf = serializeRawEvent({
+      event_id: "  rss:abc  ",
+      source: "rss",
+      fetched_at: "2026-02-06T00:00:00.000Z",
+      text: "  hello  ",
+      title: "  New AWS feature  ",
+      tags: ["aws", " aws ", "", "launch"],
+      extracted: {
+        urls: ["https://example.com/post", " https://example.com/post ", ""],
+        hashtags: ["#aws", " #aws ", "#launch"],
+      },
+    });
+
+    const obj = JSON.parse(buf.toString("utf-8")) as Record<string, unknown>;
+    expect(obj.event_id).toBe("rss:abc");
+    expect(obj.title).toBe("New AWS feature");
+    expect(obj.text).toBe("hello");
+    expect(obj.tags).toEqual(["aws", "launch"]);
+    expect(obj.extracted).toEqual({
+      urls: ["https://example.com/post"],
+      hashtags: ["#aws", "#launch"],
+    });
+  });
+
   it("maps Lobsters source to proto NEWS enum", () => {
     const buf = serializeRawEvent({
       event_id: "lobsters:abc",

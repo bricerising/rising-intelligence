@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
-import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
+import {
+  createRawEvent,
+  type SourceAdapter,
+  type RawEvent,
+  type FetchResult,
+  type Source,
+} from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
@@ -811,7 +817,7 @@ export class RSSAdapter implements SourceAdapter {
         };
       }
 
-      const event: RawEvent = {
+      const event = createRawEvent({
         event_id: eventId,
         source: "rss",
         fetched_at: new Date().toISOString(),
@@ -828,7 +834,7 @@ export class RSSAdapter implements SourceAdapter {
           hashtags: extractHashtags(`${title} ${text}`),
         },
         source_meta: sourceMeta,
-      };
+      });
 
       yield {
         event,

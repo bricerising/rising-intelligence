@@ -12,9 +12,7 @@ import { serializeError } from "@rising-intelligence/shared/errors";
 import type { Redis } from "ioredis";
 import type pino from "pino";
 import type { Config } from "./config.js";
-import type { ParsedSummaryRequest } from "./types.js";
 import type { HealthContext } from "./health.js";
-import type { SummaryRequestGroundingFacade } from "./grounding-facade.js";
 import {
   LlmGenerationError,
   NonRetryableProcessingError,
@@ -25,15 +23,10 @@ import {
   incrementError,
   incrementGeneration,
 } from "./health.js";
+import { buildFailureBriefResultPayload } from "./result-payload-adapter.js";
+import type { BriefResultStore } from "./result-store-facade.js";
 import {
-  buildFailureBriefResultPayload,
-  type BriefResultPayload,
-} from "./result-payload-adapter.js";
-import { createBriefResultStore, type BriefResultStore } from "./result-store-facade.js";
-import {
-  createBriefResultPublisher,
   type BriefResultPublisher,
-  type CreateBriefResultPublisherInput,
 } from "./publishing-facade.js";
 
 // ── Context types ───────────────────────────────────────────────────────────
@@ -45,7 +38,6 @@ export interface FailureHandlingProcessContext {
   prisma: PrismaClient;
   redis: Redis;
   producer: ProducerConnection;
-  groundingFacade?: SummaryRequestGroundingFacade;
 }
 
 // ── Result emission ─────────────────────────────────────────────────────────
@@ -53,7 +45,7 @@ export interface FailureHandlingProcessContext {
 async function republishPersistedResult(
   resultStore: BriefResultStore,
   requestId: string,
-  publisher: BriefResultPublisher<BriefResultPayload>
+  publisher: BriefResultPublisher
 ): Promise<BriefStatus | null> {
   const existing = await resultStore.load(requestId);
   if (!existing) {
@@ -67,7 +59,7 @@ async function republishPersistedResult(
 export async function emitFailureResult(
   ctx: FailureHandlingProcessContext,
   resultStore: BriefResultStore,
-  publisher: BriefResultPublisher<BriefResultPayload>,
+  publisher: BriefResultPublisher,
   requestId: string,
   producedAt: Date,
   code: string,
@@ -109,7 +101,7 @@ function mapNonRetryableFailureMetric(
 export interface HandleNonRetryableFailureInput {
   ctx: FailureHandlingProcessContext;
   resultStore: BriefResultStore;
-  publisher: BriefResultPublisher<BriefResultPayload>;
+  publisher: BriefResultPublisher;
   requestId: string;
   producedAt: Date;
   error: NonRetryableProcessingError;
@@ -153,7 +145,7 @@ export type SummaryRequestFailureHandlerOutcome = "handled" | "rethrow";
 export interface SummaryRequestFailureHandlingContext {
   ctx: FailureHandlingProcessContext;
   resultStore: BriefResultStore;
-  publisher: BriefResultPublisher<BriefResultPayload>;
+  publisher: BriefResultPublisher;
   requestId: string;
   producedAt: Date;
   logger: pino.Logger;

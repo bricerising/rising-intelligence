@@ -3,11 +3,10 @@ import {
   createTopicPublisher,
   type ProducerConnection,
 } from "@rising-intelligence/pipeline/transport";
+import type { BriefResultPayload } from "./result-payload-adapter.js";
 
-export interface BriefResultPublisher<
-  TPayload extends Record<string, unknown> = Record<string, unknown>
-> {
-  publishResult(requestId: string, payload: TPayload): Promise<void>;
+export interface BriefResultPublisher {
+  publishResult(requestId: string, payload: BriefResultPayload): Promise<void>;
 }
 
 export interface CreateBriefResultPublisherInput {
@@ -20,13 +19,11 @@ export interface CreateBriefResultPublisherInput {
  * Facade that encapsulates brief result serialization and topic routing.
  * Callers publish typed result payloads without repeating Kafka details.
  */
-export function createBriefResultPublisher<
-  TPayload extends Record<string, unknown> = Record<string, unknown>
->(
+export function createBriefResultPublisher(
   input: CreateBriefResultPublisherInput
-): BriefResultPublisher<TPayload> {
+): BriefResultPublisher {
   const { connection, topic } = input;
-  const topicPublisher = createTopicPublisher<TPayload>({
+  const topicPublisher = createTopicPublisher<BriefResultPayload>({
     connection,
     topic,
   });

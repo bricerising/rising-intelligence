@@ -5,6 +5,10 @@
  * and the mapping from raw LLM responses to grounded brief results.
  */
 
+import {
+  buildSummaryRequestPayload,
+  type BuildSummaryRequestPayloadOptions,
+} from "@rising-intelligence/pipeline";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import { z } from "zod";
@@ -14,7 +18,10 @@ import {
   NonRetryableProcessingError,
   toGroundingError,
 } from "../processing-errors.js";
-import type { HealthContext } from "../health.js";
+import {
+  incrementSuspiciousContent,
+  type HealthContext,
+} from "../health.js";
 import { executeCodexCli } from "./codex-cli.js";
 import type { Config } from "../config.js";
 import type {
@@ -496,16 +503,38 @@ function buildLlmBackedSuccessResult(
 
 // ── Codex CLI prompt builder ────────────────────────────────────────────────
 
+function createSummaryRequestPayloadOptions(
+  request: ParsedSummaryRequest,
+  logger?: pino.Logger,
+  healthContext?: HealthContext
+): BuildSummaryRequestPayloadOptions {
+  return {
+    onSuspiciousEvidence({ topic, eventId, pattern }) {
+      logger?.warn(
+        {
+          requestId: request.requestId,
+          topic,
+          eventId,
+          pattern,
+        },
+        "Suspicious prompt-like content detected in evidence"
+      );
+      if (healthContext) {
+        incrementSuspiciousContent(healthContext);
+      }
+    },
+  };
+}
+
 function buildCodexCliPrompt(
-  groundingFacade: SummaryRequestGroundingFacade,
   request: ParsedSummaryRequest,
   logger?: pino.Logger,
   healthContext?: HealthContext
 ): string {
-  const payload = groundingFacade.buildSummaryRequestPayload(request, {
-    logger,
-    healthContext,
-  });
+  const payload = buildSummaryRequestPayload(
+    request,
+    createSummaryRequestPayloadOptions(request, logger, healthContext)
+  );
   const maxTopics = resolveHighlightLimit(request, request.topics.length);
   const maxEvidencePerTopic =
     request.budget?.maxEvidencePerTopic ??
@@ -545,7 +574,6 @@ function buildCodexCliPrompt(
 // ── HTTP LLM provider ───────────────────────────────────────────────────────
 
 async function callHttpLlm(
-  groundingFacade: SummaryRequestGroundingFacade,
   config: Config,
   request: ParsedSummaryRequest,
   logger: pino.Logger,
@@ -556,12 +584,10 @@ async function callHttpLlm(
     response = await fetch(config.LLM_ENDPOINT_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(
-        groundingFacade.buildSummaryRequestPayload(request, {
-          logger,
-          healthContext,
-        })
-      ),
+      body: JSON.stringify(buildSummaryRequestPayload(
+        request,
+        createSummaryRequestPayloadOptions(request, logger, healthContext)
+      )),
       signal: AbortSignal.timeout(config.LLM_TIMEOUT_MS),
     });
   } catch (error) {
@@ -602,13 +628,12 @@ async function callHttpLlm(
 // ── Codex CLI LLM provider ──────────────────────────────────────────────────
 
 async function callCodexCliLlm(
-  groundingFacade: SummaryRequestGroundingFacade,
   config: Config,
   request: ParsedSummaryRequest,
   logger: pino.Logger,
   healthContext?: HealthContext
 ): Promise<ParsedLlmResponse> {
-  const prompt = buildCodexCliPrompt(groundingFacade, request, logger, healthContext);
+  const prompt = buildCodexCliPrompt(request, logger, healthContext);
   let decoded: unknown;
   try {
     decoded = await executeCodexCli(config, prompt, logger);
@@ -648,7 +673,12 @@ function createLlmProviderStrategies(
     http: {
       provider: "http",
       async build({ ctx, request, producedAt, estimatedCostUsd }) {
-        const llmResponse = await callHttpLlm(groundingFacade, ctx.config, request, ctx.logger, ctx.healthContext);
+        const llmResponse = await callHttpLlm(
+          ctx.config,
+          request,
+          ctx.logger,
+          ctx.healthContext
+        );
         return buildLlmBackedSuccessResult(
           groundingFacade,
           request,
@@ -665,7 +695,12 @@ function createLlmProviderStrategies(
       provider: "codex-cli",
       async build({ ctx, request, producedAt, estimatedCostUsd }) {
         try {
-          const llmResponse = await callCodexCliLlm(groundingFacade, ctx.config, request, ctx.logger, ctx.healthContext);
+          const llmResponse = await callCodexCliLlm(
+            ctx.config,
+            request,
+            ctx.logger,
+            ctx.healthContext
+          );
           const defaultModel = ctx.config.LLM_CODEX_MODEL.trim() || "codex-cli";
 
           return buildLlmBackedSuccessResult(

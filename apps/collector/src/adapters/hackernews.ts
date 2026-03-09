@@ -1,5 +1,11 @@
 import type { Logger } from "pino";
-import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
+import {
+  createRawEvent,
+  type SourceAdapter,
+  type RawEvent,
+  type FetchResult,
+  type Source,
+} from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
 import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
@@ -326,7 +332,7 @@ export class HackerNewsAdapter implements SourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    const event: RawEvent = {
+    const event = createRawEvent({
       event_id: `hn:${item.id}`,
       source: "hackernews",
       fetched_at: new Date().toISOString(),
@@ -355,7 +361,7 @@ export class HackerNewsAdapter implements SourceAdapter {
         hn_type: item.type,
         mode: this.mode,
       },
-    };
+    });
 
     return event;
   }
