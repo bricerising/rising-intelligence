@@ -1,6 +1,5 @@
 import type { BatchStrategy, MessageStrategy } from "@rising-intelligence/pipeline/transport";
 import { createMessageBatchStrategy } from "@rising-intelligence/pipeline/transport";
-import { Prisma } from "@rising-intelligence/db";
 import {
   createServiceBootstrap,
   runService,
@@ -9,22 +8,14 @@ import {
 import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
 import { getConfig } from "./config.js";
-import {
-  incrementGeneration,
-  observeGenerationDuration,
-  incrementError,
-} from "./health.js";
-import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deserialize.js";
 import { disconnectRedis } from "./redis.js";
-import { processSummaryRequest } from "./process.js";
 import {
   createBriefRuntimeFactory,
   type BriefRuntimeContext as RuntimeContext,
 } from "./runtime-factory.js";
-import type { ParsedTrendSnapshot } from "./types.js";
+import { createBriefService } from "./brief-service.js";
 import {
   createTopicMessageHandlerMap,
-  mapTrendWindowToEnum,
   runWithInFlightHeartbeats,
   type TopicMessageCommand,
   type TopicMessageHandler,
@@ -32,28 +23,10 @@ import {
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createBriefRuntimeFactory();
+const briefService = createBriefService();
 
 const IN_FLIGHT_HEARTBEAT_INTERVAL_MS = 5_000;
 const LOOP_HEARTBEAT_INTERVAL_MESSAGES = 20;
-
-async function persistTrendSnapshot(
-  ctx: RuntimeContext,
-  snapshot: ParsedTrendSnapshot
-): Promise<void> {
-  try {
-    await ctx.prisma.briefTrendSnapshot.create({
-      data: {
-        generatedAt: snapshot.generatedAt,
-        window: mapTrendWindowToEnum(snapshot.window),
-        snapshot: snapshot.snapshot as Prisma.InputJsonValue,
-      },
-    });
-    ctx.healthContext.postgresHealthy = true;
-  } catch (error) {
-    ctx.healthContext.postgresHealthy = false;
-    throw error;
-  }
-}
 
 function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessageHandler> {
   const commands: readonly TopicMessageCommand[] = [
@@ -61,55 +34,19 @@ function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessa
       name: "trend-snapshot",
       topic: ctx.config.KAFKA_TOPIC_TREND_SNAPSHOTS,
       async execute({ messageValue, messageLogger }): Promise<void> {
-        try {
-          const snapshot = deserializeTrendSnapshot(messageValue);
-          await persistTrendSnapshot(ctx, snapshot);
-        } catch (error) {
-          messageLogger.warn(
-            {
-              error: serializeError(error),
-            },
-            "Failed to process trend snapshot"
-          );
-        }
+        await briefService.handleTrendSnapshot(ctx, messageValue, messageLogger);
       },
     },
     {
       name: "summary-request",
       topic: ctx.config.KAFKA_TOPIC_SUMMARY_REQUESTS,
       async execute({ messageValue, messageLogger, heartbeat }): Promise<void> {
-        let request: ReturnType<typeof deserializeSummaryRequest>;
-        try {
-          request = deserializeSummaryRequest(messageValue);
-        } catch (error) {
-          incrementError(ctx.healthContext, "parse_error");
-          incrementGeneration(ctx.healthContext, "failure");
-          messageLogger.warn(
-            {
-              error: serializeError(error),
-            },
-            "Failed to deserialize summary request"
-          );
-          return;
-        }
-
-        const startTime = Date.now();
         try {
           await runWithInFlightHeartbeats(
             heartbeat,
             messageLogger,
             async () => {
-              await processSummaryRequest(
-                {
-                  config: ctx.config,
-                  logger: messageLogger,
-                  healthContext: ctx.healthContext,
-                  prisma: ctx.prisma,
-                  redis: ctx.redis,
-                  producer: ctx.kafkaProducerContext.producer,
-                },
-                request
-              );
+              await briefService.handleSummaryRequest(ctx, messageValue, messageLogger);
             },
             IN_FLIGHT_HEARTBEAT_INTERVAL_MS
           );
@@ -121,8 +58,6 @@ function createTopicMessageHandlers(ctx: RuntimeContext): Map<string, TopicMessa
             "Failed to process summary request"
           );
           throw error;
-        } finally {
-          observeGenerationDuration(ctx.healthContext, (Date.now() - startTime) / 1000);
         }
       },
     },
