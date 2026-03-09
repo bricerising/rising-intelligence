@@ -28,6 +28,7 @@ import {
 } from "./health.js";
 import {
   createSummaryRequestGroundingFacade,
+  type SummaryRequestGroundingFacade,
 } from "./grounding-facade.js";
 import { executeCodexCli } from "./llm/codex-cli.js";
 import {
@@ -78,6 +79,12 @@ export interface ProcessContext {
   prisma: PrismaClient;
   redis: Redis;
   producer: ProducerConnection;
+  /** Grounding facade scoped to this processing context. Falls back to a shared default when omitted. */
+  groundingFacade?: SummaryRequestGroundingFacade;
+}
+
+function resolveGroundingFacade(ctx: ProcessContext): SummaryRequestGroundingFacade {
+  return ctx.groundingFacade ?? DEFAULT_GROUNDING_FACADE;
 }
 
 interface RequestScopedProcessContext extends ProcessContext {
@@ -123,7 +130,7 @@ const LlmResponseSchema = z.object({
 
 type NormalizedHighlight = z.infer<typeof LlmHighlightSchema>;
 type ParsedLlmResponse = z.infer<typeof LlmResponseSchema>;
-const groundingFacade = createSummaryRequestGroundingFacade();
+const DEFAULT_GROUNDING_FACADE = createSummaryRequestGroundingFacade();
 
 interface SuccessResult {
   payload: {
@@ -417,7 +424,7 @@ function buildEvidenceInsight(topic: ParsedSummaryTopic, evidence: ParsedSummary
   const title = normalizeWhitespace(evidence.title ?? "");
   const excerptSentence = extractFirstMeaningfulSentence(evidence.textExcerpt ?? "", 170);
   const citation = evidence.url
-    ? groundingFacade.dedupeCanonicalUrls([evidence.url])[0] ?? null
+    ? DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls([evidence.url])[0] ?? null
     : null;
 
   let summary = "";
@@ -497,9 +504,9 @@ function collectTopEvidenceInsights(topic: ParsedSummaryTopic, limit: number): E
 }
 
 function buildInternalHighlight(topic: ParsedSummaryTopic): NormalizedHighlight {
-  const fallbackCitations = groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url));
+  const fallbackCitations = DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url));
   const insights = collectTopEvidenceInsights(topic, 2);
-  const citations = groundingFacade.dedupeCanonicalUrls(
+  const citations = DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls(
     insights.map((insight) => insight.citation).filter((citation): citation is string => Boolean(citation))
   );
   const categories = new Set<SignalCategory>();
@@ -529,7 +536,7 @@ function normalizeLlmHighlight(highlight: NormalizedHighlight): NormalizedHighli
     what_happened: highlight.what_happened.trim(),
     why_it_matters: highlight.why_it_matters.trim(),
     suggested_action: highlight.suggested_action.trim(),
-    citations: groundingFacade.dedupeCanonicalUrls(highlight.citations),
+    citations: DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls(highlight.citations),
   };
 }
 
@@ -583,7 +590,7 @@ function mergeHighlightsByTopic(highlights: NormalizedHighlight[]): NormalizedHi
     if (existingIndex === undefined) {
       merged.push({
         ...highlight,
-        citations: groundingFacade.dedupeCanonicalUrls(highlight.citations),
+        citations: DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls(highlight.citations),
       });
       indexByTopic.set(topicKey, merged.length - 1);
       continue;
@@ -595,7 +602,7 @@ function mergeHighlightsByTopic(highlights: NormalizedHighlight[]): NormalizedHi
       what_happened: mergeNarrativeFields([existing.what_happened, highlight.what_happened]),
       why_it_matters: mergeNarrativeFields([existing.why_it_matters, highlight.why_it_matters]),
       suggested_action: mergeNarrativeFields([existing.suggested_action, highlight.suggested_action]),
-      citations: groundingFacade.dedupeCanonicalUrls([...existing.citations, ...highlight.citations]),
+      citations: DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls([...existing.citations, ...highlight.citations]),
     };
   }
 
@@ -618,7 +625,7 @@ function buildTopicEvidenceScopes(request: ParsedSummaryRequest): Map<string, To
       canonicalTopic,
       normalizedTopic: topicKey,
       topLevelGroup: getTopLevelTopicGroup(topicKey),
-      evidenceUrls: new Set(groundingFacade.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url))),
+      evidenceUrls: new Set(DEFAULT_GROUNDING_FACADE.dedupeCanonicalUrls(topic.evidence.map((evidence) => evidence.url))),
     });
   }
   return scopes;
@@ -771,7 +778,7 @@ function buildCodexCliPrompt(
   logger?: pino.Logger,
   healthContext?: HealthContext
 ): string {
-  const payload = groundingFacade.buildSummaryRequestPayload(request, {
+  const payload = DEFAULT_GROUNDING_FACADE.buildSummaryRequestPayload(request, {
     logger,
     healthContext,
   });
@@ -823,7 +830,7 @@ async function callHttpLlm(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(
-        groundingFacade.buildSummaryRequestPayload(request, {
+        DEFAULT_GROUNDING_FACADE.buildSummaryRequestPayload(request, {
           logger,
           healthContext,
         })
@@ -940,7 +947,7 @@ function enforceGroundedHighlights(
   request: ParsedSummaryRequest,
   highlights: NormalizedHighlight[]
 ): NormalizedHighlight[] {
-  const evidenceUrls = groundingFacade.createEvidenceUrlSet(request);
+  const evidenceUrls = DEFAULT_GROUNDING_FACADE.createEvidenceUrlSet(request);
   const topicEvidenceScopes = buildTopicEvidenceScopes(request);
   if (evidenceUrls.size === 0) {
     throw new NonRetryableProcessingError("No evidence URLs were provided in the summary request");
@@ -948,7 +955,7 @@ function enforceGroundedHighlights(
 
   const groundedHighlights = highlights
     .map((highlight) => {
-      const globallyGroundedCitations = groundingFacade.filterGroundedCitations(
+      const globallyGroundedCitations = DEFAULT_GROUNDING_FACADE.filterGroundedCitations(
         highlight.citations,
         evidenceUrls
       );
@@ -1098,7 +1105,7 @@ function buildInternalSuccessResult(
   const outputTokens = estimateTokenCount(JSON.stringify(highlights));
   let notes = deriveDefaultNotes(request, highlights);
   notes = appendCoverageWarnings(notes, request);
-  notes = groundingFacade.enforceGroundedNotes(request, notes, toGroundingError);
+  notes = DEFAULT_GROUNDING_FACADE.enforceGroundedNotes(request, notes, toGroundingError);
 
   return buildSuccessPayload(
     request,
@@ -1179,7 +1186,7 @@ function buildLlmBackedSuccessResult(
     ? deriveDefaultNotes(request, highlights)
     : llmResponse.notes?.trim() || deriveDefaultNotes(request, highlights);
   notes = appendCoverageWarnings(notes, request);
-  notes = groundingFacade.enforceGroundedNotes(request, notes, toGroundingError);
+  notes = DEFAULT_GROUNDING_FACADE.enforceGroundedNotes(request, notes, toGroundingError);
   const provider = usedInternalFallback
     ? "internal"
     : normalizeLlmMetaString(llmResponse.meta?.provider) ?? defaultProvider;

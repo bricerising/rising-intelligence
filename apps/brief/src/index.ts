@@ -7,19 +7,17 @@ import {
 } from "@rising-intelligence/shared/lifecycle";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
-import { getConfig } from "./config.js";
-import { disconnectRedis } from "./redis.js";
 import {
+  getConfig,
+  disconnectRedis,
   createBriefRuntimeFactory,
   type BriefRuntimeContext as RuntimeContext,
-} from "./runtime-factory.js";
-import { createBriefService } from "./brief-service.js";
-import {
   createTopicMessageHandlerMap,
   runWithInFlightHeartbeats,
   type TopicMessageCommand,
   type TopicMessageHandler,
-} from "./topic-message-handlers.js";
+} from "./service.js";
+import { createBriefService } from "./brief-service.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createBriefRuntimeFactory();

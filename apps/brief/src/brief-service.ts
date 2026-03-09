@@ -1,16 +1,21 @@
 import { BriefStatus, Prisma } from "@rising-intelligence/db";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
-import type { BriefRuntimeContext } from "./runtime-factory.js";
-import { deserializeSummaryRequest, deserializeTrendSnapshot } from "./deserialize.js";
 import {
+  type BriefRuntimeContext,
+  type ProcessContext,
+  type ParsedTrendSnapshot,
+  createSummaryRequestGroundingFacade,
+  deserializeSummaryRequest,
+  deserializeTrendSnapshot,
   incrementGeneration,
-  observeGenerationDuration,
   incrementError,
-} from "./health.js";
-import { type ProcessContext, processSummaryRequest } from "./process.js";
-import { mapTrendWindowToEnum } from "./topic-message-handlers.js";
-import type { ParsedTrendSnapshot } from "./types.js";
+  mapTrendWindowToEnum,
+  observeGenerationDuration,
+  processSummaryRequest,
+} from "./service.js";
+
+const briefGroundingFacade = createSummaryRequestGroundingFacade();
 
 export interface BriefService {
   handleSummaryRequest(
@@ -36,6 +41,7 @@ function buildProcessContext(
     prisma: ctx.prisma,
     redis: ctx.redis,
     producer: ctx.kafkaProducerContext.producer,
+    groundingFacade: briefGroundingFacade,
   };
 }
 
