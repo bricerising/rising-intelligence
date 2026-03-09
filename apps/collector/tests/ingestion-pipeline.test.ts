@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CheckpointStore } from "../src/checkpoint.js";
-import { createHealthContext } from "../src/health.js";
 import {
-  createCollectorEventProcessor,
-  type CollectorEventProcessResult,
-} from "../src/ingestion-pipeline.js";
+  createCollectorIngestion,
+  type CollectorIngestion,
+  type CollectorIngestionResult,
+} from "../src/collector-ingestion.js";
+import { createHealthContext } from "../src/health.js";
 import type { CompiledAllowlist } from "@rising-intelligence/pipeline";
 import type { DeadLetterEvent, RawEvent, Source } from "../src/types.js";
 
@@ -59,7 +60,7 @@ function createCheckpointStore(
 }
 
 interface TestHarness {
-  processor: ReturnType<typeof createCollectorEventProcessor>;
+  ingestion: CollectorIngestion;
   healthContext: ReturnType<typeof createHealthContext>;
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
   publishAcceptedEvent: ReturnType<typeof vi.fn>;
@@ -83,7 +84,7 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
   const publishRejectedEvent = vi.fn(async (_event: DeadLetterEvent) => undefined);
 
   const fixedNow = new Date("2026-02-10T12:00:00.000Z");
-  const processor = createCollectorEventProcessor({
+  const ingestion = createCollectorIngestion({
     adapterName,
     adapterSource,
     allowlist: createAllowlist(),
@@ -99,7 +100,7 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
   });
 
   return {
-    processor,
+    ingestion,
     healthContext,
     checkpointStore,
     publishAcceptedEvent,
@@ -110,7 +111,7 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
 describe("collector ingestion pipeline", () => {
   it("ingests valid events through the full handler chain", async () => {
     const {
-      processor,
+      ingestion,
       healthContext,
       checkpointStore,
       publishAcceptedEvent,
@@ -118,9 +119,9 @@ describe("collector ingestion pipeline", () => {
     } = createHarness();
 
     const event = createEvent();
-    const result = await processor.process(event);
+    const result = await ingestion.ingest(event);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "ingested",
       topics: ["aws"],
     });
@@ -137,7 +138,7 @@ describe("collector ingestion pipeline", () => {
 
   it("preserves existing market tags while adding canonical topics", async () => {
     const {
-      processor,
+      ingestion,
       publishAcceptedEvent,
       publishRejectedEvent,
     } = createHarness();
@@ -145,9 +146,9 @@ describe("collector ingestion pipeline", () => {
     const event = createEvent({
       tags: ["market.pos"],
     });
-    const result = await processor.process(event);
+    const result = await ingestion.ingest(event);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "ingested",
       topics: ["aws"],
     });
@@ -158,7 +159,7 @@ describe("collector ingestion pipeline", () => {
 
   it("normalizes and deduplicates existing tags before publishing", async () => {
     const {
-      processor,
+      ingestion,
       publishAcceptedEvent,
       publishRejectedEvent,
     } = createHarness();
@@ -166,9 +167,9 @@ describe("collector ingestion pipeline", () => {
     const event = createEvent({
       tags: [" market.pos ", "aws", "market.pos", ""],
     });
-    const result = await processor.process(event);
+    const result = await ingestion.ingest(event);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "ingested",
       topics: ["aws"],
     });
@@ -179,16 +180,16 @@ describe("collector ingestion pipeline", () => {
 
   it("short-circuits duplicates before validation and publishing", async () => {
     const {
-      processor,
+      ingestion,
       healthContext,
       checkpointStore,
       publishAcceptedEvent,
       publishRejectedEvent,
     } = createHarness({ hasSeen: true });
 
-    const result = await processor.process(createEvent());
+    const result = await ingestion.ingest(createEvent());
 
-    expect(result).toEqual<CollectorEventProcessResult>({ status: "duplicate" });
+    expect(result).toEqual<CollectorIngestionResult>({ status: "duplicate" });
     expect(checkpointStore.hasSeen).toHaveBeenCalledWith("rss", "evt-1");
     expect(checkpointStore.markSeen).not.toHaveBeenCalled();
     expect(publishAcceptedEvent).not.toHaveBeenCalled();
@@ -201,7 +202,7 @@ describe("collector ingestion pipeline", () => {
 
   it("routes invalid events to DLQ before topic extraction", async () => {
     const {
-      processor,
+      ingestion,
       healthContext,
       checkpointStore,
       publishAcceptedEvent,
@@ -214,9 +215,9 @@ describe("collector ingestion pipeline", () => {
       url: "https://example.com/broken",
     });
 
-    const result = await processor.process(invalidEvent);
+    const result = await ingestion.ingest(invalidEvent);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });
@@ -246,7 +247,7 @@ describe("collector ingestion pipeline", () => {
 
   it("applies source-specific validation strategy for non-rss adapters", async () => {
     const {
-      processor,
+      ingestion,
       healthContext,
       checkpointStore,
       publishAcceptedEvent,
@@ -265,9 +266,9 @@ describe("collector ingestion pipeline", () => {
         feed_url: "https://example.com/ignored-feed",
       },
     });
-    const result = await processor.process(invalidEvent);
+    const result = await ingestion.ingest(invalidEvent);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });
@@ -301,16 +302,16 @@ describe("collector ingestion pipeline", () => {
     },
   ])("treats whitespace-only $label as invalid", async ({ event }) => {
     const {
-      processor,
+      ingestion,
       healthContext,
       checkpointStore,
       publishAcceptedEvent,
       publishRejectedEvent,
     } = createHarness();
 
-    const result = await processor.process(event);
+    const result = await ingestion.ingest(event);
 
-    expect(result).toEqual<CollectorEventProcessResult>({
+    expect(result).toEqual<CollectorIngestionResult>({
       status: "invalid",
       errorCode: "VALIDATION_FAILED",
     });

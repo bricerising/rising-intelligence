@@ -69,7 +69,7 @@ export interface CollectorAdapterBuildResult {
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
 }
 
-export interface CollectorAdapterCatalog {
+export interface CollectorIngestionAdapterFactory {
   buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
 }
 
@@ -259,7 +259,7 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
 
 const DEFAULT_ADAPTER_DEFINITIONS = createAdapterDefinitions();
 
-export class CollectorAdapterFactory implements CollectorAdapterCatalog {
+export class CollectorAdapterFactory implements CollectorIngestionAdapterFactory {
   private readonly constructors: AdapterConstructors;
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
@@ -296,14 +296,10 @@ export class CollectorAdapterFactory implements CollectorAdapterCatalog {
       unsupportedEnabledAdapters,
     };
   }
-
-  build(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult {
-    return this.buildIngestionAdapters(input);
-  }
 }
 
 export function createCollectorAdapterFactory(
   constructors: AdapterConstructorOverrides = {}
-): CollectorAdapterFactory {
+): CollectorIngestionAdapterFactory {
   return new CollectorAdapterFactory(constructors);
 }

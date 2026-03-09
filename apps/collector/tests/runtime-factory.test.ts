@@ -4,7 +4,7 @@ import type { Config } from "../src/config.js";
 import type { ContentFetcherConfig } from "../src/content-fetcher.js";
 import { createHealthContext } from "../src/health.js";
 import type { MarketFilterProfile } from "../src/market-filters.js";
-import type { CollectorAdapterFactory } from "../src/adapters/factory.js";
+import type { CollectorIngestionAdapterFactory } from "../src/adapters/factory.js";
 import {
   createCollectorRuntimeFactory,
   type CollectorRuntimeFactoryDependencies,
@@ -145,11 +145,11 @@ function createDependencies(
   };
   const adapters: SourceAdapter[] = [createSourceAdapter("rss", "rss")];
   const adapterFactory = {
-    build: vi.fn(() => ({
+    buildIngestionAdapters: vi.fn(() => ({
       adapters,
       unsupportedEnabledAdapters: [],
     })),
-  } as CollectorAdapterFactory;
+  } as CollectorIngestionAdapterFactory;
 
   const dependencies: CollectorRuntimeFactoryDependencies = {
     createHealthContext: vi.fn(() => healthContext),
@@ -219,11 +219,11 @@ describe("createCollectorRuntimeFactory", () => {
       contentFetcherConfig,
     } = createDependencies();
     const configuredAdapterFactory = {
-      build: vi.fn(() => ({
+      buildIngestionAdapters: vi.fn(() => ({
         adapters,
         unsupportedEnabledAdapters: ["reddit"],
       })),
-    } as CollectorAdapterFactory;
+    } as CollectorIngestionAdapterFactory;
     dependencies.createCollectorAdapterFactory = vi.fn(() => configuredAdapterFactory);
     const factory = createCollectorRuntimeFactory(dependencies);
 
@@ -252,7 +252,7 @@ describe("createCollectorRuntimeFactory", () => {
     expect(dependencies.getEnvironment).toHaveBeenCalledTimes(1);
     expect(dependencies.createContentFetcherConfig).toHaveBeenCalledWith(environment);
     expect(dependencies.createCollectorAdapterFactory).toHaveBeenCalledTimes(1);
-    expect(configuredAdapterFactory.build).toHaveBeenCalledWith({
+    expect(configuredAdapterFactory.buildIngestionAdapters).toHaveBeenCalledWith({
       config,
       checkpointStore,
       logger: loggerHarness,
@@ -299,11 +299,11 @@ describe("createCollectorRuntimeFactory", () => {
       }),
     });
     const failingAdapterFactory = {
-      build: vi.fn(() => ({
+      buildIngestionAdapters: vi.fn(() => ({
         adapters: [adapterOne, adapterTwo],
         unsupportedEnabledAdapters: [],
       })),
-    } as CollectorAdapterFactory;
+    } as CollectorIngestionAdapterFactory;
     setup.dependencies.createCollectorAdapterFactory = vi.fn(() => failingAdapterFactory);
     const factory = createCollectorRuntimeFactory(setup.dependencies);
 

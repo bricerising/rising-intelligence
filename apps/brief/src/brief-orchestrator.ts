@@ -36,7 +36,6 @@ import {
 import type { Config } from "./config.js";
 import type { PreparedBriefingRequest } from "./types.js";
 import type { PrismaClient } from "@rising-intelligence/db";
-import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
 
 // ── Context shared with the orchestrator ────────────────────────────────────
@@ -47,7 +46,6 @@ export interface OrchestratorContext {
   healthContext: HealthContext;
   prisma: PrismaClient;
   redis: Redis;
-  producer: ProducerConnection;
 }
 
 // ── Runtime collaborators built per-request ─────────────────────────────────

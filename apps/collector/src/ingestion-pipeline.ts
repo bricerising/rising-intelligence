@@ -19,6 +19,10 @@ import {
 import type { CollectorIngestionPublisher } from "./publishing-facade.js";
 import type { DeadLetterEvent, RawEvent, Source } from "./types.js";
 
+/**
+ * Collector-internal event processing chain.
+ * External callers should depend on the collector ingestion boundary.
+ */
 export type CollectorEventProcessResult =
   | {
     status: "ingested";

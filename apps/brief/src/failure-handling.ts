@@ -7,7 +7,6 @@
  */
 
 import { BriefStatus, type PrismaClient } from "@rising-intelligence/db";
-import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import type { Redis } from "ioredis";
 import type pino from "pino";
@@ -37,7 +36,6 @@ export interface FailureHandlingProcessContext {
   healthContext: HealthContext;
   prisma: PrismaClient;
   redis: Redis;
-  producer: ProducerConnection;
 }
 
 // ── Result emission ─────────────────────────────────────────────────────────

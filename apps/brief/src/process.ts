@@ -129,7 +129,6 @@ class SummaryRequestRuntimeFactory {
       healthContext: ctx.healthContext,
       prisma: ctx.prisma,
       redis: ctx.redis,
-      producer: ctx.producer,
     };
 
     const orchestratorRuntime: OrchestratorRuntime = {

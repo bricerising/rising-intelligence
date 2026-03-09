@@ -7,6 +7,7 @@ import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
 import { BackoffManager, sleep } from "@rising-intelligence/shared/resilience";
 import { getConfig } from "./config.js";
+import { createCollectorIngestion } from "./collector-ingestion.js";
 import {
   observePollDuration,
   observePollItemsCount,
@@ -14,7 +15,6 @@ import {
 } from "./health.js";
 import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
 import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
-import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
 import {
   createCollectorHeartbeatPublisher,
   createCollectorIngestionPublisher,
@@ -65,7 +65,7 @@ async function runAdapter(
   const heartbeatPublisher = createCollectorHeartbeatPublisher(publisher);
   const backoff = new BackoffManager(adapter.name, adapterLogger);
   const errorPolicy = createAdapterErrorPolicy();
-  const eventProcessor = createCollectorEventProcessor({
+  const ingestion = createCollectorIngestion({
     adapterName: adapter.name,
     adapterSource: adapter.source,
     allowlist,
@@ -88,7 +88,7 @@ async function runAdapter(
         lastCheckpointKey = checkpointKey;
         lastCheckpointValue = checkpointValue;
 
-        const processingResult = await eventProcessor.process(event);
+        const processingResult = await ingestion.ingest(event);
         if (processingResult.status === "ingested") {
           batchCount++;
         }

@@ -107,7 +107,7 @@ describe("collector adapter factory", () => {
     const config = createAdapterConfig();
     const factory = createCollectorAdapterFactory(constructorMocks);
 
-    const result = factory.build({
+    const result = factory.buildIngestionAdapters({
       config,
       checkpointStore,
       logger,
@@ -165,7 +165,7 @@ describe("collector adapter factory", () => {
     });
     const factory = createCollectorAdapterFactory(constructorMocks);
 
-    const result = factory.build({
+    const result = factory.buildIngestionAdapters({
       config,
       checkpointStore,
       logger,
@@ -188,7 +188,7 @@ describe("collector adapter factory", () => {
     const onRssFeedError = vi.fn();
     const factory = createCollectorAdapterFactory(constructorMocks);
 
-    factory.build({
+    factory.buildIngestionAdapters({
       config,
       checkpointStore,
       logger,
@@ -213,7 +213,7 @@ describe("collector adapter factory", () => {
     });
     const factory = createCollectorAdapterFactory(constructorMocks);
 
-    factory.build({
+    factory.buildIngestionAdapters({
       config,
       checkpointStore,
       logger,

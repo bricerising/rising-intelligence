@@ -15,7 +15,7 @@ import { createComponentLoggerFactory } from "@rising-intelligence/shared/loggin
 import type pino from "pino";
 import {
   createCollectorAdapterFactory,
-  type CollectorAdapterFactory,
+  type CollectorIngestionAdapterFactory,
 } from "./adapters/factory.js";
 import { CheckpointStore } from "./checkpoint.js";
 import type { Config } from "./config.js";
@@ -54,7 +54,7 @@ export interface CollectorRuntimeFactoryDependencies {
   loadMarketFilterProfiles(path: string): MarketFilterProfile[];
   getEnvironment(): NodeJS.ProcessEnv;
   createContentFetcherConfig(env: NodeJS.ProcessEnv): ContentFetcherConfig;
-  createCollectorAdapterFactory(): CollectorAdapterFactory;
+  createCollectorAdapterFactory(): CollectorIngestionAdapterFactory;
 }
 
 export interface CollectorRuntimeContext {
@@ -188,7 +188,7 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         "Content fetcher configuration loaded"
       );
 
-      const { adapters, unsupportedEnabledAdapters } = adapterFactory.build({
+      const { adapters, unsupportedEnabledAdapters } = adapterFactory.buildIngestionAdapters({
         config,
         checkpointStore,
         logger,
