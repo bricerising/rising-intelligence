@@ -1,4 +1,7 @@
-import { sourceToProtoEnum } from "@rising-intelligence/pipeline";
+import {
+  SOURCE_KEY_TO_ENUM,
+  sourceToProtoEnum,
+} from "@rising-intelligence/pipeline";
 import {
   createRawEvent,
   type RawEvent,
@@ -16,15 +19,46 @@ const STATUS_TO_PROTO: Record<string, number> = {
   error: 3,
 };
 
-/**
- * Serialize RawEvent to JSON for Kafka.
- * In MVP, we use JSON encoding. Can switch to protobuf binary later.
- */
-export function serializeRawEvent(event: RawEvent): Buffer {
+interface RawEventWirePayload {
+  event_id: string;
+  source: number;
+  fetched_at: string;
+  published_at: string;
+  url: string;
+  title: string;
+  text: string;
+  author?:
+    | {
+        id: string;
+        handle: string;
+        display_name: string;
+      }
+    | undefined;
+  engagement?:
+    | {
+        score: number;
+        comments: number;
+        likes: number;
+        shares: number;
+      }
+    | undefined;
+  lang: string;
+  tags: string[];
+  extracted?:
+    | {
+        hashtags: string[];
+        urls: string[];
+      }
+    | undefined;
+  source_meta_json: string;
+}
+
+export function toRawEventWirePayload(event: RawEvent): RawEventWirePayload {
   const normalizedEvent = createRawEvent(event);
-  const protoEvent = {
+
+  return {
     event_id: normalizedEvent.event_id,
-    source: sourceToProtoEnum(normalizedEvent.source),
+    source: SOURCE_KEY_TO_ENUM[normalizedEvent.source],
     fetched_at: normalizedEvent.fetched_at,
     published_at: normalizedEvent.published_at ?? "",
     url: normalizedEvent.url ?? "",
@@ -57,8 +91,14 @@ export function serializeRawEvent(event: RawEvent): Buffer {
       ? JSON.stringify(normalizedEvent.source_meta)
       : "",
   };
+}
 
-  return Buffer.from(JSON.stringify(protoEvent));
+/**
+ * Serialize RawEvent to JSON for Kafka.
+ * In MVP, we use JSON encoding. Can switch to protobuf binary later.
+ */
+export function serializeRawEvent(event: RawEvent): Buffer {
+  return Buffer.from(JSON.stringify(toRawEventWirePayload(event)));
 }
 
 /**

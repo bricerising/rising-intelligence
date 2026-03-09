@@ -1,11 +1,9 @@
 /**
  * Brief orchestration boundary.
  *
- * Mediates between the summary-request processor and the brief service's
- * internal subsystems (budgeting, generation, persistence, publishing,
- * failure handling, metrics).  process.ts delegates all subsystem
- * interactions through this single interface, collapsing the multi-cluster
- * fan-out into one internal boundary.
+ * Mediates between prepared briefing input and the brief service's internal
+ * subsystems (budgeting, generation, persistence, publishing, failure
+ * handling, metrics).
  */
 
 import { BriefStatus } from "@rising-intelligence/db";
@@ -32,11 +30,8 @@ import type { SummaryRequestGenerationFacade, SuccessResult } from "./llm/genera
 import { estimateRequestCostUsd, normalizeUsd, normalizeUsdDelta } from "./llm/generation-facade.js";
 import {
   emitFailureResult,
-  handleNonRetryableFailure,
   handleSummaryRequestFailure,
 } from "./failure-handling.js";
-import { NonRetryableProcessingError } from "./processing-errors.js";
-import type { QueryModeRequestResolver } from "./query-mode-request-facade.js";
 import type { Config } from "./config.js";
 import type { ParsedSummaryRequest } from "./types.js";
 import type { PrismaClient } from "@rising-intelligence/db";
@@ -60,23 +55,53 @@ export interface OrchestratorRuntime {
   budgetLedger: BriefBudgetLedger;
   publisher: BriefResultPublisher;
   resultStore: BriefResultStore;
-  queryModeRequestResolver: QueryModeRequestResolver;
   generationFacade: SummaryRequestGenerationFacade;
   producedAt: Date;
+}
+
+export interface BriefingInput
+  extends Pick<
+    ParsedSummaryRequest,
+    | "requestId"
+    | "requestedAt"
+    | "type"
+    | "windows"
+    | "budget"
+    | "query"
+    | "report"
+    | "topics"
+    | "llmProvider"
+    | "coverageWarnings"
+  > {}
+
+export function createBriefingInput(
+  request: ParsedSummaryRequest
+): BriefingInput {
+  return {
+    requestId: request.requestId,
+    requestedAt: request.requestedAt,
+    type: request.type,
+    windows: request.windows,
+    budget: request.budget,
+    query: request.query,
+    report: request.report,
+    topics: request.topics,
+    llmProvider: request.llmProvider,
+    coverageWarnings: request.coverageWarnings,
+  };
 }
 
 // ── Orchestrator interface ──────────────────────────────────────────────────
 
 export interface BriefOrchestrator {
   /**
-   * Runs the full request lifecycle: idempotency → query resolution →
-   * budget → generation → persistence → publishing → metrics.
+   * Runs the prepared briefing lifecycle:
+   * idempotency → budget → generation → persistence → publishing → metrics.
    */
   execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    request: ParsedSummaryRequest,
-    logger: pino.Logger
+    input: BriefingInput
   ): Promise<void>;
 }
 
@@ -135,23 +160,22 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
   async execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    request: ParsedSummaryRequest,
-    logger: pino.Logger
+    input: BriefingInput
   ): Promise<void> {
     const {
       budgetLedger,
       publisher,
       resultStore,
-      queryModeRequestResolver,
       generationFacade,
       producedAt,
     } = runtime;
+    const logger = ctx.logger;
 
     // ── Phase 1: Idempotency check ──────────────────────────────────────
     let existingResult: StoredBriefResult | null = null;
 
     try {
-      existingResult = await resultStore.load(request.requestId);
+      existingResult = await resultStore.load(input.requestId);
     } catch (error) {
       incrementError(ctx.healthContext, "idempotency_error");
       logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
@@ -162,7 +186,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
       try {
-        await publisher.publishResult(request.requestId, existingResult.payload);
+        await publisher.publishResult(input.requestId, existingResult.payload);
         logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
         return;
       } catch (error) {
@@ -175,36 +199,11 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       }
     }
 
-    // ── Phase 2: Query-mode resolution ──────────────────────────────────
-    let requestForGeneration: ParsedSummaryRequest;
-    try {
-      requestForGeneration = await queryModeRequestResolver.resolve(ctx, request, logger);
-    } catch (error) {
-      if (error instanceof NonRetryableProcessingError) {
-        await handleNonRetryableFailure({
-          ctx,
-          resultStore,
-          publisher,
-          requestId: request.requestId,
-          producedAt,
-          error,
-          logger,
-          logMessage: "Summary request failed non-retryable pre-processing",
-        });
-        return;
-      }
-
-      incrementError(ctx.healthContext, "generation_error");
-      incrementGeneration(ctx.healthContext, "failure");
-      logger.error({ error: serializeError(error) }, "Failed to resolve summary request");
-      throw error;
-    }
-
-    // ── Phase 3: Budget reservation ─────────────────────────────────────
+    // ── Phase 2: Budget reservation ─────────────────────────────────────
     const dateKey = getBudgetDateKey(producedAt);
     const dailyBudgetUsd =
-      requestForGeneration.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
-    const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(requestForGeneration));
+      input.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
+    const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(input));
     let budgetReserved = false;
     let spentBudgetUsd = 0;
     let reservedCostUsd = estimatedCostUsd;
@@ -236,7 +235,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         ctx,
         resultStore,
         publisher,
-        request.requestId,
+        input.requestId,
         producedAt,
         "budget_exceeded",
         "Daily brief budget exceeded",
@@ -253,12 +252,12 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       return;
     }
 
-    // ── Phase 4: Generation → Persistence → Publishing ──────────────────
+    // ── Phase 3: Generation → Persistence → Publishing ──────────────────
     let persistedCreated = false;
     try {
       const successResult = await generationFacade.buildSuccessResult({
         ctx,
-        request: requestForGeneration,
+        request: input,
         producedAt,
         estimatedCostUsd,
       });
@@ -277,18 +276,18 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         incrementGeneration(ctx.healthContext, "skipped");
         const republishedStatus = await republishPersistedResult(
           resultStore,
-          request.requestId,
+          input.requestId,
           publisher
         );
         if (!republishedStatus) {
-          throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
+          throw new Error(`Persisted result missing after duplicate insert for request ${input.requestId}`);
         }
         logger.info({ status: republishedStatus }, "Detected duplicate during persist and republished stored result");
         return;
       }
       persistedCreated = true;
 
-      // ── Phase 5: Budget settlement ────────────────────────────────────
+      // ── Phase 4: Budget settlement ────────────────────────────────────
       const costDeltaUsd = normalizeUsdDelta(successResult.metrics.costUsd - reservedCostUsd);
       if (costDeltaUsd !== 0) {
         try {
@@ -311,9 +310,9 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         }
       }
 
-      await publisher.publishResult(request.requestId, successResult.payload);
+      await publisher.publishResult(input.requestId, successResult.payload);
 
-      // ── Phase 6: Metrics ──────────────────────────────────────────────
+      // ── Phase 5: Metrics ──────────────────────────────────────────────
       emitSuccessMetrics(ctx.healthContext, successResult);
 
       setBudgetRemainingUsd(
@@ -329,7 +328,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         "Summary request processed"
       );
     } catch (error) {
-      // ── Phase 7: Failure handling ─────────────────────────────────────
+      // ── Phase 6: Failure handling ─────────────────────────────────────
       if (budgetReserved && !persistedCreated) {
         try {
           await rollbackBudgetReservation(
@@ -356,7 +355,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         ctx,
         resultStore,
         publisher,
-        requestId: request.requestId,
+        requestId: input.requestId,
         producedAt,
         logger,
         persistedCreated,

@@ -19,6 +19,36 @@ import {
 const LOBSTERS_RSS_URL = "https://lobste.rs/rss";
 const MIN_RSS_CONTENT_LENGTH = 300;
 
+function normalizeLobstersCommunityTags(categories: Parser.Item["categories"]): string[] {
+  return (categories ?? [])
+    .map((category) =>
+      typeof category === "string" ? category : String(category)
+    )
+    .filter(Boolean);
+}
+
+function buildLobstersSourceMeta(
+  guid: string,
+  communityTags: string[],
+  item: Parser.Item
+): Record<string, unknown> {
+  const sourceMeta: Record<string, unknown> = {
+    collected_from: "lobsters",
+    guid,
+  };
+
+  if (communityTags.length > 0) {
+    sourceMeta.community_tags = communityTags;
+  }
+
+  const commentsUrl = (item as Record<string, unknown>).comments;
+  if (typeof commentsUrl === "string" && commentsUrl.trim() !== "") {
+    sourceMeta.comments_url = commentsUrl;
+  }
+
+  return sourceMeta;
+}
+
 /**
  * Create hash of string for stable IDs
  */
@@ -171,11 +201,7 @@ export class LobstersAdapter implements SourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    // Extract lobsters-specific metadata
-    // Lobsters items often have tags in categories
-    const tags = (item.categories ?? []).map((c) =>
-      typeof c === "string" ? c : String(c)
-    ).filter(Boolean);
+    const communityTags = normalizeLobstersCommunityTags(item.categories);
 
     const event = createRawEvent({
       event_id: `lobsters:${hashString(guid)}`,
@@ -195,11 +221,7 @@ export class LobstersAdapter implements SourceAdapter {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
       },
-      source_meta: {
-        guid,
-        tags,
-        comments_url: (item as Record<string, unknown>).comments as string | undefined,
-      },
+      source_meta: buildLobstersSourceMeta(guid, communityTags, item),
     });
 
     return event;

@@ -2,17 +2,15 @@
  * Summary request processing orchestrator.
  *
  * Coordinates the end-to-end lifecycle of a summary request:
- * duplicate detection → query-mode resolution → budget reservation →
- * LLM generation → persistence → publishing → metric emission.
+ * request-scoped logging → query-mode resolution → prepared briefing execution.
  *
  * Domain concerns (evidence scoring, grounding enforcement, LLM provider
  * strategies, failure handling) are delegated to focused internal modules
  * behind the internals barrel.
  *
- * All subsystem interactions (budgeting, generation, persistence, publishing,
- * failure handling, metrics) are mediated through the BriefOrchestrator
- * boundary, collapsing process.ts's multi-cluster fan-out into a single
- * internal dependency.
+ * Once request preparation is complete, budgeting, generation, persistence,
+ * publishing, failure handling, and metrics are mediated through the
+ * BriefOrchestrator boundary.
  */
 
 import type { PrismaClient } from "@rising-intelligence/db";
@@ -29,6 +27,8 @@ import {
   type CreateBriefBudgetLedgerInput,
   type Config,
   type HealthContext,
+  incrementError,
+  incrementGeneration,
   createSummaryRequestGroundingFacade,
   type SummaryRequestGroundingFacade,
   createBriefResultPublisher,
@@ -39,16 +39,21 @@ import {
   createBriefResultStore,
   type BriefResultStore,
   type ParsedSummaryRequest,
+  handleNonRetryableFailure,
+  NonRetryableProcessingError,
   // LLM generation facade
   createSummaryRequestGenerationFacade,
   type SummaryRequestGenerationFacade,
 } from "./internals.js";
 import {
+  createBriefingInput,
   createBriefOrchestrator,
+  type BriefingInput,
   type BriefOrchestrator,
   type OrchestratorContext,
   type OrchestratorRuntime,
 } from "./brief-orchestrator.js";
+import { serializeError } from "@rising-intelligence/shared/errors";
 
 export interface ProcessContext {
   config: Config;
@@ -86,9 +91,9 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
+  briefingInput: BriefingInput;
   orchestratorContext: OrchestratorContext;
   orchestratorRuntime: OrchestratorRuntime;
-  logger: pino.Logger;
 }
 
 const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
@@ -109,7 +114,10 @@ class SummaryRequestRuntimeFactory {
     this.queryModeRequestResolver = dependencies.createQueryModeRequestResolver();
   }
 
-  create(ctx: ProcessContext, request: ParsedSummaryRequest): SummaryRequestRuntime {
+  async create(
+    ctx: ProcessContext,
+    request: ParsedSummaryRequest
+  ): Promise<SummaryRequestRuntime | null> {
     const logger = ctx.logger.child({ requestId: request.requestId });
     const groundingFacade = resolveGroundingFacade(ctx);
 
@@ -137,12 +145,46 @@ class SummaryRequestRuntimeFactory {
         ctx.prisma,
         ctx.healthContext
       ),
-      queryModeRequestResolver: this.queryModeRequestResolver,
       generationFacade: createSummaryRequestGenerationFacade(groundingFacade),
       producedAt: new Date(),
     };
 
-    return { orchestratorContext, orchestratorRuntime, logger };
+    let resolvedRequest: ParsedSummaryRequest;
+    try {
+      resolvedRequest = await this.queryModeRequestResolver.resolve(
+        orchestratorContext,
+        request,
+        logger
+      );
+    } catch (error) {
+      if (error instanceof NonRetryableProcessingError) {
+        await handleNonRetryableFailure({
+          ctx: orchestratorContext,
+          resultStore: orchestratorRuntime.resultStore,
+          publisher: orchestratorRuntime.publisher,
+          requestId: request.requestId,
+          producedAt: orchestratorRuntime.producedAt,
+          error,
+          logger,
+          logMessage: "Summary request failed non-retryable pre-processing",
+        });
+        return null;
+      }
+
+      incrementError(orchestratorContext.healthContext, "generation_error");
+      incrementGeneration(orchestratorContext.healthContext, "failure");
+      logger.error(
+        { error: serializeError(error) },
+        "Failed to resolve summary request into briefing input"
+      );
+      throw error;
+    }
+
+    return {
+      briefingInput: createBriefingInput(resolvedRequest),
+      orchestratorContext,
+      orchestratorRuntime,
+    };
   }
 }
 
@@ -159,14 +201,17 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
     ctx: ProcessContext,
     request: ParsedSummaryRequest
   ): Promise<void> {
-    const { orchestratorContext, orchestratorRuntime, logger } =
-      this.runtimeFactory.create(ctx, request);
+    const runtime = await this.runtimeFactory.create(ctx, request);
+    if (!runtime) {
+      return;
+    }
+
+    const { briefingInput, orchestratorContext, orchestratorRuntime } = runtime;
 
     await this.orchestrator.execute(
       orchestratorContext,
       orchestratorRuntime,
-      request,
-      logger
+      briefingInput
     );
   }
 }

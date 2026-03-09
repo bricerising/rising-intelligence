@@ -1,11 +1,15 @@
-import type { CanonicalSource } from "@rising-intelligence/pipeline";
+import {
+  parseCanonicalSource,
+  type CanonicalSource,
+} from "@rising-intelligence/pipeline";
 
 /**
  * Source values accepted by collector adapters.
  * Extends the shared CanonicalSource contract with "lobsters", a collector-
- * internal alias that the serializer resolves to "news" on the wire.
+ * internal alias that collector normalization resolves to "news" on the wire.
  */
 export type Source = CanonicalSource | "lobsters";
+export type RawEventSource = CanonicalSource;
 
 export interface Author {
   id?: string;
@@ -31,7 +35,7 @@ export interface Extracted {
  */
 export interface RawEvent {
   event_id: string;
-  source: Source;
+  source: RawEventSource;
   fetched_at: string; // ISO8601
   published_at?: string; // ISO8601
 
@@ -81,6 +85,10 @@ export interface CreateRawEventInput {
   tags?: Array<string | null | undefined> | null;
   extracted?: RawEventExtractedInput | null;
   source_meta?: Record<string, unknown> | null;
+}
+
+export function normalizeRawEventSource(source: Source): RawEventSource {
+  return parseCanonicalSource(source);
 }
 
 function normalizeOptionalString(value: string | null | undefined): string | undefined {
@@ -199,7 +207,7 @@ export function createRawEvent(input: CreateRawEventInput): RawEvent {
 
   return {
     event_id: input.event_id.trim(),
-    source: input.source,
+    source: normalizeRawEventSource(input.source),
     fetched_at: input.fetched_at.trim(),
     published_at: publishedAt,
     url,

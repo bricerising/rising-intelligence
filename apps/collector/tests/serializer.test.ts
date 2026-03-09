@@ -6,6 +6,7 @@ import {
   generateEventId,
   generateDlqId,
 } from "../src/serializer.js";
+import { createRawEvent } from "../src/types.js";
 
 describe("serializer", () => {
   it("serializes RawEvent with proto-compatible defaults", () => {
@@ -71,13 +72,16 @@ describe("serializer", () => {
     });
   });
 
-  it("maps Lobsters source to proto NEWS enum", () => {
-    const buf = serializeRawEvent({
+  it("normalizes Lobsters to the canonical NEWS handoff before serialization", () => {
+    const event = createRawEvent({
       event_id: "lobsters:abc",
       source: "lobsters",
       fetched_at: "2026-02-06T00:00:00.000Z",
       text: "hello",
     });
+    expect(event.source).toBe("news");
+
+    const buf = serializeRawEvent(event);
 
     const obj = JSON.parse(buf.toString("utf-8")) as Record<string, unknown>;
     expect(obj.source).toBe(2);
