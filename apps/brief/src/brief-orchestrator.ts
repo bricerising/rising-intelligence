@@ -33,7 +33,7 @@ import {
   handleSummaryRequestFailure,
 } from "./failure-handling.js";
 import type { Config } from "./config.js";
-import type { ParsedSummaryRequest } from "./types.js";
+import type { PreparedBriefingRequest } from "./types.js";
 import type { PrismaClient } from "@rising-intelligence/db";
 import type { ProducerConnection } from "@rising-intelligence/pipeline/transport";
 import type { Redis } from "ioredis";
@@ -59,38 +59,6 @@ export interface OrchestratorRuntime {
   producedAt: Date;
 }
 
-export interface BriefingInput
-  extends Pick<
-    ParsedSummaryRequest,
-    | "requestId"
-    | "requestedAt"
-    | "type"
-    | "windows"
-    | "budget"
-    | "query"
-    | "report"
-    | "topics"
-    | "llmProvider"
-    | "coverageWarnings"
-  > {}
-
-export function createBriefingInput(
-  request: ParsedSummaryRequest
-): BriefingInput {
-  return {
-    requestId: request.requestId,
-    requestedAt: request.requestedAt,
-    type: request.type,
-    windows: request.windows,
-    budget: request.budget,
-    query: request.query,
-    report: request.report,
-    topics: request.topics,
-    llmProvider: request.llmProvider,
-    coverageWarnings: request.coverageWarnings,
-  };
-}
-
 // ── Orchestrator interface ──────────────────────────────────────────────────
 
 export interface BriefOrchestrator {
@@ -101,7 +69,7 @@ export interface BriefOrchestrator {
   execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    input: BriefingInput
+    input: PreparedBriefingRequest
   ): Promise<void>;
 }
 
@@ -160,7 +128,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
   async execute(
     ctx: OrchestratorContext,
     runtime: OrchestratorRuntime,
-    input: BriefingInput
+    input: PreparedBriefingRequest
   ): Promise<void> {
     const {
       budgetLedger,

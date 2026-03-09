@@ -11,6 +11,12 @@ import {
 export type Source = CanonicalSource | "lobsters";
 export type RawEventSource = CanonicalSource;
 
+export interface CollectedContentAuthor {
+  id?: string;
+  handle?: string;
+  displayName?: string;
+}
+
 export interface Author {
   id?: string;
   handle?: string;
@@ -27,6 +33,31 @@ export interface Engagement {
 export interface Extracted {
   hashtags?: string[];
   urls?: string[];
+}
+
+/**
+ * Stable collected-content contract used between source adaptation and
+ * collector serialization. The raw-event wire shape is derived from this
+ * contract at the publication boundary.
+ */
+export interface CollectedContent {
+  eventId: string;
+  source: RawEventSource;
+  fetchedAt: string; // ISO8601
+  publishedAt?: string; // ISO8601
+
+  url?: string;
+  title?: string;
+  text: string;
+
+  author?: CollectedContentAuthor;
+  engagement?: Engagement;
+
+  lang?: string;
+  tags?: string[];
+  extracted?: Extracted;
+
+  sourceMeta?: Record<string, unknown>;
 }
 
 /**
@@ -59,6 +90,12 @@ export interface RawEventAuthorInput {
   display_name?: string | null;
 }
 
+export interface CollectedContentAuthorInput {
+  id?: string | null;
+  handle?: string | null;
+  displayName?: string | null;
+}
+
 export interface RawEventEngagementInput {
   score?: number | null;
   comments?: number | null;
@@ -85,6 +122,22 @@ export interface CreateRawEventInput {
   tags?: Array<string | null | undefined> | null;
   extracted?: RawEventExtractedInput | null;
   source_meta?: Record<string, unknown> | null;
+}
+
+export interface CreateCollectedContentInput {
+  eventId: string;
+  source: Source;
+  fetchedAt: string;
+  publishedAt?: string | null;
+  url?: string | null;
+  title?: string | null;
+  text: string;
+  author?: CollectedContentAuthorInput | null;
+  engagement?: RawEventEngagementInput | null;
+  lang?: string | null;
+  tags?: Array<string | null | undefined> | null;
+  extracted?: RawEventExtractedInput | null;
+  sourceMeta?: Record<string, unknown> | null;
 }
 
 export function normalizeRawEventSource(source: Source): RawEventSource {
@@ -121,17 +174,17 @@ function normalizeStringArray(
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeAuthor(
-  author: RawEventAuthorInput | null | undefined
-): Author | undefined {
+function normalizeCollectedContentAuthor(
+  author: CollectedContentAuthorInput | null | undefined
+): CollectedContentAuthor | undefined {
   if (!author) {
     return undefined;
   }
 
-  const normalized: Author = {};
+  const normalized: CollectedContentAuthor = {};
   const id = normalizeOptionalString(author.id);
   const handle = normalizeOptionalString(author.handle);
-  const displayName = normalizeOptionalString(author.display_name);
+  const displayName = normalizeOptionalString(author.displayName);
 
   if (id) {
     normalized.id = id;
@@ -140,7 +193,7 @@ function normalizeAuthor(
     normalized.handle = handle;
   }
   if (displayName) {
-    normalized.display_name = displayName;
+    normalized.displayName = displayName;
   }
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -195,21 +248,23 @@ function normalizeExtracted(
   };
 }
 
-export function createRawEvent(input: CreateRawEventInput): RawEvent {
-  const publishedAt = normalizeOptionalString(input.published_at);
+export function createCollectedContent(
+  input: CreateCollectedContentInput
+): CollectedContent {
+  const publishedAt = normalizeOptionalString(input.publishedAt);
   const url = normalizeOptionalString(input.url);
   const title = normalizeOptionalString(input.title);
   const lang = normalizeOptionalString(input.lang);
   const tags = normalizeStringArray(input.tags);
   const extracted = normalizeExtracted(input.extracted);
-  const author = normalizeAuthor(input.author);
+  const author = normalizeCollectedContentAuthor(input.author);
   const engagement = normalizeEngagement(input.engagement);
 
   return {
-    event_id: input.event_id.trim(),
+    eventId: input.eventId.trim(),
     source: normalizeRawEventSource(input.source),
-    fetched_at: input.fetched_at.trim(),
-    published_at: publishedAt,
+    fetchedAt: input.fetchedAt.trim(),
+    publishedAt,
     url,
     title,
     text: input.text.trim(),
@@ -218,8 +273,110 @@ export function createRawEvent(input: CreateRawEventInput): RawEvent {
     lang,
     tags,
     extracted,
-    source_meta: input.source_meta ?? undefined,
+    sourceMeta: input.sourceMeta ?? undefined,
   };
+}
+
+export function normalizeCollectedContent(
+  content: CollectedContent
+): CollectedContent {
+  return createCollectedContent({
+    eventId: content.eventId,
+    source: content.source,
+    fetchedAt: content.fetchedAt,
+    publishedAt: content.publishedAt,
+    url: content.url,
+    title: content.title,
+    text: content.text,
+    author: content.author
+      ? {
+          id: content.author.id,
+          handle: content.author.handle,
+          displayName: content.author.displayName,
+        }
+      : undefined,
+    engagement: content.engagement,
+    lang: content.lang,
+    tags: content.tags,
+    extracted: content.extracted,
+    sourceMeta: content.sourceMeta,
+  });
+}
+
+export function toRawEvent(content: CollectedContent): RawEvent {
+  const normalized = normalizeCollectedContent(content);
+
+  return {
+    event_id: normalized.eventId,
+    source: normalized.source,
+    fetched_at: normalized.fetchedAt,
+    published_at: normalized.publishedAt,
+    url: normalized.url,
+    title: normalized.title,
+    text: normalized.text,
+    author: normalized.author
+      ? {
+          id: normalized.author.id,
+          handle: normalized.author.handle,
+          display_name: normalized.author.displayName,
+        }
+      : undefined,
+    engagement: normalized.engagement,
+    lang: normalized.lang,
+    tags: normalized.tags,
+    extracted: normalized.extracted,
+    source_meta: normalized.sourceMeta,
+  };
+}
+
+export function toCollectedContent(event: RawEvent): CollectedContent {
+  return createCollectedContent({
+    eventId: event.event_id,
+    source: event.source,
+    fetchedAt: event.fetched_at,
+    publishedAt: event.published_at,
+    url: event.url,
+    title: event.title,
+    text: event.text,
+    author: event.author
+      ? {
+          id: event.author.id,
+          handle: event.author.handle,
+          displayName: event.author.display_name,
+        }
+      : undefined,
+    engagement: event.engagement,
+    lang: event.lang,
+    tags: event.tags,
+    extracted: event.extracted,
+    sourceMeta: event.source_meta,
+  });
+}
+
+export function createRawEvent(input: CreateRawEventInput): RawEvent {
+  return toRawEvent(
+    createCollectedContent({
+      eventId: input.event_id,
+      source: input.source,
+      fetchedAt: input.fetched_at,
+      publishedAt: input.published_at,
+      url: input.url,
+      title: input.title,
+      text: input.text,
+      author: input.author
+        ? {
+            id: input.author.id,
+            handle: input.author.handle,
+            displayName: input.author.display_name,
+          }
+        : undefined,
+      engagement: input.engagement,
+      lang: input.lang,
+      tags: input.tags,
+      extracted: input.extracted,
+      sourceMeta: input.source_meta,
+    })
+  );
 }
 
 /**

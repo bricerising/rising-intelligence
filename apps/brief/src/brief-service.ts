@@ -5,6 +5,7 @@ import {
   type BriefRuntimeContext,
   type ProcessContext,
   type ParsedTrendSnapshot,
+  createSummaryRequestProcessor,
   createSummaryRequestGroundingFacade,
   deserializeSummaryRequest,
   deserializeTrendSnapshot,
@@ -12,10 +13,10 @@ import {
   incrementError,
   mapTrendWindowToEnum,
   observeGenerationDuration,
-  processSummaryRequest,
 } from "./service.js";
 
 const briefGroundingFacade = createSummaryRequestGroundingFacade();
+const summaryRequestProcessor = createSummaryRequestProcessor();
 
 export interface BriefService {
   handleSummaryRequest(
@@ -82,7 +83,7 @@ export function createBriefService(): BriefService {
 
       const startTime = Date.now();
       try {
-        await processSummaryRequest(
+        await summaryRequestProcessor.processSummaryRequest(
           buildProcessContext(ctx, messageLogger),
           request,
         );

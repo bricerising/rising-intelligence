@@ -3,7 +3,9 @@ import {
   sourceToProtoEnum,
 } from "@rising-intelligence/pipeline";
 import {
-  createRawEvent,
+  normalizeCollectedContent,
+  toCollectedContent,
+  type CollectedContent,
   type RawEvent,
   type DeadLetterEvent,
   type CollectorHeartbeat,
@@ -53,44 +55,50 @@ interface RawEventWirePayload {
   source_meta_json: string;
 }
 
-export function toRawEventWirePayload(event: RawEvent): RawEventWirePayload {
-  const normalizedEvent = createRawEvent(event);
+export function toRawEventWirePayload(
+  content: CollectedContent
+): RawEventWirePayload {
+  const normalizedContent = normalizeCollectedContent(content);
 
   return {
-    event_id: normalizedEvent.event_id,
-    source: SOURCE_KEY_TO_ENUM[normalizedEvent.source],
-    fetched_at: normalizedEvent.fetched_at,
-    published_at: normalizedEvent.published_at ?? "",
-    url: normalizedEvent.url ?? "",
-    title: normalizedEvent.title ?? "",
-    text: normalizedEvent.text,
-    author: normalizedEvent.author
+    event_id: normalizedContent.eventId,
+    source: SOURCE_KEY_TO_ENUM[normalizedContent.source],
+    fetched_at: normalizedContent.fetchedAt,
+    published_at: normalizedContent.publishedAt ?? "",
+    url: normalizedContent.url ?? "",
+    title: normalizedContent.title ?? "",
+    text: normalizedContent.text,
+    author: normalizedContent.author
       ? {
-          id: normalizedEvent.author.id ?? "",
-          handle: normalizedEvent.author.handle ?? "",
-          display_name: normalizedEvent.author.display_name ?? "",
+          id: normalizedContent.author.id ?? "",
+          handle: normalizedContent.author.handle ?? "",
+          display_name: normalizedContent.author.displayName ?? "",
         }
       : undefined,
-    engagement: normalizedEvent.engagement
+    engagement: normalizedContent.engagement
       ? {
-          score: normalizedEvent.engagement.score ?? 0,
-          comments: normalizedEvent.engagement.comments ?? 0,
-          likes: normalizedEvent.engagement.likes ?? 0,
-          shares: normalizedEvent.engagement.shares ?? 0,
+          score: normalizedContent.engagement.score ?? 0,
+          comments: normalizedContent.engagement.comments ?? 0,
+          likes: normalizedContent.engagement.likes ?? 0,
+          shares: normalizedContent.engagement.shares ?? 0,
         }
       : undefined,
-    lang: normalizedEvent.lang ?? "",
-    tags: normalizedEvent.tags ?? [],
-    extracted: normalizedEvent.extracted
+    lang: normalizedContent.lang ?? "",
+    tags: normalizedContent.tags ?? [],
+    extracted: normalizedContent.extracted
       ? {
-          hashtags: normalizedEvent.extracted.hashtags ?? [],
-          urls: normalizedEvent.extracted.urls ?? [],
+          hashtags: normalizedContent.extracted.hashtags ?? [],
+          urls: normalizedContent.extracted.urls ?? [],
         }
       : undefined,
-    source_meta_json: normalizedEvent.source_meta
-      ? JSON.stringify(normalizedEvent.source_meta)
+    source_meta_json: normalizedContent.sourceMeta
+      ? JSON.stringify(normalizedContent.sourceMeta)
       : "",
   };
+}
+
+export function serializeCollectedContent(content: CollectedContent): Buffer {
+  return Buffer.from(JSON.stringify(toRawEventWirePayload(content)));
 }
 
 /**
@@ -98,7 +106,7 @@ export function toRawEventWirePayload(event: RawEvent): RawEventWirePayload {
  * In MVP, we use JSON encoding. Can switch to protobuf binary later.
  */
 export function serializeRawEvent(event: RawEvent): Buffer {
-  return Buffer.from(JSON.stringify(toRawEventWirePayload(event)));
+  return serializeCollectedContent(toCollectedContent(event));
 }
 
 /**

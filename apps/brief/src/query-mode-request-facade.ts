@@ -1,5 +1,5 @@
 import {
-  buildBriefEvidenceRecordFromRawEvent,
+  buildBriefEvidenceRecordFromCollectedContent,
   BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
 } from "@rising-intelligence/pipeline";
 import { TrendWindow, type Prisma, type PrismaClient } from "@rising-intelligence/db";
@@ -365,14 +365,14 @@ async function hydrateTopics(
         },
       ],
       evidence: selectedEvents.map((event) =>
-        buildBriefEvidenceRecordFromRawEvent(
+        buildBriefEvidenceRecordFromCollectedContent(
           {
-            event_id: event.eventId,
+            eventId: event.eventId,
             source: event.source,
             url: event.url,
             title: event.title,
-            published_at: event.publishedAt,
-            fetched_at: event.fetchedAt,
+            publishedAt: event.publishedAt,
+            fetchedAt: event.fetchedAt,
             text: event.text,
           },
           {

@@ -46,14 +46,16 @@ import {
   type SummaryRequestGenerationFacade,
 } from "./internals.js";
 import {
-  createBriefingInput,
   createBriefOrchestrator,
-  type BriefingInput,
   type BriefOrchestrator,
   type OrchestratorContext,
   type OrchestratorRuntime,
 } from "./brief-orchestrator.js";
 import { serializeError } from "@rising-intelligence/shared/errors";
+import {
+  prepareBriefingRequest,
+  type PreparedBriefingRequest,
+} from "./types.js";
 
 export interface ProcessContext {
   config: Config;
@@ -91,7 +93,7 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
-  briefingInput: BriefingInput;
+  preparedRequest: PreparedBriefingRequest;
   orchestratorContext: OrchestratorContext;
   orchestratorRuntime: OrchestratorRuntime;
 }
@@ -181,7 +183,7 @@ class SummaryRequestRuntimeFactory {
     }
 
     return {
-      briefingInput: createBriefingInput(resolvedRequest),
+      preparedRequest: prepareBriefingRequest(resolvedRequest),
       orchestratorContext,
       orchestratorRuntime,
     };
@@ -206,12 +208,12 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       return;
     }
 
-    const { briefingInput, orchestratorContext, orchestratorRuntime } = runtime;
+    const { preparedRequest, orchestratorContext, orchestratorRuntime } = runtime;
 
     await this.orchestrator.execute(
       orchestratorContext,
       orchestratorRuntime,
-      briefingInput
+      preparedRequest
     );
   }
 }

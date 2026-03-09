@@ -2,7 +2,8 @@ import Parser from "rss-parser";
 import { createHash } from "node:crypto";
 import type { Logger } from "pino";
 import {
-  createRawEvent,
+  createCollectedContent,
+  toRawEvent,
   type SourceAdapter,
   type RawEvent,
   type FetchResult,
@@ -203,26 +204,26 @@ export class LobstersAdapter implements SourceAdapter {
 
     const communityTags = normalizeLobstersCommunityTags(item.categories);
 
-    const event = createRawEvent({
-      event_id: `lobsters:${hashString(guid)}`,
+    const event = toRawEvent(createCollectedContent({
+      eventId: `lobsters:${hashString(guid)}`,
       source: "lobsters",
-      fetched_at: new Date().toISOString(),
-      published_at: parseDate(item.pubDate ?? item.isoDate),
+      fetchedAt: new Date().toISOString(),
+      publishedAt: parseDate(item.pubDate ?? item.isoDate),
       url: item.link,
       title,
       text,
       author: item.creator
         ? {
             handle: item.creator,
-            display_name: item.creator,
+            displayName: item.creator,
           }
         : undefined,
       extracted: {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
       },
-      source_meta: buildLobstersSourceMeta(guid, communityTags, item),
-    });
+      sourceMeta: buildLobstersSourceMeta(guid, communityTags, item),
+    }));
 
     return event;
   }

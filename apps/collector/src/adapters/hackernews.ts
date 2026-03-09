@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import {
-  createRawEvent,
+  createCollectedContent,
+  toRawEvent,
   type SourceAdapter,
   type RawEvent,
   type FetchResult,
@@ -332,11 +333,11 @@ export class HackerNewsAdapter implements SourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    const event = createRawEvent({
-      event_id: `hn:${item.id}`,
+    const event = toRawEvent(createCollectedContent({
+      eventId: `hn:${item.id}`,
       source: "hackernews",
-      fetched_at: new Date().toISOString(),
-      published_at: item.time
+      fetchedAt: new Date().toISOString(),
+      publishedAt: item.time
         ? new Date(item.time * 1000).toISOString()
         : undefined,
       url: item.url ?? `https://news.ycombinator.com/item?id=${item.id}`,
@@ -345,7 +346,7 @@ export class HackerNewsAdapter implements SourceAdapter {
       author: item.by
         ? {
             handle: item.by,
-            display_name: item.by,
+            displayName: item.by,
           }
         : undefined,
       engagement: {
@@ -356,12 +357,12 @@ export class HackerNewsAdapter implements SourceAdapter {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
       },
-      source_meta: {
+      sourceMeta: {
         hn_id: item.id,
         hn_type: item.type,
         mode: this.mode,
       },
-    });
+    }));
 
     return event;
   }

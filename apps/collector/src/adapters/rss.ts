@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
 import {
-  createRawEvent,
+  createCollectedContent,
+  toRawEvent,
   type SourceAdapter,
   type RawEvent,
   type FetchResult,
@@ -817,24 +818,24 @@ export class RSSAdapter implements SourceAdapter {
         };
       }
 
-      const event = createRawEvent({
-        event_id: eventId,
+      const event = toRawEvent(createCollectedContent({
+        eventId,
         source: "rss",
-        fetched_at: new Date().toISOString(),
-        published_at: parseDate(item.pubDate ?? item.isoDate),
+        fetchedAt: new Date().toISOString(),
+        publishedAt: parseDate(item.pubDate ?? item.isoDate),
         url: item.link,
         title,
         text,
         tags: marketPolicy.marketTags.length > 0 ? marketPolicy.marketTags : undefined,
         author: item.creator
-          ? { display_name: item.creator }
+          ? { displayName: item.creator }
           : undefined,
         extracted: {
           urls: extractUrls(`${title} ${text}`),
           hashtags: extractHashtags(`${title} ${text}`),
         },
-        source_meta: sourceMeta,
-      });
+        sourceMeta: sourceMeta,
+      }));
 
       yield {
         event,

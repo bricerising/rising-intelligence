@@ -46,6 +46,16 @@ export interface BriefEvidenceRecordInput {
   suspiciousPattern?: string | null;
 }
 
+export interface CollectedContentBriefingInput {
+  eventId: string;
+  source: CanonicalSource | string | number;
+  url?: string | null;
+  title?: string | null;
+  publishedAt?: Date | string | null;
+  fetchedAt?: Date | string | null;
+  text?: string | null;
+}
+
 export interface RawEventBriefingInput {
   event_id: string;
   source: CanonicalSource | string | number;
@@ -394,7 +404,7 @@ export function buildBriefEvidenceRecordFromRawEvent(
   input: RawEventBriefingInput,
   options: { excerptMaxLength?: number } = {}
 ): BriefEvidenceRecord {
-  return buildBriefEvidenceRecord(
+  return buildBriefEvidenceRecordFromCollectedContent(
     {
       eventId: input.event_id,
       source: input.source,
@@ -402,6 +412,24 @@ export function buildBriefEvidenceRecordFromRawEvent(
       title: input.title,
       publishedAt: input.published_at,
       fetchedAt: input.fetched_at,
+      text: input.text,
+    },
+    options
+  );
+}
+
+export function buildBriefEvidenceRecordFromCollectedContent(
+  input: CollectedContentBriefingInput,
+  options: { excerptMaxLength?: number } = {}
+): BriefEvidenceRecord {
+  return buildBriefEvidenceRecord(
+    {
+      eventId: input.eventId,
+      source: input.source,
+      url: input.url,
+      title: input.title,
+      publishedAt: input.publishedAt,
+      fetchedAt: input.fetchedAt,
       textExcerpt: input.text,
     },
     options

@@ -54,6 +54,38 @@ export interface ParsedSummaryRequest {
   coverageWarnings?: string[]; // Query-mode warnings about incomplete data
 }
 
+export interface PreparedBriefingRequest
+  extends Pick<
+    ParsedSummaryRequest,
+    | "requestId"
+    | "requestedAt"
+    | "type"
+    | "windows"
+    | "budget"
+    | "query"
+    | "report"
+    | "topics"
+    | "llmProvider"
+    | "coverageWarnings"
+  > {}
+
+export function prepareBriefingRequest(
+  request: ParsedSummaryRequest
+): PreparedBriefingRequest {
+  return {
+    requestId: request.requestId,
+    requestedAt: request.requestedAt,
+    type: request.type,
+    windows: request.windows,
+    budget: request.budget,
+    query: request.query,
+    report: request.report,
+    topics: request.topics,
+    llmProvider: request.llmProvider,
+    coverageWarnings: request.coverageWarnings,
+  };
+}
+
 export interface ParsedTrendSnapshot {
   generatedAt: Date;
   window: number;
