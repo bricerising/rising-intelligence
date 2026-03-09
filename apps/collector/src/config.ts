@@ -1,10 +1,11 @@
 import { z } from "zod";
 import {
-  getSecretValue,
-  loadDotEnv,
+  type ServiceConfig,
   parseConfig,
   zBooleanEnv,
 } from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
+import { getSecretValue } from "@rising-intelligence/shared/secrets";
 
 const ConfigSchema = z.object({
   // Service
@@ -77,6 +78,10 @@ const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+// Compile-time check: Config satisfies the shared ServiceConfig contract.
+type _AssertServiceConfig = Config extends ServiceConfig ? true : never;
+const _assert: _AssertServiceConfig = true; void _assert;
 
 export function loadConfig(): Config {
   loadDotEnv();

@@ -1,9 +1,10 @@
 import { z } from "zod";
 import {
-  getSecretValue,
-  loadDotEnv,
+  type ServiceConfig,
   parseConfig,
 } from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
+import { getSecretValue } from "@rising-intelligence/shared/secrets";
 import {
   resolveDatabaseUrl,
   resolvePostgresPassword,
@@ -52,6 +53,10 @@ type RawConfig = z.infer<typeof ConfigSchema>;
 export type Config = RawConfig & {
   DATABASE_URL: string;
 };
+
+// Compile-time check: Config satisfies the shared ServiceConfig contract.
+type _AssertServiceConfig = Config extends ServiceConfig ? true : never;
+const _assert: _AssertServiceConfig = true; void _assert;
 
 export function loadConfig(): Config {
   loadDotEnv();

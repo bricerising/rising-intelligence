@@ -4,7 +4,7 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@rising-intelligence/db";
-import { REPO_ROOT } from "@rising-intelligence/shared/config";
+import { REPO_ROOT } from "@rising-intelligence/shared/paths";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import { resolveTopicsDatabaseUrl } from "../topics/database-url.js";

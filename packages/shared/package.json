@@ -9,6 +9,18 @@
       "types": "./dist/config.d.ts",
       "default": "./dist/config.js"
     },
+    "./env": {
+      "types": "./dist/env.d.ts",
+      "default": "./dist/env.js"
+    },
+    "./secrets": {
+      "types": "./dist/secrets.d.ts",
+      "default": "./dist/secrets.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "default": "./dist/paths.js"
+    },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "default": "./dist/lifecycle.js"

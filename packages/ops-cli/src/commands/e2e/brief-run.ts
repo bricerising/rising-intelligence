@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { REPO_ROOT } from "@rising-intelligence/shared/config";
+import { REPO_ROOT } from "@rising-intelligence/shared/paths";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag } from "../../lib/flags.js";
 import { parsePositiveIntegerStrict } from "../../lib/number.js";

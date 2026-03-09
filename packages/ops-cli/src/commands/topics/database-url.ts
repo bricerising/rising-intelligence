@@ -1,7 +1,5 @@
-import {
-  getEnvString,
-  getSecretValue,
-} from "@rising-intelligence/shared/config";
+import { getEnvString } from "@rising-intelligence/shared/env";
+import { getSecretValue } from "@rising-intelligence/shared/secrets";
 import { resolveDatabaseUrl } from "@rising-intelligence/shared/database";
 import type { CliFlags } from "../../lib/args.js";
 import { getStringFlag } from "../../lib/flags.js";

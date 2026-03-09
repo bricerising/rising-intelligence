@@ -4,7 +4,7 @@ import {
 } from "@rising-intelligence/pipeline/transport";
 import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import { createPrismaClient } from "@rising-intelligence/db";
-import { getEnvString } from "@rising-intelligence/shared/config";
+import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import {
   getBooleanFlag,

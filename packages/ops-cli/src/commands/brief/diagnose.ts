@@ -4,7 +4,7 @@ import {
   createProducerConnection,
   type PipelineLogger,
 } from "@rising-intelligence/pipeline/transport";
-import { getEnvString } from "@rising-intelligence/shared/config";
+import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
 import { parsePositiveIntegerStrict } from "../../lib/number.js";

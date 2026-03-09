@@ -1,11 +1,9 @@
 import type { Logger } from "pino";
 import { createServiceLogger, type LogLevel } from "./logger.js";
+import type { ServiceConfig } from "./config.js";
 
-export interface ServiceBootstrapConfig {
-  SERVICE_NAME: string;
-  LOG_LEVEL: LogLevel;
-  SHUTDOWN_TIMEOUT_MS: number;
-}
+/** @deprecated Use {@link ServiceConfig} from `@rising-intelligence/shared/config` instead. */
+export type ServiceBootstrapConfig = ServiceConfig;
 
 export interface ServiceBootstrap<Config extends ServiceBootstrapConfig> {
   getConfig(): Config;
