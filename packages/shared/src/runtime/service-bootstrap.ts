@@ -15,6 +15,8 @@ export interface ServiceBootstrap<Config extends ServiceBootstrapConfig> {
   setRuntimeLogger(logger: Logger): void;
 }
 
+export type CreateLoggerFn = (name: string, level: LogLevel) => Logger;
+
 /**
  * Factory for consistent service bootstrap concerns:
  * - lazy config loading
@@ -22,7 +24,8 @@ export interface ServiceBootstrap<Config extends ServiceBootstrapConfig> {
  * - runtime logger handoff after initialization
  */
 export function createServiceBootstrap<Config extends ServiceBootstrapConfig>(
-  loadConfig: () => Config
+  loadConfig: () => Config,
+  createLogger: CreateLoggerFn = createServiceLogger
 ): ServiceBootstrap<Config> {
   let runtimeConfig: Config | null = null;
   let logger: Logger | null = null;
@@ -45,7 +48,7 @@ export function createServiceBootstrap<Config extends ServiceBootstrapConfig>(
     getLogger(): Logger {
       if (!logger) {
         const config = getConfig();
-        logger = createServiceLogger(config.SERVICE_NAME, config.LOG_LEVEL);
+        logger = createLogger(config.SERVICE_NAME, config.LOG_LEVEL);
       }
       return logger;
     },

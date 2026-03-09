@@ -3,9 +3,11 @@ import {
   getSecretValue,
   loadDotEnv,
   parseConfig,
+} from "@rising-intelligence/shared/config";
+import {
   resolvePostgresPassword,
   resolveDatabaseUrl,
-} from "@rising-intelligence/shared/config";
+} from "@rising-intelligence/shared/database";
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("persister"),

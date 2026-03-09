@@ -12,6 +12,11 @@ import {
 import {
   createFunctionDependencyFactory,
   createRuntimeCompositionRoot,
+  healthServerSpec,
+  kafkaConsumerSpec,
+  kafkaProducerSpec,
+  postgresSpec,
+  redisSpec,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared/lifecycle";
 import { closeServer } from "@rising-intelligence/shared/http";
@@ -127,33 +132,33 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connectHealthServer(
+      const healthServer = await resources.connect(healthServerSpec(
         () => this.dependencies.startHealthServer(healthContext, logger),
         (server) => this.dependencies.closeHealthServer(server)
-      );
+      ));
 
-      const prisma = await resources.connectPostgres(
+      const prisma = await resources.connect(postgresSpec(
         () => this.dependencies.createPrismaClient(config),
         (prismaClient) => this.dependencies.closePrismaClient(prismaClient)
-      );
+      ));
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resources.connectRedis(
+      const redis = await resources.connect(redisSpec(
         () =>
           this.dependencies.createRedisClient(
             config,
             componentLoggers.create("redis")
           ),
         (redisClient) => this.dependencies.disconnectRedis(redisClient, logger)
-      );
+      ));
       healthContext.redisHealthy = true;
 
       const allowlist = this.dependencies.loadAllowlist(config.TOPICS_ALLOWLIST_PATH);
       healthContext.allowlistHealthy = true;
       logger.info({ topicCount: allowlist.topics.length }, "Topics allowlist loaded");
 
-      const kafkaConsumerContext = await resources.connectKafkaConsumer(
+      const kafkaConsumerContext = await resources.connect(kafkaConsumerSpec(
         async () => ({
           consumer: await this.dependencies.createKafkaConsumer(
             config,
@@ -162,9 +167,9 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
         }),
         (consumerContext) =>
           this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
-      );
+      ));
 
-      const kafkaProducerContext = await resources.connectKafkaProducer(
+      const kafkaProducerContext = await resources.connect(kafkaProducerSpec(
         async () => ({
           producer: await this.dependencies.createKafkaProducer(
             config,
@@ -173,7 +178,7 @@ class DefaultTrendsRuntimeFactory implements TrendsRuntimeFactory {
         }),
         (producerContext) =>
           this.dependencies.disconnectKafkaProducer(producerContext.producer, logger)
-      );
+      ));
       healthContext.kafkaHealthy = true;
 
       logger.info(

@@ -10,6 +10,10 @@ import {
 import {
   createFunctionDependencyFactory,
   createRuntimeCompositionRoot,
+  healthServerSpec,
+  kafkaConsumerSpec,
+  postgresSpec,
+  redisSpec,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared/lifecycle";
 import { closeServer } from "@rising-intelligence/shared/http";
@@ -94,29 +98,29 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connectHealthServer(
+      const healthServer = await resources.connect(healthServerSpec(
         () => this.dependencies.startHealthServer(healthContext, logger),
         (server) => this.dependencies.closeHealthServer(server)
-      );
+      ));
 
-      const prisma = await resources.connectPostgres(
+      const prisma = await resources.connect(postgresSpec(
         () => this.dependencies.createPrismaClient(config),
         (prismaClient) => this.dependencies.closePrismaClient(prismaClient)
-      );
+      ));
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resources.connectRedis(
+      const redis = await resources.connect(redisSpec(
         () =>
           this.dependencies.createRedisClient(
             config,
             componentLoggers.create("redis")
           ),
         (redisClient) => this.dependencies.disconnectRedis(redisClient)
-      );
+      ));
       healthContext.redisHealthy = true;
 
-      const kafkaConsumerConnection = await resources.connectKafkaConsumer(
+      const kafkaConsumerConnection = await resources.connect(kafkaConsumerSpec(
         () =>
           this.dependencies.createKafkaConsumer(
             config,
@@ -124,7 +128,7 @@ class DefaultPersisterRuntimeFactory implements PersisterRuntimeFactory {
           ),
         (consumerConnection) =>
           this.dependencies.disconnectKafkaConsumer(consumerConnection, logger)
-      );
+      ));
       healthContext.kafkaHealthy = true;
       logger.info({ topic: config.KAFKA_TOPIC_RAW_EVENTS }, "Kafka consumer initialized");
 

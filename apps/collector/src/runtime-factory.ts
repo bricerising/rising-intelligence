@@ -6,6 +6,8 @@ import {
 import {
   createFunctionDependencyFactory,
   createRuntimeCompositionRoot,
+  healthServerSpec,
+  kafkaProducerSpec,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared/lifecycle";
 import { closeServer } from "@rising-intelligence/shared/http";
@@ -121,10 +123,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connectHealthServer(
+      const healthServer = await resources.connect(healthServerSpec(
         () => this.dependencies.startHealthServer(healthContext, logger),
         (server) => this.dependencies.closeHealthServer(server)
-      );
+      ));
 
       const checkpointStore = await resources.connect({
         name: "checkpoint-store",
@@ -157,10 +159,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         throw error;
       }
 
-      const producerConnection = await resources.connectKafkaProducer(
+      const producerConnection = await resources.connect(kafkaProducerSpec(
         () => this.dependencies.createKafkaProducer(config, logger),
         (connection) => this.dependencies.disconnectProducer(connection, logger)
-      );
+      ));
       healthContext.kafkaHealthy = true;
 
       let marketFilterProfiles: MarketFilterProfile[];

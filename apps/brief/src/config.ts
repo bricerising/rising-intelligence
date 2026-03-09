@@ -3,9 +3,11 @@ import {
   getSecretValue,
   loadDotEnv,
   parseConfig,
+} from "@rising-intelligence/shared/config";
+import {
   resolveDatabaseUrl,
   resolvePostgresPassword,
-} from "@rising-intelligence/shared/config";
+} from "@rising-intelligence/shared/database";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 const LLM_PROVIDERS = ["internal", "http", "codex-cli"] as const;

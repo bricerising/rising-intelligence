@@ -2,10 +2,12 @@ import { z } from "zod";
 import {
   loadDotEnv,
   parseConfig,
-  resolvePostgresPassword,
-  resolveDatabaseUrl,
   zBooleanEnv,
 } from "@rising-intelligence/shared/config";
+import {
+  resolvePostgresPassword,
+  resolveDatabaseUrl,
+} from "@rising-intelligence/shared/database";
 import type { TrendWindow } from "./types.js";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;

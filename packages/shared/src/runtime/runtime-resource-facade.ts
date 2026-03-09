@@ -9,26 +9,6 @@ import {
 
 export interface RuntimeResourceFacade {
   connect<TResource>(spec: StartupResourceSpec<TResource>): Promise<TResource>;
-  connectHealthServer<TServer>(
-    connect: () => Promise<TServer> | TServer,
-    disconnect: (server: TServer) => Promise<void> | void
-  ): Promise<TServer>;
-  connectPostgres<TClient>(
-    connect: () => Promise<TClient> | TClient,
-    disconnect: (client: TClient) => Promise<void> | void
-  ): Promise<TClient>;
-  connectRedis<TClient>(
-    connect: () => Promise<TClient> | TClient,
-    disconnect: (client: TClient) => Promise<void> | void
-  ): Promise<TClient>;
-  connectKafkaConsumer<TContext>(
-    connect: () => Promise<TContext> | TContext,
-    disconnect: (context: TContext) => Promise<void> | void
-  ): Promise<TContext>;
-  connectKafkaProducer<TContext>(
-    connect: () => Promise<TContext> | TContext,
-    disconnect: (context: TContext) => Promise<void> | void
-  ): Promise<TContext>;
 }
 
 export interface RuntimeCompositionRoot {
@@ -42,66 +22,56 @@ class DefaultRuntimeResourceFacade implements RuntimeResourceFacade {
   connect<TResource>(spec: StartupResourceSpec<TResource>): Promise<TResource> {
     return this.resources.connect(spec);
   }
+}
 
-  connectHealthServer<TServer>(
-    connect: () => Promise<TServer> | TServer,
-    disconnect: (server: TServer) => Promise<void> | void
-  ): Promise<TServer> {
-    return this.connect({
-      name: "health-server",
-      connect,
-      disconnect,
-      rollbackAction: "close",
-    });
-  }
+/**
+ * Create a resource spec for a health server.
+ */
+export function healthServerSpec<TServer>(
+  connect: () => Promise<TServer> | TServer,
+  disconnect: (server: TServer) => Promise<void> | void
+): StartupResourceSpec<TServer> {
+  return { name: "health-server", connect, disconnect, rollbackAction: "close" };
+}
 
-  connectPostgres<TClient>(
-    connect: () => Promise<TClient> | TClient,
-    disconnect: (client: TClient) => Promise<void> | void
-  ): Promise<TClient> {
-    return this.connect({
-      name: "postgres",
-      connect,
-      disconnect,
-      rollbackAction: "disconnect",
-    });
-  }
+/**
+ * Create a resource spec for a Postgres client.
+ */
+export function postgresSpec<TClient>(
+  connect: () => Promise<TClient> | TClient,
+  disconnect: (client: TClient) => Promise<void> | void
+): StartupResourceSpec<TClient> {
+  return { name: "postgres", connect, disconnect, rollbackAction: "disconnect" };
+}
 
-  connectRedis<TClient>(
-    connect: () => Promise<TClient> | TClient,
-    disconnect: (client: TClient) => Promise<void> | void
-  ): Promise<TClient> {
-    return this.connect({
-      name: "redis",
-      connect,
-      disconnect,
-      rollbackAction: "disconnect",
-    });
-  }
+/**
+ * Create a resource spec for a Redis client.
+ */
+export function redisSpec<TClient>(
+  connect: () => Promise<TClient> | TClient,
+  disconnect: (client: TClient) => Promise<void> | void
+): StartupResourceSpec<TClient> {
+  return { name: "redis", connect, disconnect, rollbackAction: "disconnect" };
+}
 
-  connectKafkaConsumer<TContext>(
-    connect: () => Promise<TContext> | TContext,
-    disconnect: (context: TContext) => Promise<void> | void
-  ): Promise<TContext> {
-    return this.connect({
-      name: "kafka-consumer",
-      connect,
-      disconnect,
-      rollbackAction: "disconnect",
-    });
-  }
+/**
+ * Create a resource spec for a Kafka consumer.
+ */
+export function kafkaConsumerSpec<TContext>(
+  connect: () => Promise<TContext> | TContext,
+  disconnect: (context: TContext) => Promise<void> | void
+): StartupResourceSpec<TContext> {
+  return { name: "kafka-consumer", connect, disconnect, rollbackAction: "disconnect" };
+}
 
-  connectKafkaProducer<TContext>(
-    connect: () => Promise<TContext> | TContext,
-    disconnect: (context: TContext) => Promise<void> | void
-  ): Promise<TContext> {
-    return this.connect({
-      name: "kafka-producer",
-      connect,
-      disconnect,
-      rollbackAction: "disconnect",
-    });
-  }
+/**
+ * Create a resource spec for a Kafka producer.
+ */
+export function kafkaProducerSpec<TContext>(
+  connect: () => Promise<TContext> | TContext,
+  disconnect: (context: TContext) => Promise<void> | void
+): StartupResourceSpec<TContext> {
+  return { name: "kafka-producer", connect, disconnect, rollbackAction: "disconnect" };
 }
 
 /**

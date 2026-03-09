@@ -13,6 +13,11 @@ import {
 import {
   createFunctionDependencyFactory,
   createRuntimeCompositionRoot,
+  healthServerSpec,
+  kafkaConsumerSpec,
+  kafkaProducerSpec,
+  postgresSpec,
+  redisSpec,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared/lifecycle";
 import { closeServer } from "@rising-intelligence/shared/http";
@@ -127,31 +132,31 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext(config.LLM_DAILY_BUDGET_USD);
-      const healthServer = await resources.connectHealthServer(
+      const healthServer = await resources.connect(healthServerSpec(
         () => this.dependencies.startHealthServer(healthContext, logger),
         (server) => this.dependencies.closeHealthServer(server)
-      );
+      ));
 
       this.dependencies.setBudgetRemainingUsd(healthContext, config.LLM_DAILY_BUDGET_USD);
 
-      const prisma = await resources.connectPostgres(
+      const prisma = await resources.connect(postgresSpec(
         () => this.dependencies.createPrismaClient(config),
         (prismaClient) => this.dependencies.closePrismaClient(prismaClient)
-      );
+      ));
       healthContext.postgresHealthy = true;
       logger.info("Postgres connected");
 
-      const redis = await resources.connectRedis(
+      const redis = await resources.connect(redisSpec(
         () =>
           this.dependencies.createRedisClient(
             config,
             componentLoggers.create("redis")
           ),
         (redisClient) => this.dependencies.disconnectRedis(redisClient, logger)
-      );
+      ));
       healthContext.redisHealthy = true;
 
-      const kafkaConsumerContext = await resources.connectKafkaConsumer(
+      const kafkaConsumerContext = await resources.connect(kafkaConsumerSpec(
         async () => ({
           consumer: await this.dependencies.createKafkaConsumer(
             config,
@@ -160,9 +165,9 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
         }),
         (consumerContext) =>
           this.dependencies.disconnectKafkaConsumer(consumerContext.consumer, logger)
-      );
+      ));
 
-      const kafkaProducerContext = await resources.connectKafkaProducer(
+      const kafkaProducerContext = await resources.connect(kafkaProducerSpec(
         async () => ({
           producer: await this.dependencies.createKafkaProducer(
             config,
@@ -171,7 +176,7 @@ class DefaultBriefRuntimeFactory implements BriefRuntimeFactory {
         }),
         (producerContext) =>
           this.dependencies.disconnectKafkaProducer(producerContext.producer, logger)
-      );
+      ));
       healthContext.kafkaHealthy = true;
 
       logger.info(
