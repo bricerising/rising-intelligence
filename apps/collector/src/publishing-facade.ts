@@ -8,7 +8,14 @@ import {
   serializeHeartbeat,
   serializeRawEvent,
 } from "./serializer.js";
-import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "./types.js";
+import {
+  normalizeCollectorIngestionEvent,
+  toRawEvent,
+  type CollectorHeartbeat,
+  type CollectorIngestionEvent,
+  type DeadLetterEvent,
+  type RawEvent,
+} from "./types.js";
 
 export const TOPICS = {
   RAW_EVENTS: "events.raw",
@@ -20,6 +27,15 @@ export interface CollectorPublisher {
   publishRawEvent(event: RawEvent): Promise<void>;
   publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
   publishHeartbeat(event: CollectorHeartbeat): Promise<void>;
+}
+
+export interface CollectorIngestionPublisher {
+  publishAcceptedEvent(event: CollectorIngestionEvent): Promise<void>;
+  publishRejectedEvent(event: DeadLetterEvent): Promise<void>;
+}
+
+export interface CollectorHeartbeatPublisher {
+  publishSourceHeartbeat(event: CollectorHeartbeat): Promise<void>;
 }
 
 export interface CreateCollectorPublisherInput {
@@ -69,6 +85,31 @@ export function createCollectorPublisher(
     },
     async publishHeartbeat(event: CollectorHeartbeat): Promise<void> {
       await heartbeatPublisher.publish(event);
+    },
+  };
+}
+
+export function createCollectorIngestionPublisher(
+  publisher: Pick<CollectorPublisher, "publishRawEvent" | "publishDeadLetterEvent">
+): CollectorIngestionPublisher {
+  return {
+    async publishAcceptedEvent(event: CollectorIngestionEvent): Promise<void> {
+      await publisher.publishRawEvent(
+        toRawEvent(normalizeCollectorIngestionEvent(event))
+      );
+    },
+    async publishRejectedEvent(event: DeadLetterEvent): Promise<void> {
+      await publisher.publishDeadLetterEvent(event);
+    },
+  };
+}
+
+export function createCollectorHeartbeatPublisher(
+  publisher: Pick<CollectorPublisher, "publishHeartbeat">
+): CollectorHeartbeatPublisher {
+  return {
+    async publishSourceHeartbeat(event: CollectorHeartbeat): Promise<void> {
+      await publisher.publishHeartbeat(event);
     },
   };
 }

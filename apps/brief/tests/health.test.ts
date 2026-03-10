@@ -1,13 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("../src/config.js", () => ({
-  getConfig: () => ({
-    SERVICE_NAME: "brief",
-    PORT: 3000,
-    LOG_LEVEL: "info",
-  }),
-}));
-
 import { createHealthHandler } from "@rising-intelligence/shared/http";
 import {
   createHealthContext,

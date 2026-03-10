@@ -1,10 +1,6 @@
-import {
-  createServiceBootstrap,
-  runService,
-  runShutdownSteps,
-} from "@rising-intelligence/shared/lifecycle";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
+import { runShutdownSteps } from "@rising-intelligence/shared/runtime";
 import { getConfig } from "./config.js";
 import { incrementError } from "./health.js";
 import { disconnectRedis } from "./redis.js";
@@ -14,9 +10,22 @@ import {
   type TrendsRuntimeContext,
 } from "./runtime-factory.js";
 import { publishSnapshots } from "./snapshot.js";
+import {
+  createServiceBootstrap,
+  runService,
+} from "./service-runtime.js";
 
 const bootstrap = createServiceBootstrap(getConfig);
 const runtimeFactory = createTrendsRuntimeFactory();
+
+function getCollectorSignalTopics(
+  ctx: TrendsRuntimeContext
+): [string, string] {
+  return [
+    ctx.config.KAFKA_TOPIC_RAW_EVENTS,
+    ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
+  ];
+}
 
 async function initializeTrends(): Promise<TrendsRuntimeContext> {
   const config = bootstrap.getConfig();
@@ -62,10 +71,7 @@ async function runSnapshotLoop(ctx: TrendsRuntimeContext): Promise<void> {
 
 async function runConsumer(ctx: TrendsRuntimeContext): Promise<void> {
   await ctx.kafkaConsumerContext.consumer.consume({
-    topics: [
-      ctx.config.KAFKA_TOPIC_RAW_EVENTS,
-      ctx.config.KAFKA_TOPIC_COLLECTOR_HEARTBEAT,
-    ],
+    topics: getCollectorSignalTopics(ctx),
     ctx,
     strategy: createBatchStrategies(ctx),
     fromBeginning: false,

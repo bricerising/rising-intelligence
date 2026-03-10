@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { loadAllowlist, extractTopics, extractUrls, extractHashtags } from "../src/topics/extractor.js";
+import { loadAllowlist, extractTopics, extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";

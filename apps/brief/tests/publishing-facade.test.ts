@@ -46,8 +46,14 @@ describe("brief publishing facade", () => {
       topic: "summary.results",
     });
 
-    await publisher.publishResult("req-1", { request_id: "req-1", produced_at: "now" });
-    await publisher.publishResult("req-2", { request_id: "req-2", produced_at: "later" });
+    await publisher.publishResult("req-1", {
+      request_id: "req-1",
+      produced_at: "2026-02-11T00:00:00.000Z",
+    });
+    await publisher.publishResult("req-2", {
+      request_id: "req-2",
+      produced_at: "2026-02-11T00:05:00.000Z",
+    });
 
     expect(connection.publish).toHaveBeenCalledTimes(2);
     const calls = (connection.publish as ReturnType<typeof vi.fn>).mock.calls;

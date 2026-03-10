@@ -1,5 +1,6 @@
 import { Source } from "@rising-intelligence/db";
 import { describe, expect, it } from "vitest";
+import { createTopicGlobMatcherSet } from "../src/topic-glob.js";
 import {
   createTopicRelevanceMatcherCache,
   getTopLevelTopicGroup,
@@ -249,7 +250,7 @@ describe("query-mode ranking", () => {
         },
       ],
       requestedAt,
-      [/^aws\./i]
+      createTopicGlobMatcherSet(["aws.*"])
     );
 
     expect(ranked).toHaveLength(1);

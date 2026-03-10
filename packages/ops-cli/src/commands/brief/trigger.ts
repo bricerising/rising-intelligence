@@ -1,10 +1,22 @@
 import {
+  parseCanonicalSource,
+} from "@rising-intelligence/pipeline";
+import {
   createProducerConnection,
   type PipelineLogger,
 } from "@rising-intelligence/pipeline/transport";
-import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import { createPrismaClient } from "@rising-intelligence/db";
-import { getEnvString } from "@rising-intelligence/shared/config";
+import {
+  BRIEF_KAFKA_TOPICS,
+  BRIEF_OPERATION_DEFAULTS,
+  BRIEF_QUERY_MODE_WINDOWS,
+  BRIEF_SUPPORTED_WINDOWS,
+  BRIEF_TRIGGER_DEFAULTS,
+  createBriefSummaryRequest,
+  type BriefSummaryRequestPayload,
+  type LlmProvider,
+} from "@rising-intelligence/brief/operations";
+import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import {
   getBooleanFlag,
@@ -49,7 +61,7 @@ interface TriggerBriefCommonConfig {
   reportTimezone?: string;
   reportStartAtIso?: string;
   reportEndAtIso?: string;
-  llmProvider?: string;
+  llmProvider?: LlmProvider;
   dryRun: boolean;
   noWait: boolean;
   timeoutSeconds: number;
@@ -88,65 +100,6 @@ interface ExplicitModeSelection {
 }
 
 type TriggerModeSelection = QueryModeSelection | ExplicitModeSelection;
-
-interface BaseSummaryRequestPayload {
-  request_id: string;
-  requested_at: string;
-  type: RequestType;
-  windows: number[];
-  budget: {
-    daily_budget_usd: number;
-    max_topics: number;
-    max_evidence_per_topic: number;
-    max_output_tokens: number;
-  };
-  report?: {
-    timezone?: string;
-    start_at?: string;
-    end_at?: string;
-  };
-  llm_provider?: string;
-}
-
-interface QuerySummaryRequestPayload extends BaseSummaryRequestPayload {
-  query: {
-    lookback_days: number;
-    topic_globs: string[];
-    max_events_per_topic: number;
-    evidence_strategy: QueryEvidenceStrategy;
-  };
-  topics: [];
-}
-
-interface ExplicitSummaryRequestPayload extends BaseSummaryRequestPayload {
-  topics: [
-    {
-      topic: string;
-      metrics: [
-        {
-          topic: string;
-          window: number;
-          score: number;
-          volume: number;
-          acceleration: number;
-        },
-      ];
-      evidence: [
-        {
-          event_id: string;
-          source: ReturnType<typeof parseCanonicalSource>;
-          url: string;
-          title: string;
-          published_at: string;
-          fetched_at: string;
-          text_excerpt: string;
-        },
-      ];
-    },
-  ];
-}
-
-type SummaryRequestPayload = QuerySummaryRequestPayload | ExplicitSummaryRequestPayload;
 
 function parseNumber(rawValue: string, key: string): number {
   const parsed = Number(rawValue);
@@ -193,12 +146,16 @@ function parseRequestType(rawType: string): RequestType {
 
 function parseWindow(rawValue: string): number {
   if (!/^\d+$/u.test(rawValue)) {
-    throw new Error(`Invalid window value '${rawValue}'. Supported values are 1, 2, 3`);
+    throw new Error(
+      `Invalid window value '${rawValue}'. Supported values are ${BRIEF_SUPPORTED_WINDOWS.join(", ")}`
+    );
   }
 
   const parsed = Number(rawValue);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3) {
-    throw new Error(`Invalid window ${parsed}. Supported values are 1, 2, 3`);
+  if (!BRIEF_SUPPORTED_WINDOWS.includes(parsed as (typeof BRIEF_SUPPORTED_WINDOWS)[number])) {
+    throw new Error(
+      `Invalid window ${parsed}. Supported values are ${BRIEF_SUPPORTED_WINDOWS.join(", ")}`
+    );
   }
 
   return parsed;
@@ -284,6 +241,17 @@ function parseEvidenceStrategy(rawValue: string): QueryEvidenceStrategy {
   );
 }
 
+function parseLlmProvider(rawValue: string): LlmProvider {
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "internal" || normalized === "http" || normalized === "codex-cli") {
+    return normalized;
+  }
+
+  throw new Error(
+    `Invalid llm-provider: ${rawValue}. Must be one of: internal, http, codex-cli`
+  );
+}
+
 function parseOptionalIsoDate(rawValue: string | undefined, flagName: string): string | undefined {
   if (!rawValue || rawValue.trim().length === 0) {
     return undefined;
@@ -353,10 +321,6 @@ interface TriggerModeStrategy<
 > {
   readonly mode: TSelection["mode"];
   buildConfig(input: ResolveTriggerModeConfigInput<TSelection>): TConfig;
-  buildSummaryRequest(
-    basePayload: BaseSummaryRequestPayload,
-    config: TConfig
-  ): SummaryRequestPayload;
 }
 
 const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
@@ -370,8 +334,10 @@ const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
     parsedLookbackDays,
     baseConfig,
   }): QueryModeTriggerBriefConfig {
-    if (!parsedWindows.includes(2)) {
-      throw new Error("Query mode requires TREND_WINDOW_60M (window=2)");
+    if (!BRIEF_QUERY_MODE_WINDOWS.every((window) => parsedWindows.includes(window))) {
+      throw new Error(
+        `Query mode requires windows ${BRIEF_QUERY_MODE_WINDOWS.join(", ")}`
+      );
     }
 
     const queryTopicResolution = resolveQueryTopicGlobs(flags);
@@ -380,38 +346,24 @@ const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
       parseNumberEnv(
         "BRIEF_MAX_QUERY_EVENTS_PER_TOPIC",
         getEnvString("BRIEF_MAX_QUERY_EVENTS_PER_TOPIC"),
-        baseConfig.maxEvidencePerTopic
+        BRIEF_OPERATION_DEFAULTS.maxQueryEventsPerTopic
       );
     const queryMaxEventsPerTopic = Math.min(
       assertPositiveInteger(requestedQueryMaxEvents, "--max-events-per-topic"),
       baseConfig.maxEvidencePerTopic
     );
-    const queryEvidenceStrategyRaw = getStringFlag(flags, "evidence-strategy") || "diversity";
+    const queryEvidenceStrategyRaw =
+      getStringFlag(flags, "evidence-strategy") || BRIEF_TRIGGER_DEFAULTS.queryEvidenceStrategy;
 
     return {
       ...baseConfig,
       mode: "query",
-      windows: [2],
+      windows: [...BRIEF_QUERY_MODE_WINDOWS],
       warnings: queryTopicResolution.warnings,
       queryLookbackDays: parsedLookbackDays,
       queryTopicGlobs: queryTopicResolution.queryTopicGlobs,
       queryMaxEventsPerTopic,
       queryEvidenceStrategy: parseEvidenceStrategy(queryEvidenceStrategyRaw),
-    };
-  },
-  buildSummaryRequest(
-    basePayload,
-    config
-  ): QuerySummaryRequestPayload {
-    return {
-      ...basePayload,
-      query: {
-        lookback_days: config.queryLookbackDays,
-        topic_globs: config.queryTopicGlobs,
-        max_events_per_topic: config.queryMaxEventsPerTopic,
-        evidence_strategy: config.queryEvidenceStrategy,
-      },
-      topics: [],
     };
   },
 };
@@ -450,42 +402,6 @@ const EXPLICIT_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
         "Manual summary request trigger generated via riops.",
     };
   },
-  buildSummaryRequest(
-    basePayload,
-    config
-  ): ExplicitSummaryRequestPayload {
-    const nowIso = config.requestedAtIso;
-    const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
-
-    return {
-      ...basePayload,
-      topics: [
-        {
-          topic: config.topicKey,
-          metrics: [
-            {
-              topic: config.topicKey,
-              window: primaryWindow,
-              score: config.score,
-              volume: config.volume,
-              acceleration: config.acceleration,
-            },
-          ],
-          evidence: [
-            {
-              event_id: `${config.requestId}-event-1`,
-              source: config.evidenceSource,
-              url: config.evidenceUrl,
-              title: config.evidenceTitle,
-              published_at: nowIso,
-              fetched_at: nowIso,
-              text_excerpt: config.evidenceExcerpt,
-            },
-          ],
-        },
-      ],
-    };
-  },
 };
 
 type TriggerMode = TriggerModeSelection["mode"];
@@ -514,10 +430,6 @@ const TRIGGER_MODE_STRATEGY_BY_MODE: TriggerModeStrategyByMode = {
 
 interface TriggerModeStrategyFactory {
   buildConfig(input: ResolveTriggerModeConfigInput<TriggerModeSelection>): TriggerBriefConfig;
-  buildSummaryRequest(
-    basePayload: BaseSummaryRequestPayload,
-    config: TriggerBriefConfig
-  ): SummaryRequestPayload;
 }
 
 class DefaultTriggerModeStrategyFactory implements TriggerModeStrategyFactory {
@@ -549,57 +461,12 @@ class DefaultTriggerModeStrategyFactory implements TriggerModeStrategyFactory {
       modeSelection: input.modeSelection,
     });
   }
-
-  buildSummaryRequest(
-    basePayload: BaseSummaryRequestPayload,
-    config: TriggerBriefConfig
-  ): SummaryRequestPayload {
-    if (config.mode === "query") {
-      return this.strategies.query.buildSummaryRequest(basePayload, config);
-    }
-
-    return this.strategies.explicit.buildSummaryRequest(basePayload, config);
-  }
 }
 
 function createTriggerModeStrategyFactory(
   strategies: TriggerModeStrategyByMode
 ): TriggerModeStrategyFactory {
   return new DefaultTriggerModeStrategyFactory(strategies);
-}
-
-function createBaseSummaryRequestPayload(
-  config: TriggerBriefConfig
-): BaseSummaryRequestPayload {
-  const basePayload: BaseSummaryRequestPayload = {
-    request_id: config.requestId,
-    requested_at: config.requestedAtIso,
-    type: config.requestType,
-    windows: config.windows,
-    budget: {
-      daily_budget_usd: config.dailyBudgetUsd,
-      max_topics: config.maxTopics,
-      max_evidence_per_topic: config.maxEvidencePerTopic,
-      max_output_tokens: config.maxOutputTokens,
-    },
-  };
-
-  if (
-    config.reportTimezone !== undefined ||
-    config.reportStartAtIso !== undefined ||
-    config.reportEndAtIso !== undefined
-  ) {
-    basePayload.report = {
-      ...(config.reportTimezone && { timezone: config.reportTimezone }),
-      ...(config.reportStartAtIso && { start_at: config.reportStartAtIso }),
-      ...(config.reportEndAtIso && { end_at: config.reportEndAtIso }),
-    };
-  }
-  if (config.llmProvider) {
-    basePayload.llm_provider = config.llmProvider;
-  }
-
-  return basePayload;
 }
 
 const TRIGGER_MODE_STRATEGY_FACTORY: TriggerModeStrategyFactory =
@@ -615,10 +482,11 @@ class TriggerBriefConfigBuilder {
     const kafkaBrokersRaw =
       getStringFlag(this.flags, "kafka-brokers")
       || getEnvString("KAFKA_BROKERS")
-      || "localhost:9092";
+      || BRIEF_OPERATION_DEFAULTS.kafkaBrokers;
     const requestedAtRaw = getStringFlag(this.flags, "requested-at") || new Date().toISOString();
-    const requestTypeRaw = getStringFlag(this.flags, "type") || "daily";
-    const windowsRaw = getStringFlag(this.flags, "windows") || "2";
+    const requestTypeRaw = getStringFlag(this.flags, "type") || BRIEF_TRIGGER_DEFAULTS.requestType;
+    const windowsRaw =
+      getStringFlag(this.flags, "windows") || BRIEF_TRIGGER_DEFAULTS.windows.join(",");
     const modeSelection = resolveMode(this.flags);
     const parsedWindows = parseWindows(windowsRaw);
 
@@ -627,31 +495,39 @@ class TriggerBriefConfigBuilder {
       parseNumberEnv(
         "BRIEF_DAILY_BUDGET_USD",
         getEnvString("BRIEF_DAILY_BUDGET_USD") || getEnvString("LLM_DAILY_BUDGET_USD"),
-        5
+        BRIEF_TRIGGER_DEFAULTS.dailyBudgetUsd
       );
     const maxTopics =
       getNumberFlag(this.flags, "max-topics") ??
-      parseNumberEnv("BRIEF_MAX_TOPICS", getEnvString("BRIEF_MAX_TOPICS"), 5);
+      parseNumberEnv("BRIEF_MAX_TOPICS", getEnvString("BRIEF_MAX_TOPICS"), BRIEF_TRIGGER_DEFAULTS.maxTopics);
     const maxEvidencePerTopic =
       getNumberFlag(this.flags, "max-evidence-per-topic") ??
       parseNumberEnv(
         "BRIEF_MAX_EVIDENCE_PER_TOPIC",
         getEnvString("BRIEF_MAX_EVIDENCE_PER_TOPIC"),
-        3
+        BRIEF_TRIGGER_DEFAULTS.maxEvidencePerTopic
       );
     const maxOutputTokens =
       getNumberFlag(this.flags, "max-output-tokens") ??
-      parseNumberEnv("BRIEF_MAX_OUTPUT_TOKENS", getEnvString("BRIEF_MAX_OUTPUT_TOKENS"), 1200);
+      parseNumberEnv(
+        "BRIEF_MAX_OUTPUT_TOKENS",
+        getEnvString("BRIEF_MAX_OUTPUT_TOKENS"),
+        BRIEF_TRIGGER_DEFAULTS.maxOutputTokens
+      );
 
     const maxLookbackDays =
       getNumberFlag(this.flags, "max-lookback-days") ??
-      parseNumberEnv("BRIEF_MAX_LOOKBACK_DAYS", getEnvString("BRIEF_MAX_LOOKBACK_DAYS"), 30);
+      parseNumberEnv(
+        "BRIEF_MAX_LOOKBACK_DAYS",
+        getEnvString("BRIEF_MAX_LOOKBACK_DAYS"),
+        BRIEF_OPERATION_DEFAULTS.maxLookbackDays
+      );
     const lookbackDays =
       getNumberFlag(this.flags, "lookback-days") ??
       parseNumberEnv(
         "BRIEF_DEFAULT_LOOKBACK_DAYS",
         getEnvString("BRIEF_DEFAULT_LOOKBACK_DAYS"),
-        7
+        BRIEF_OPERATION_DEFAULTS.defaultLookbackDays
       );
 
     const parsedMaxLookbackDays = assertPositiveInteger(maxLookbackDays, "--max-lookback-days");
@@ -690,11 +566,11 @@ class TriggerBriefConfigBuilder {
       summaryRequestsTopic:
         getStringFlag(this.flags, "summary-requests-topic")
         || getEnvString("KAFKA_TOPIC_SUMMARY_REQUESTS")
-        || "summary.requests",
+        || BRIEF_KAFKA_TOPICS.summaryRequests,
       summaryResultsTopic:
         getStringFlag(this.flags, "summary-results-topic")
         || getEnvString("KAFKA_TOPIC_SUMMARY_RESULTS")
-        || "summary.results",
+        || BRIEF_KAFKA_TOPICS.summaryResults,
       requestId: getStringFlag(this.flags, "request-id") || `manual-${Date.now()}`,
       requestedAtIso: parseIsoDate(requestedAtRaw),
       requestType: parseRequestType(requestTypeRaw),
@@ -706,9 +582,12 @@ class TriggerBriefConfigBuilder {
       reportStartAtIso,
       reportEndAtIso,
       llmProvider:
-        getStringFlag(this.flags, "llm-provider")
-        || getEnvString("LLM_PROVIDER")
-        || "codex-cli",
+        parseLlmProvider(
+          getStringFlag(this.flags, "llm-provider")
+            || getEnvString("BRIEF_LLM_PROVIDER")
+            || getEnvString("LLM_PROVIDER")
+            || BRIEF_OPERATION_DEFAULTS.llmProvider
+        ),
       dryRun: getBooleanFlag(this.flags, "dry-run"),
       noWait: getBooleanFlag(this.flags, "no-wait"),
       timeoutSeconds: resolveTimeoutSeconds(this.flags),
@@ -728,9 +607,73 @@ function resolveConfig(flags: CliFlags): TriggerBriefConfig {
   return new TriggerBriefConfigBuilder(flags, TRIGGER_MODE_STRATEGY_FACTORY).build();
 }
 
-function buildSummaryRequest(config: TriggerBriefConfig): SummaryRequestPayload {
-  const basePayload = createBaseSummaryRequestPayload(config);
-  return TRIGGER_MODE_STRATEGY_FACTORY.buildSummaryRequest(basePayload, config);
+function buildTriggerJobPayload(config: TriggerBriefConfig): BriefSummaryRequestPayload {
+  const commonInput = {
+    requestId: config.requestId,
+    requestedAt: config.requestedAtIso,
+    type: config.requestType,
+    windows: config.windows,
+    budget: {
+      dailyBudgetUsd: config.dailyBudgetUsd,
+      maxTopics: config.maxTopics,
+      maxEvidencePerTopic: config.maxEvidencePerTopic,
+      maxOutputTokens: config.maxOutputTokens,
+    },
+    report:
+      config.reportTimezone !== undefined ||
+      config.reportStartAtIso !== undefined ||
+      config.reportEndAtIso !== undefined
+        ? {
+            timezone: config.reportTimezone,
+            startAt: config.reportStartAtIso,
+            endAt: config.reportEndAtIso,
+          }
+        : undefined,
+    llmProvider: config.llmProvider,
+  };
+
+  if (config.mode === "query") {
+    return createBriefSummaryRequest({
+      ...commonInput,
+      query: {
+        lookbackDays: config.queryLookbackDays,
+        topicGlobs: config.queryTopicGlobs,
+        maxEventsPerTopic: config.queryMaxEventsPerTopic,
+        evidenceStrategy: config.queryEvidenceStrategy,
+      },
+      topics: [],
+    });
+  }
+
+  const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
+  return createBriefSummaryRequest({
+    ...commonInput,
+    topics: [
+      {
+        topic: config.topicKey,
+        metrics: [
+          {
+            topic: config.topicKey,
+            window: primaryWindow,
+            score: config.score,
+            volume: config.volume,
+            acceleration: config.acceleration,
+          },
+        ],
+        evidence: [
+          {
+            eventId: `${config.requestId}-event-1`,
+            source: config.evidenceSource,
+            url: config.evidenceUrl,
+            title: config.evidenceTitle,
+            publishedAt: config.requestedAtIso,
+            fetchedAt: config.requestedAtIso,
+            textExcerpt: config.evidenceExcerpt,
+          },
+        ],
+      },
+    ],
+  });
 }
 
 interface FreshnessIssue {
@@ -977,19 +920,16 @@ function formatBriefResult(result: BriefResult): string {
 
 export async function briefTrigger(flags: CliFlags): Promise<void> {
   const config = resolveConfig(flags);
-  const payload = buildSummaryRequest(config);
+  const payload = buildTriggerJobPayload(config);
 
   if (config.warnings.length > 0) {
     for (const warning of config.warnings) {
-      // eslint-disable-next-line no-console
       console.warn(`⚠️  ${warning}`);
     }
-    // eslint-disable-next-line no-console
     console.warn("");
   }
 
   if (config.dryRun) {
-    // eslint-disable-next-line no-console
     console.log(
       JSON.stringify(
         {
@@ -1009,20 +949,16 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
   // Check data freshness
   const freshnessIssues = await checkDataFreshness(flags);
   if (freshnessIssues.length > 0) {
-    // eslint-disable-next-line no-console
     console.warn("⚠️  Data freshness warnings:");
     for (const issue of freshnessIssues) {
-      // eslint-disable-next-line no-console
       console.warn(`  [${issue.category}] ${issue.message}`);
     }
-    // eslint-disable-next-line no-console
     console.warn("Proceeding with brief request anyway...\n");
   }
 
   // Set up result consumer BEFORE publishing the request to avoid race condition
   let waiter: RequestResultWaiter<BriefResult> | undefined;
   if (!config.noWait) {
-    // eslint-disable-next-line no-console
     console.log(`⏳ Setting up result listener (timeout: ${config.timeoutSeconds}s)...`);
     waiter = await setupRequestResultWaiter<BriefResult>({
       kafkaBrokers: config.kafkaBrokers,
@@ -1056,13 +992,11 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
     await producer.disconnect();
   }
 
-  // eslint-disable-next-line no-console
   console.log(
     `✅ Published ${config.mode} summary request ${config.requestId} to ${config.summaryRequestsTopic}`
   );
 
   if (config.noWait) {
-    // eslint-disable-next-line no-console
     console.log(`Request ID: ${config.requestId}`);
     return;
   }
@@ -1072,16 +1006,13 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
     const result = await waiter!.waitForResult();
 
     const formatted = formatBriefResult(result);
-    // eslint-disable-next-line no-console
     console.log(formatted);
 
     if (result.failure) {
       process.exit(1);
     }
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.error(`\n❌ ${(error as Error).message}`);
-    // eslint-disable-next-line no-console
     console.error(`Request ID: ${config.requestId}`);
     process.exit(1);
   } finally {

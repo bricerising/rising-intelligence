@@ -122,13 +122,13 @@ services:
     ports:
       - "127.0.0.1:3001:3000"
     environment:
-      GF_INSTALL_PLUGINS: hamedkarbasi93-kafka-datasource
       POSTGRES_USER: ${POSTGRES_USER:-rising}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rising}
       POSTGRES_DB: ${POSTGRES_DB:-rising_intelligence}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
       - ./infra/grafana/dashboards:/etc/grafana/dashboards
+      - ./infra/grafana/plugins-bundled:/usr/share/grafana/plugins-bundled
       - grafana-data:/var/lib/grafana
     depends_on:
       - mimir
@@ -266,6 +266,8 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BROKERS: "redpanda:9092"
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
+      EDGAR_ENABLED: "false"
       CHECKPOINT_PATH: "/data/checkpoints.db"
       TOPICS_ALLOWLIST_PATH: "/config/topics.allowlist.yaml"
       FEEDS_CONFIG_PATH: "/config/feeds.tech.yaml,/config/feeds.pos.yaml"
@@ -319,6 +321,7 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BROKERS: "redpanda:9092"
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
       KAFKA_CLIENT_ID: "persister"
       KAFKA_CONSUMER_GROUP: "persister"
       KAFKA_TOPIC_RAW_EVENTS: "events.raw"
@@ -352,6 +355,7 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BROKERS: "redpanda:9092"
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
       KAFKA_CLIENT_ID: "trends"
       KAFKA_CONSUMER_GROUP: "trends-processor"
       KAFKA_TOPIC_RAW_EVENTS: "events.raw"
@@ -393,6 +397,7 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BROKERS: "redpanda:9092"
+      KAFKAJS_NO_PARTITIONER_WARNING: "1"
       KAFKA_CLIENT_ID: "brief"
       KAFKA_CONSUMER_GROUP: "brief-generator"
       KAFKA_TOPIC_SUMMARY_REQUESTS: "summary.requests"
@@ -404,7 +409,7 @@ services:
       LLM_CODEX_CLI_COMMAND: "${BRIEF_LLM_CODEX_COMMAND:-codex}"
       LLM_CODEX_MODEL: "${BRIEF_LLM_CODEX_MODEL:-}"
       LLM_CODEX_PROFILE: "${BRIEF_LLM_CODEX_PROFILE:-}"
-      LLM_CODEX_TIMEOUT_MS: "${BRIEF_LLM_CODEX_TIMEOUT_MS:-120000}"
+      LLM_CODEX_TIMEOUT_MS: "${BRIEF_LLM_CODEX_TIMEOUT_MS:-300000}"
       CODEX_HOME: "/home/brief/.codex"
       HOME: "/home/brief"
     volumes:

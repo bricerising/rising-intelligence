@@ -59,6 +59,31 @@ export interface CreateBriefBudgetLedgerInput {
   mirrorCommand?: BudgetMirrorCommand;
 }
 
+export interface AuthorizeBudgetInput {
+  dateKey: string;
+  dailyBudgetUsd: number;
+  estimatedCostUsd: number;
+}
+
+export interface BriefBudgetDecision {
+  authorized: boolean;
+  dateKey: string;
+  dailyBudgetUsd: number;
+  reservedCostUsd: number;
+  spentUsd: number;
+}
+
+export interface SettleBudgetDecisionInput {
+  decision: BriefBudgetDecision;
+  actualCostUsd: number;
+}
+
+export interface BriefBudgetGovernor {
+  authorize(input: AuthorizeBudgetInput): Promise<BriefBudgetDecision>;
+  rollback(decision: BriefBudgetDecision): Promise<number>;
+  settle(input: SettleBudgetDecisionInput): Promise<number>;
+}
+
 function toBudgetDate(dateKey: string): Date {
   return new Date(`${dateKey}T00:00:00Z`);
 }
@@ -86,6 +111,19 @@ function parseBudgetReservationResult(result: unknown): BudgetReservationResult 
   return {
     reserved: toNumeric(result[0]) === 1,
     spentUsd: toNumeric(result[1]),
+  };
+}
+
+function toBudgetDecision(
+  input: AuthorizeBudgetInput,
+  reservation: BudgetReservationResult
+): BriefBudgetDecision {
+  return {
+    authorized: reservation.reserved,
+    dateKey: input.dateKey,
+    dailyBudgetUsd: input.dailyBudgetUsd,
+    reservedCostUsd: input.estimatedCostUsd,
+    spentUsd: reservation.spentUsd,
   };
 }
 
@@ -310,6 +348,38 @@ class RedisFirstBudgetLedgerProxy implements BriefBudgetLedger {
   }
 }
 
+class LedgerBackedBudgetGovernor implements BriefBudgetGovernor {
+  constructor(private readonly ledger: BriefBudgetLedger) {}
+
+  async authorize(input: AuthorizeBudgetInput): Promise<BriefBudgetDecision> {
+    const reservation = await this.ledger.reserve({
+      dateKey: input.dateKey,
+      dailyBudgetUsd: input.dailyBudgetUsd,
+      amountUsd: input.estimatedCostUsd,
+    });
+
+    return toBudgetDecision(input, reservation);
+  }
+
+  async rollback(decision: BriefBudgetDecision): Promise<number> {
+    if (decision.reservedCostUsd <= 0) {
+      return decision.spentUsd;
+    }
+
+    return this.ledger.release({
+      dateKey: decision.dateKey,
+      amountUsd: decision.reservedCostUsd,
+    });
+  }
+
+  async settle(input: SettleBudgetDecisionInput): Promise<number> {
+    return this.ledger.settle({
+      dateKey: input.decision.dateKey,
+      deltaUsd: input.actualCostUsd - input.decision.reservedCostUsd,
+    });
+  }
+}
+
 const DEFAULT_BUDGET_MIRROR_COMMAND = createBudgetMirrorCommand();
 
 export function createBriefBudgetLedger(
@@ -328,4 +398,10 @@ export function createBriefBudgetLedger(
     mirrorCommand: input.mirrorCommand ?? DEFAULT_BUDGET_MIRROR_COMMAND,
     next: postgresLedger,
   });
+}
+
+export function createBriefBudgetGovernor(
+  input: CreateBriefBudgetLedgerInput
+): BriefBudgetGovernor {
+  return new LedgerBackedBudgetGovernor(createBriefBudgetLedger(input));
 }

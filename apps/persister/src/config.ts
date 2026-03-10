@@ -1,11 +1,14 @@
 import { z } from "zod";
 import {
-  getSecretValue,
-  loadDotEnv,
+  type ServiceConfig,
   parseConfig,
+} from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
+import { getSecretValue } from "@rising-intelligence/shared/secrets";
+import {
   resolvePostgresPassword,
   resolveDatabaseUrl,
-} from "@rising-intelligence/shared/config";
+} from "@rising-intelligence/shared/database";
 
 const ConfigSchema = z.object({
   SERVICE_NAME: z.string().default("persister"),
@@ -38,6 +41,10 @@ const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema> & {
   DATABASE_URL: string;
 };
+
+// Compile-time check: Config satisfies the shared ServiceConfig contract.
+type _AssertServiceConfig = Config extends ServiceConfig ? true : never;
+const _assert: _AssertServiceConfig = true; void _assert;
 
 export function loadConfig(): Config {
   loadDotEnv();

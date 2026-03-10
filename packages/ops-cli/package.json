@@ -7,6 +7,7 @@
     "riops": "./dist/bin.js"
   },
   "dependencies": {
+    "@rising-intelligence/brief": "*",
     "@rising-intelligence/pipeline": "0.1.0",
     "@rising-intelligence/shared": "0.1.0",
     "kafkajs": "^2.2.4",

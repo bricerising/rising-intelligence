@@ -12,6 +12,9 @@ COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/
 COPY packages/shared/src ./packages/shared/src
 COPY packages/shared/contracts ./packages/shared/contracts
 
+COPY packages/topics/package.json packages/topics/tsconfig.json ./packages/topics/
+COPY packages/topics/src ./packages/topics/src
+
 COPY packages/pipeline/package.json packages/pipeline/tsconfig.json ./packages/pipeline/
 COPY packages/pipeline/src ./packages/pipeline/src
 
@@ -26,6 +29,7 @@ COPY infra/config/topics.allowlist.yaml ./infra/config/topics.allowlist.yaml
 
 RUN npm install
 RUN npm run build --workspace=@rising-intelligence/shared
+RUN npm run build --workspace=@rising-intelligence/topics
 RUN npm run build --workspace=@rising-intelligence/pipeline
 RUN npm run build --workspace=@rising-intelligence/db
 RUN npm run build --workspace=@rising-intelligence/ops-cli

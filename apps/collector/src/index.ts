@@ -7,15 +7,19 @@ import { serializeError } from "@rising-intelligence/shared/errors";
 import { closeServer } from "@rising-intelligence/shared/http";
 import { BackoffManager, sleep } from "@rising-intelligence/shared/resilience";
 import { getConfig } from "./config.js";
+import { createCollectorIngestion } from "./collector-ingestion.js";
 import {
   observePollDuration,
   observePollItemsCount,
   incrementCheckpointUpdated,
 } from "./health.js";
 import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
-import type { SourceAdapter, CollectorHeartbeat } from "./types.js";
-import { createCollectorEventProcessor } from "./ingestion-pipeline.js";
-import { createCollectorPublisher } from "./publishing-facade.js";
+import type { CollectorHeartbeat, CollectorIngestionAdapter } from "./types.js";
+import {
+  createCollectorHeartbeatPublisher,
+  createCollectorIngestionPublisher,
+  createCollectorPublisher,
+} from "./publishing-facade.js";
 import {
   createCollectorRuntimeFactory,
   type CollectorRuntimeContext,
@@ -49,7 +53,7 @@ async function initializeCollector(): Promise<CollectorContext> {
 
 async function runAdapter(
   ctx: CollectorContext,
-  adapter: SourceAdapter
+  adapter: CollectorIngestionAdapter
 ): Promise<void> {
   const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
   const adapterLogger = ctx.logger.child({ adapter: adapter.name });
@@ -57,17 +61,18 @@ async function runAdapter(
     connection: kafkaContext.producer,
     logger: adapterLogger,
   });
+  const ingestionPublisher = createCollectorIngestionPublisher(publisher);
+  const heartbeatPublisher = createCollectorHeartbeatPublisher(publisher);
   const backoff = new BackoffManager(adapter.name, adapterLogger);
   const errorPolicy = createAdapterErrorPolicy();
-  const eventProcessor = createCollectorEventProcessor({
+  const ingestion = createCollectorIngestion({
     adapterName: adapter.name,
     adapterSource: adapter.source,
     allowlist,
     checkpointStore,
     healthContext,
     logger: adapterLogger,
-    publishRawEvent: (event) => publisher.publishRawEvent(event),
-    publishDeadLetterEvent: (event) => publisher.publishDeadLetterEvent(event),
+    publisher: ingestionPublisher,
   });
 
   while (!ctx.shutdownRequested) {
@@ -77,13 +82,13 @@ async function runAdapter(
       let lastCheckpointKey: string | null = null;
       let lastCheckpointValue: string | null = null;
 
-      for await (const { event, checkpointKey, checkpointValue } of adapter.fetch()) {
+      for await (const { content, checkpointKey, checkpointValue } of adapter.fetch()) {
         if (ctx.shutdownRequested) break;
 
         lastCheckpointKey = checkpointKey;
         lastCheckpointValue = checkpointValue;
 
-        const processingResult = await eventProcessor.process(event);
+        const processingResult = await ingestion.ingest(content);
         if (processingResult.status === "ingested") {
           batchCount++;
         }
@@ -119,7 +124,7 @@ async function runAdapter(
         items_fetched: batchCount,
         status: "healthy",
       };
-      await publisher.publishHeartbeat(heartbeat);
+      await heartbeatPublisher.publishSourceHeartbeat(heartbeat);
 
       adapterLogger.info({ batchCount }, "Poll cycle complete");
       backoff.reset();
@@ -148,7 +153,7 @@ async function runAdapter(
         error_message: error instanceof Error ? error.message : String(error),
       };
       try {
-        await publisher.publishHeartbeat(heartbeat);
+        await heartbeatPublisher.publishSourceHeartbeat(heartbeat);
       } catch {
         // Ignore heartbeat publish errors
       }

@@ -1,5 +1,5 @@
 import { Kafka } from "kafkajs";
-import { loadDotEnv } from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import { getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
 import { REQUIRED_TOPICS } from "./required-topics.js";

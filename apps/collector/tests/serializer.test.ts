@@ -6,6 +6,7 @@ import {
   generateEventId,
   generateDlqId,
 } from "../src/serializer.js";
+import { createRawEvent } from "../src/types.js";
 
 describe("serializer", () => {
   it("serializes RawEvent with proto-compatible defaults", () => {
@@ -46,13 +47,41 @@ describe("serializer", () => {
     expect(obj.source_meta_json).toBe(JSON.stringify({ feed_name: "Test", n: 1 }));
   });
 
-  it("maps Lobsters source to proto NEWS enum", () => {
+  it("normalizes raw events before serializing them", () => {
     const buf = serializeRawEvent({
+      event_id: "  rss:abc  ",
+      source: "rss",
+      fetched_at: "2026-02-06T00:00:00.000Z",
+      text: "  hello  ",
+      title: "  New AWS feature  ",
+      tags: ["aws", " aws ", "", "launch"],
+      extracted: {
+        urls: ["https://example.com/post", " https://example.com/post ", ""],
+        hashtags: ["#aws", " #aws ", "#launch"],
+      },
+    });
+
+    const obj = JSON.parse(buf.toString("utf-8")) as Record<string, unknown>;
+    expect(obj.event_id).toBe("rss:abc");
+    expect(obj.title).toBe("New AWS feature");
+    expect(obj.text).toBe("hello");
+    expect(obj.tags).toEqual(["aws", "launch"]);
+    expect(obj.extracted).toEqual({
+      urls: ["https://example.com/post"],
+      hashtags: ["#aws", "#launch"],
+    });
+  });
+
+  it("normalizes Lobsters to the canonical NEWS handoff before serialization", () => {
+    const event = createRawEvent({
       event_id: "lobsters:abc",
       source: "lobsters",
       fetched_at: "2026-02-06T00:00:00.000Z",
       text: "hello",
     });
+    expect(event.source).toBe("news");
+
+    const buf = serializeRawEvent(event);
 
     const obj = JSON.parse(buf.toString("utf-8")) as Record<string, unknown>;
     expect(obj.source).toBe(2);

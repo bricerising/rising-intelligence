@@ -1,11 +1,14 @@
 import { z } from "zod";
 import {
-  loadDotEnv,
+  type ServiceConfig,
   parseConfig,
-  resolvePostgresPassword,
-  resolveDatabaseUrl,
   zBooleanEnv,
 } from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
+import {
+  resolvePostgresPassword,
+  resolveDatabaseUrl,
+} from "@rising-intelligence/shared/database";
 import type { TrendWindow } from "./types.js";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
@@ -60,6 +63,10 @@ export type Config = Omit<RawConfig, "DATABASE_URL" | "TREND_WINDOWS"> & {
   DATABASE_URL: string;
   WINDOWS: TrendWindow[];
 };
+
+// Compile-time check: Config satisfies the shared ServiceConfig contract.
+type _AssertServiceConfig = Config extends ServiceConfig ? true : never;
+const _assert: _AssertServiceConfig = true; void _assert;
 
 function parseWindows(raw: string): TrendWindow[] {
   const parsed = raw

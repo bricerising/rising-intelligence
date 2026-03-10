@@ -2,15 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sharedMocks = vi.hoisted(() => ({
   loadDotEnv: vi.fn(),
-  getSecretValue: vi.fn(),
 }));
 
-vi.mock("@rising-intelligence/shared/config", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@rising-intelligence/shared/config")>();
+vi.mock("@rising-intelligence/shared/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared/env")>();
   return {
     ...actual,
     loadDotEnv: sharedMocks.loadDotEnv,
-    getSecretValue: sharedMocks.getSecretValue,
   };
 });
 
@@ -21,7 +19,6 @@ describe("trends config", () => {
     vi.resetModules();
     vi.clearAllMocks();
     process.env = { ...originalEnv };
-    sharedMocks.getSecretValue.mockReturnValue(undefined);
   });
 
   afterEach(() => {

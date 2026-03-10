@@ -6,11 +6,11 @@ import {
   GRPC_SUBJECT,
   KAFKA_VALUE_SUBJECTS,
 } from "@rising-intelligence/pipeline";
+import { getEnvString } from "@rising-intelligence/shared/env";
 import {
   CONTRACTS_PROTO_PATH,
   SERVICES_PROTO_PATH,
-  getEnvString,
-} from "@rising-intelligence/shared/config";
+} from "@rising-intelligence/shared/paths";
 
 type SchemaReference = {
   name: string;

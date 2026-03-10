@@ -7,7 +7,7 @@ import type { CheckpointStore } from "../checkpoint.js";
 import type { Config } from "../config.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import type { MarketFilterProfile } from "../market-filters.js";
-import type { SourceAdapter } from "../types.js";
+import type { CollectorIngestionAdapter } from "../types.js";
 import {
   createHackerNewsAdapter,
   type CreateHackerNewsAdapterInput,
@@ -25,6 +25,7 @@ import {
 const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
   "RSS_ENABLED",
   "RSS_POLL_INTERVAL_SECONDS",
+  "EDGAR_ENABLED",
   "FEEDS_CONFIG_PATH",
   "EDGAR_FORMS_ALLOWLIST",
   "EDGAR_FETCH_DETAIL_METADATA",
@@ -64,8 +65,19 @@ type UnsupportedAdapterName = "reddit" | "bluesky" | "mastodon" | "github";
 type AdapterName = ImplementedAdapterName | UnsupportedAdapterName;
 
 export interface CollectorAdapterBuildResult {
-  adapters: SourceAdapter[];
+  adapters: CollectorIngestionAdapter[];
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
+}
+
+export interface CollectorIngestionAdapterFactory {
+  buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
+}
+
+/**
+ * @deprecated Use CollectorIngestionAdapterFactory.
+ */
+export interface CollectorSourceAdapterFactory {
+  buildSourceAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
 }
 
 type AdapterEnabledPredicate = (config: CollectorAdapterFactoryConfig) => boolean;
@@ -93,7 +105,10 @@ interface AdapterDefinition<Name extends AdapterName> {
 interface ImplementedAdapterDefinition
   extends AdapterDefinition<ImplementedAdapterName> {
   readonly kind: "implemented";
-  create(input: BuildCollectorAdaptersInput, constructors: AdapterConstructors): SourceAdapter;
+  create(
+    input: BuildCollectorAdaptersInput,
+    constructors: AdapterConstructors
+  ): CollectorIngestionAdapter;
 }
 
 interface UnsupportedAdapterDefinition
@@ -179,6 +194,7 @@ function createRssAdapterInput(input: BuildCollectorAdaptersInput): CreateRSSAda
     logger: createAdapterLogger(logger, "rss"),
     contentFetcherConfig,
     marketFilterProfiles,
+    edgarEnabled: config.EDGAR_ENABLED,
     edgarFormsAllowlist: parseCsvValues(config.EDGAR_FORMS_ALLOWLIST),
     edgarFetchDetailMetadata: config.EDGAR_FETCH_DETAIL_METADATA,
     edgarDownloadPrimaryDocs: config.EDGAR_DOWNLOAD_PRIMARY_DOCS,
@@ -253,7 +269,8 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
 
 const DEFAULT_ADAPTER_DEFINITIONS = createAdapterDefinitions();
 
-export class CollectorAdapterFactory {
+export class CollectorAdapterFactory
+  implements CollectorIngestionAdapterFactory, CollectorSourceAdapterFactory {
   private readonly constructors: AdapterConstructors;
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
@@ -266,8 +283,10 @@ export class CollectorAdapterFactory {
     this.definitions = DEFAULT_ADAPTER_DEFINITIONS;
   }
 
-  build(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult {
-    const adapters: SourceAdapter[] = [];
+  buildIngestionAdapters(
+    input: BuildCollectorAdaptersInput
+  ): CollectorAdapterBuildResult {
+    const adapters: CollectorIngestionAdapter[] = [];
     const unsupportedEnabledAdapters: UnsupportedAdapterName[] = [];
 
     for (const definition of this.definitions) {
@@ -288,10 +307,19 @@ export class CollectorAdapterFactory {
       unsupportedEnabledAdapters,
     };
   }
+
+  /**
+   * @deprecated Use buildIngestionAdapters.
+   */
+  buildSourceAdapters(
+    input: BuildCollectorAdaptersInput
+  ): CollectorAdapterBuildResult {
+    return this.buildIngestionAdapters(input);
+  }
 }
 
 export function createCollectorAdapterFactory(
   constructors: AdapterConstructorOverrides = {}
-): CollectorAdapterFactory {
+): CollectorIngestionAdapterFactory {
   return new CollectorAdapterFactory(constructors);
 }

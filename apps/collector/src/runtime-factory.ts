@@ -6,6 +6,8 @@ import {
 import {
   createFunctionDependencyFactory,
   createRuntimeCompositionRoot,
+  healthServerSpec,
+  kafkaProducerSpec,
   type FunctionDependencyOverrides,
 } from "@rising-intelligence/shared/lifecycle";
 import { closeServer } from "@rising-intelligence/shared/http";
@@ -13,7 +15,7 @@ import { createComponentLoggerFactory } from "@rising-intelligence/shared/loggin
 import type pino from "pino";
 import {
   createCollectorAdapterFactory,
-  type CollectorAdapterFactory,
+  type CollectorIngestionAdapterFactory,
 } from "./adapters/factory.js";
 import { CheckpointStore } from "./checkpoint.js";
 import type { Config } from "./config.js";
@@ -31,8 +33,8 @@ import {
   loadMarketFilterProfiles,
   type MarketFilterProfile,
 } from "./market-filters.js";
-import { loadAllowlist, type CompiledAllowlist } from "./topics/extractor.js";
-import type { SourceAdapter } from "./types.js";
+import { loadAllowlist, type CompiledAllowlist } from "@rising-intelligence/pipeline";
+import type { CollectorIngestionAdapter } from "./types.js";
 
 type RuntimeLoggerComponent = "checkpoint";
 interface PipelineProducerContext {
@@ -52,7 +54,7 @@ export interface CollectorRuntimeFactoryDependencies {
   loadMarketFilterProfiles(path: string): MarketFilterProfile[];
   getEnvironment(): NodeJS.ProcessEnv;
   createContentFetcherConfig(env: NodeJS.ProcessEnv): ContentFetcherConfig;
-  createCollectorAdapterFactory(): CollectorAdapterFactory;
+  createCollectorAdapterFactory(): CollectorIngestionAdapterFactory;
 }
 
 export interface CollectorRuntimeContext {
@@ -64,7 +66,7 @@ export interface CollectorRuntimeContext {
   checkpointStore: CheckpointStore;
   allowlist: CompiledAllowlist;
   marketFilterProfiles: MarketFilterProfile[];
-  adapters: SourceAdapter[];
+  adapters: CollectorIngestionAdapter[];
   shutdownRequested: boolean;
   lastSeenCleanupAt: number;
 }
@@ -121,10 +123,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
 
     return startup.run(async () => {
       const healthContext = this.dependencies.createHealthContext();
-      const healthServer = await resources.connectHealthServer(
+      const healthServer = await resources.connect(healthServerSpec(
         () => this.dependencies.startHealthServer(healthContext, logger),
         (server) => this.dependencies.closeHealthServer(server)
-      );
+      ));
 
       const checkpointStore = await resources.connect({
         name: "checkpoint-store",
@@ -157,10 +159,10 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         throw error;
       }
 
-      const producerConnection = await resources.connectKafkaProducer(
+      const producerConnection = await resources.connect(kafkaProducerSpec(
         () => this.dependencies.createKafkaProducer(config, logger),
         (connection) => this.dependencies.disconnectProducer(connection, logger)
-      );
+      ));
       healthContext.kafkaHealthy = true;
 
       let marketFilterProfiles: MarketFilterProfile[];
@@ -186,7 +188,7 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         "Content fetcher configuration loaded"
       );
 
-      const { adapters, unsupportedEnabledAdapters } = adapterFactory.build({
+      const { adapters, unsupportedEnabledAdapters } = adapterFactory.buildIngestionAdapters({
         config,
         checkpointStore,
         logger,

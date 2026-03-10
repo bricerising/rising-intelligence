@@ -4,8 +4,8 @@ const sharedMocks = vi.hoisted(() => ({
   loadDotEnv: vi.fn(),
 }));
 
-vi.mock("@rising-intelligence/shared/config", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@rising-intelligence/shared/config")>();
+vi.mock("@rising-intelligence/shared/env", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rising-intelligence/shared/env")>();
   return {
     ...actual,
     loadDotEnv: sharedMocks.loadDotEnv,
@@ -26,7 +26,7 @@ describe("brief config", () => {
   });
 
   it("loads defaults", async () => {
-    const { loadConfig } = await import("../src/config.js");
+    const { loadConfig } = await import("../src/testing.js");
     const config = loadConfig();
 
     expect(sharedMocks.loadDotEnv).toHaveBeenCalledOnce();
@@ -62,7 +62,7 @@ describe("brief config", () => {
     process.env.BRIEF_MAX_QUERY_EVENTS_PER_TOPIC = "40";
     process.env.SHUTDOWN_TIMEOUT_MS = "45000";
 
-    const { loadConfig } = await import("../src/config.js");
+    const { loadConfig } = await import("../src/testing.js");
     const config = loadConfig();
 
     expect(config.PORT).toBe(3100);
@@ -83,7 +83,7 @@ describe("brief config", () => {
   it("throws when lookback max is below default", async () => {
     process.env.BRIEF_DEFAULT_LOOKBACK_DAYS = "10";
     process.env.BRIEF_MAX_LOOKBACK_DAYS = "7";
-    const { loadConfig } = await import("../src/config.js");
+    const { loadConfig } = await import("../src/testing.js");
     expect(() => loadConfig()).toThrow(
       "BRIEF_MAX_LOOKBACK_DAYS must be >= BRIEF_DEFAULT_LOOKBACK_DAYS"
     );
@@ -91,12 +91,12 @@ describe("brief config", () => {
 
   it("throws on invalid config", async () => {
     process.env.PORT = "0";
-    const { loadConfig } = await import("../src/config.js");
+    const { loadConfig } = await import("../src/testing.js");
     expect(() => loadConfig()).toThrow("Configuration validation failed");
   });
 
   it("getConfig returns cached object", async () => {
-    const { getConfig } = await import("../src/config.js");
+    const { getConfig } = await import("../src/testing.js");
     const first = getConfig();
     const second = getConfig();
     expect(first).toBe(second);

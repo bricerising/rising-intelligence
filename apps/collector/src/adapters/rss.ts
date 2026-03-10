@@ -3,9 +3,15 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
-import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
+import {
+  createCollectedContent,
+  createCollectorSourceRecord,
+  type CollectorIngestionAdapter,
+  type FetchResult,
+  type Source,
+} from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "../topics/extractor.js";
+import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -63,6 +69,7 @@ export interface RSSFeedErrorReport {
 }
 
 export interface RSSAdapterOptions {
+  edgarEnabled?: boolean;
   marketFilterProfiles?: readonly MarketFilterProfile[];
   edgarFormsAllowlist?: readonly string[];
   edgarFetchDetailMetadata?: boolean;
@@ -403,9 +410,9 @@ interface EdgarMetaResult {
 
 /**
  * RSS/Atom feed adapter.
- * Polls configured feeds and yields RawEvents for new items.
+ * Polls configured feeds and yields collector source records for new items.
  */
-export class RSSAdapter implements SourceAdapter {
+export class RSSAdapter implements CollectorIngestionAdapter {
   readonly name = "rss";
   readonly source: Source = "rss";
   readonly pollIntervalMs: number;
@@ -471,7 +478,18 @@ export class RSSAdapter implements SourceAdapter {
         Accept: "*/*",
       },
     });
-    this.feeds = loadFeedsConfig(feedsConfigPath);
+    const configuredFeeds = loadFeedsConfig(feedsConfigPath);
+    const edgarEnabled = options.edgarEnabled ?? true;
+    this.feeds = edgarEnabled
+      ? configuredFeeds
+      : configuredFeeds.filter((feed) => feed.source_type !== "edgar");
+    if (!edgarEnabled) {
+      const disabledFeedCount = configuredFeeds.length - this.feeds.length;
+      this.logger.info(
+        { disabledFeedCount },
+        "EDGAR feeds disabled"
+      );
+    }
     this.watchlistEntityTerms = dedupeEntityTerms(
       this.feeds
         .filter((feed) => feed.source_type === "edgar")
@@ -799,30 +817,30 @@ export class RSSAdapter implements SourceAdapter {
         };
       }
 
-      const event: RawEvent = {
-        event_id: eventId,
+      const content = createCollectedContent({
+        eventId,
         source: "rss",
-        fetched_at: new Date().toISOString(),
-        published_at: parseDate(item.pubDate ?? item.isoDate),
+        fetchedAt: new Date().toISOString(),
+        publishedAt: parseDate(item.pubDate ?? item.isoDate),
         url: item.link,
         title,
         text,
         tags: marketPolicy.marketTags.length > 0 ? marketPolicy.marketTags : undefined,
         author: item.creator
-          ? { display_name: item.creator }
+          ? { displayName: item.creator }
           : undefined,
         extracted: {
           urls: extractUrls(`${title} ${text}`),
           hashtags: extractHashtags(`${title} ${text}`),
         },
-        source_meta: sourceMeta,
-      };
+        sourceMeta: sourceMeta,
+      });
 
-      yield {
-        event,
+      yield createCollectorSourceRecord({
+        content,
         checkpointKey,
         checkpointValue: guid,
-      };
+      });
     }
   }
 
@@ -839,6 +857,7 @@ export interface CreateRSSAdapterInput {
   contentFetcherConfig?: ContentFetcherConfig;
   onFeedError?: (report: RSSFeedErrorReport) => void;
   marketFilterProfiles?: readonly MarketFilterProfile[];
+  edgarEnabled?: boolean;
   edgarFormsAllowlist?: readonly string[];
   edgarFetchDetailMetadata?: boolean;
   edgarDownloadPrimaryDocs?: boolean;
@@ -847,7 +866,9 @@ export interface CreateRSSAdapterInput {
   secUserAgent?: string;
 }
 
-export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
+export function createRSSAdapter(
+  input: CreateRSSAdapterInput
+): CollectorIngestionAdapter {
   return new RSSAdapter(
     input.feedsConfigPath,
     input.pollIntervalMs,
@@ -857,6 +878,7 @@ export function createRSSAdapter(input: CreateRSSAdapterInput): SourceAdapter {
     input.onFeedError,
     {
       marketFilterProfiles: input.marketFilterProfiles,
+      edgarEnabled: input.edgarEnabled,
       edgarFormsAllowlist: input.edgarFormsAllowlist,
       edgarFetchDetailMetadata: input.edgarFetchDetailMetadata,
       edgarDownloadPrimaryDocs: input.edgarDownloadPrimaryDocs,

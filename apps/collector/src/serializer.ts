@@ -1,20 +1,18 @@
-import type { RawEvent, DeadLetterEvent, CollectorHeartbeat, Source } from "./types.js";
-
-/**
- * Map Source string to proto enum value.
- * Must match rising_intelligence.v1.Source enum.
- */
-const SOURCE_TO_PROTO: Record<Source, number> = {
-  rss: 1,
-  news: 2,
-  hackernews: 3,
-  reddit: 4,
-  github: 5,
-  // twitter is reserved (6) - not used
-  bluesky: 7,
-  mastodon: 8,
-  lobsters: 2, // Lobsters is mapped to NEWS in proto
-};
+import {
+  SOURCE_KEY_TO_ENUM,
+  sourceToProtoEnum,
+} from "@rising-intelligence/pipeline";
+import {
+  normalizeCollectedContent,
+  toCollectedContent,
+  type CollectorAcceptedEvent,
+  type CollectorIngestionEvent,
+  type CollectedContent,
+  type RawEvent,
+  type DeadLetterEvent,
+  type CollectorHeartbeat,
+  type Source,
+} from "./types.js";
 
 /**
  * Map CollectorStatus to proto enum value.
@@ -25,49 +23,108 @@ const STATUS_TO_PROTO: Record<string, number> = {
   error: 3,
 };
 
+interface CollectorPublicationPayload {
+  event_id: string;
+  source: number;
+  fetched_at: string;
+  published_at: string;
+  url: string;
+  title: string;
+  text: string;
+  author?:
+    | {
+        id: string;
+        handle: string;
+        display_name: string;
+      }
+    | undefined;
+  engagement?:
+    | {
+        score: number;
+        comments: number;
+        likes: number;
+        shares: number;
+      }
+    | undefined;
+  lang: string;
+  tags: string[];
+  extracted?:
+    | {
+        hashtags: string[];
+        urls: string[];
+      }
+    | undefined;
+  source_meta_json: string;
+}
+
+export function toCollectorPublicationPayload(
+  content: CollectedContent
+): CollectorPublicationPayload {
+  const normalizedContent = normalizeCollectedContent(content);
+
+  return {
+    event_id: normalizedContent.eventId,
+    source: SOURCE_KEY_TO_ENUM[normalizedContent.source],
+    fetched_at: normalizedContent.fetchedAt,
+    published_at: normalizedContent.publishedAt ?? "",
+    url: normalizedContent.url ?? "",
+    title: normalizedContent.title ?? "",
+    text: normalizedContent.text,
+    author: normalizedContent.author
+      ? {
+          id: normalizedContent.author.id ?? "",
+          handle: normalizedContent.author.handle ?? "",
+          display_name: normalizedContent.author.displayName ?? "",
+        }
+      : undefined,
+    engagement: normalizedContent.engagement
+      ? {
+          score: normalizedContent.engagement.score ?? 0,
+          comments: normalizedContent.engagement.comments ?? 0,
+          likes: normalizedContent.engagement.likes ?? 0,
+          shares: normalizedContent.engagement.shares ?? 0,
+        }
+      : undefined,
+    lang: normalizedContent.lang ?? "",
+    tags: normalizedContent.tags ?? [],
+    extracted: normalizedContent.extracted
+      ? {
+          hashtags: normalizedContent.extracted.hashtags ?? [],
+          urls: normalizedContent.extracted.urls ?? [],
+        }
+      : undefined,
+    source_meta_json: normalizedContent.sourceMeta
+      ? JSON.stringify(normalizedContent.sourceMeta)
+      : "",
+  };
+}
+
+export function serializeCollectedContent(content: CollectedContent): Buffer {
+  return Buffer.from(JSON.stringify(toCollectorPublicationPayload(content)));
+}
+
+export function serializeCollectorIngestionEvent(
+  event: CollectorIngestionEvent
+): Buffer {
+  return serializeCollectedContent(event);
+}
+
+export function serializeCollectorAcceptedEvent(
+  event: CollectorAcceptedEvent
+): Buffer {
+  return serializeCollectorIngestionEvent(event);
+}
+
 /**
  * Serialize RawEvent to JSON for Kafka.
  * In MVP, we use JSON encoding. Can switch to protobuf binary later.
  */
 export function serializeRawEvent(event: RawEvent): Buffer {
-  const protoEvent = {
-    event_id: event.event_id,
-    source: SOURCE_TO_PROTO[event.source] ?? 0,
-    fetched_at: event.fetched_at,
-    published_at: event.published_at ?? "",
-    url: event.url ?? "",
-    title: event.title ?? "",
-    text: event.text,
-    author: event.author
-      ? {
-          id: event.author.id ?? "",
-          handle: event.author.handle ?? "",
-          display_name: event.author.display_name ?? "",
-        }
-      : undefined,
-    engagement: event.engagement
-      ? {
-          score: event.engagement.score ?? 0,
-          comments: event.engagement.comments ?? 0,
-          likes: event.engagement.likes ?? 0,
-          shares: event.engagement.shares ?? 0,
-        }
-      : undefined,
-    lang: event.lang ?? "",
-    tags: event.tags ?? [],
-    extracted: event.extracted
-      ? {
-          hashtags: event.extracted.hashtags ?? [],
-          urls: event.extracted.urls ?? [],
-        }
-      : undefined,
-    source_meta_json: event.source_meta
-      ? JSON.stringify(event.source_meta)
-      : "",
-  };
-
-  return Buffer.from(JSON.stringify(protoEvent));
+  return serializeCollectedContent(toCollectedContent(event));
 }
+
+export const toRawEventWirePayload = toCollectorPublicationPayload;
+export const serializeCollectionIngestion = serializeCollectedContent;
 
 /**
  * Serialize DeadLetterEvent to JSON for Kafka.
@@ -81,7 +138,7 @@ export function serializeDeadLetterEvent(event: DeadLetterEvent): Buffer {
  */
 export function serializeHeartbeat(heartbeat: CollectorHeartbeat): Buffer {
   const protoHeartbeat = {
-    source: SOURCE_TO_PROTO[heartbeat.source] ?? 0,
+    source: sourceToProtoEnum(heartbeat.source),
     timestamp: heartbeat.timestamp,
     last_fetch_at: heartbeat.last_fetch_at,
     items_fetched: heartbeat.items_fetched,

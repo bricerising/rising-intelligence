@@ -1,8 +1,11 @@
+import {
+  buildBriefEvidenceRecordFromCollectedContent,
+  BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
+} from "@rising-intelligence/pipeline";
 import { TrendWindow, type Prisma, type PrismaClient } from "@rising-intelligence/db";
 import type { Logger } from "pino";
 import type { Config } from "./config.js";
 import type { HealthContext } from "./health.js";
-import { EVIDENCE_EXCERPT_MAX_LENGTH } from "./grounding-facade.js";
 import { toNoCoverageError, NonRetryableProcessingError } from "./processing-errors.js";
 import {
   getTopLevelTopicGroup,
@@ -12,7 +15,7 @@ import {
   selectTopLevelTopicGroups,
   type QueryModeRawEvent,
 } from "./query-mode-selection.js";
-import { compileTopicGlobMatchers } from "./topic-glob.js";
+import { createTopicGlobMatcherSet } from "./topic-glob.js";
 import type {
   EvidenceStrategy,
   ParsedSummaryRequest,
@@ -239,9 +242,9 @@ async function loadRankedTopics(
   parameters: ResolvedQueryModeParameters,
   logger: Logger
 ): Promise<RankedTopicSelection> {
-  let topicMatchers: RegExp[];
+  let topicMatchers: ReturnType<typeof createTopicGlobMatcherSet>;
   try {
-    topicMatchers = compileTopicGlobMatchers(parameters.topicGlobs);
+    topicMatchers = createTopicGlobMatcherSet(parameters.topicGlobs);
   } catch (error) {
     throw new NonRetryableProcessingError(
       `Invalid topic glob filter: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -279,7 +282,7 @@ async function loadRankedTopics(
   if (selectedRankedTopics.length === 0) {
     logger.warn(
       {
-        topicGlobCount: parameters.topicGlobs.length,
+        topicGlobCount: topicMatchers.globs.length,
         lookbackDays: parameters.lookbackDays,
       },
       "No topics matched query filters"
@@ -361,15 +364,22 @@ async function hydrateTopics(
           acceleration: rankedTopic.acceleration,
         },
       ],
-      evidence: selectedEvents.map((event) => ({
-        eventId: event.eventId,
-        source: event.source,
-        url: event.url,
-        title: event.title ?? null,
-        publishedAt: event.publishedAt,
-        fetchedAt: event.fetchedAt,
-        textExcerpt: event.text.slice(0, EVIDENCE_EXCERPT_MAX_LENGTH),
-      })),
+      evidence: selectedEvents.map((event) =>
+        buildBriefEvidenceRecordFromCollectedContent(
+          {
+            eventId: event.eventId,
+            source: event.source,
+            url: event.url,
+            title: event.title,
+            publishedAt: event.publishedAt,
+            fetchedAt: event.fetchedAt,
+            text: event.text,
+          },
+          {
+            excerptMaxLength: BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
+          }
+        )
+      ),
     };
   });
 

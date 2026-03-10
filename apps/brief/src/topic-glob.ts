@@ -1,6 +1,11 @@
 const MAX_GLOB_LENGTH = 128;
 const TOPIC_GLOB_PATTERN = /^[A-Za-z0-9.*?_-]+$/;
 
+export interface TopicGlobMatcherSet {
+  readonly globs: readonly string[];
+  matches(topic: string): boolean;
+}
+
 function escapeRegexCharacter(char: string): string {
   return char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
@@ -62,4 +67,19 @@ export function compileTopicGlobMatchers(globs: string[] | undefined): RegExp[] 
 
 export function matchesAnyTopicGlob(topic: string, matchers: readonly RegExp[]): boolean {
   return matchers.some((matcher) => matcher.test(topic));
+}
+
+export function createTopicGlobMatcherSet(
+  globs: string[] | undefined
+): TopicGlobMatcherSet {
+  const normalized = normalizeTopicGlobs(globs);
+  const resolvedGlobs = normalized && normalized.length > 0 ? normalized : ["*"];
+  const matchers = resolvedGlobs.map((glob) => compileTopicGlob(glob));
+
+  return {
+    globs: resolvedGlobs,
+    matches(topic: string): boolean {
+      return matchesAnyTopicGlob(topic, matchers);
+    },
+  };
 }

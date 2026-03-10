@@ -97,7 +97,7 @@ describe("LobstersAdapter", () => {
 
       // Verify event structure
       expect(results[1].event).toMatchObject({
-        source: "lobsters",
+        source: "news",
         title: "Interesting Rust Article",
         text: "A great article about Rust programming",
         url: "https://example.com/rust-article",
@@ -106,8 +106,10 @@ describe("LobstersAdapter", () => {
       expect(results[1].event.event_id).toMatch(/^lobsters:[a-f0-9]+$/);
       expect(results[1].event.published_at).toBe("2024-01-15T10:00:00.000Z");
 
-      // Categories should be in source_meta.tags
-      expect(results[1].event.source_meta.tags).toEqual(["rust", "programming"]);
+      expect(results[1].event.source_meta).toMatchObject({
+        collected_from: "lobsters",
+        community_tags: ["rust", "programming"],
+      });
     });
 
     it("respects checkpoint and only yields new items", async () => {
@@ -257,7 +259,7 @@ describe("LobstersAdapter", () => {
 
       const logger = createTestLogger();
       const adapter = new LobstersAdapter(600000, 25, createMockCheckpoints(), logger);
-      vi.spyOn(adapter as any, "itemToRawEvent").mockImplementationOnce(async () => {
+      vi.spyOn(adapter as any, "itemToCollectedContent").mockImplementationOnce(async () => {
         throw new Error("bad item");
       });
 
@@ -371,7 +373,7 @@ describe("LobstersAdapter", () => {
       });
     });
 
-    it("includes guid and tags in source_meta", async () => {
+    it("includes guid and community tags in source_meta", async () => {
       const mockParser = {
         parseURL: vi.fn().mockResolvedValue({
           items: [
@@ -395,8 +397,9 @@ describe("LobstersAdapter", () => {
       }
 
       expect(results[0].event.source_meta).toMatchObject({
+        collected_from: "lobsters",
         guid: "https://lobste.rs/s/abc123",
-        tags: ["security", "crypto"],
+        community_tags: ["security", "crypto"],
       });
     });
 
@@ -422,7 +425,7 @@ describe("LobstersAdapter", () => {
       }
 
       expect(results).toHaveLength(1);
-      expect(results[0].event.title).toBe("");
+      expect(results[0].event.title).toBeUndefined();
       expect(results[0].event.text).toBe("");
       expect(results[0].event.author).toBeUndefined();
       expect(results[0].event.published_at).toBeUndefined();
@@ -452,7 +455,7 @@ describe("LobstersAdapter", () => {
       }
 
       // Should convert non-strings and filter empties
-      expect(results[0].event.source_meta.tags).toContain("valid-tag");
+      expect(results[0].event.source_meta.community_tags).toContain("valid-tag");
     });
   });
 

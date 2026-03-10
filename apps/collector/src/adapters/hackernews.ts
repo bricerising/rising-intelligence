@@ -1,7 +1,14 @@
 import type { Logger } from "pino";
-import type { SourceAdapter, RawEvent, FetchResult, Source } from "../types.js";
+import {
+  createCollectedContent,
+  createCollectorSourceRecord,
+  type CollectedContent,
+  type CollectorIngestionAdapter,
+  type FetchResult,
+  type Source,
+} from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "../topics/extractor.js";
+import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -193,7 +200,7 @@ async function delayBetweenStoryRequests(): Promise<void> {
  * Hacker News adapter.
  * Polls HN Firebase API for top/new/best stories.
  */
-export class HackerNewsAdapter implements SourceAdapter {
+export class HackerNewsAdapter implements CollectorIngestionAdapter {
   readonly name = "hackernews";
   readonly source: Source = "hackernews";
   readonly pollIntervalMs: number;
@@ -284,15 +291,15 @@ export class HackerNewsAdapter implements SourceAdapter {
           continue;
         }
 
-        const event = await this.itemToRawEvent(item);
+        const content = await this.itemToCollectedContent(item);
         this.pollModeBehavior.onStoryProcessed(checkpointState, storyId);
 
-        if (event !== null) {
-          yield {
-            event,
+        if (content !== null) {
+          yield createCollectorSourceRecord({
+            content,
             checkpointKey,
             checkpointValue: checkpointState.cursor.toString(),
-          };
+          });
         }
       } catch (error) {
         this.logger.warn(
@@ -306,7 +313,9 @@ export class HackerNewsAdapter implements SourceAdapter {
     }
   }
 
-  private async itemToRawEvent(item: HNItem): Promise<RawEvent | null> {
+  private async itemToCollectedContent(
+    item: HNItem
+  ): Promise<CollectedContent | null> {
     if (!item.id) return null;
 
     const title = item.title ?? "";
@@ -326,11 +335,11 @@ export class HackerNewsAdapter implements SourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    const event: RawEvent = {
-      event_id: `hn:${item.id}`,
+    return createCollectedContent({
+      eventId: `hn:${item.id}`,
       source: "hackernews",
-      fetched_at: new Date().toISOString(),
-      published_at: item.time
+      fetchedAt: new Date().toISOString(),
+      publishedAt: item.time
         ? new Date(item.time * 1000).toISOString()
         : undefined,
       url: item.url ?? `https://news.ycombinator.com/item?id=${item.id}`,
@@ -339,7 +348,7 @@ export class HackerNewsAdapter implements SourceAdapter {
       author: item.by
         ? {
             handle: item.by,
-            display_name: item.by,
+            displayName: item.by,
           }
         : undefined,
       engagement: {
@@ -350,14 +359,12 @@ export class HackerNewsAdapter implements SourceAdapter {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
       },
-      source_meta: {
+      sourceMeta: {
         hn_id: item.id,
         hn_type: item.type,
         mode: this.mode,
       },
-    };
-
-    return event;
+    });
   }
 
   async shutdown(): Promise<void> {
@@ -380,7 +387,7 @@ export interface CreateHackerNewsAdapterInput {
 
 export function createHackerNewsAdapter(
   input: CreateHackerNewsAdapterInput
-): SourceAdapter {
+): CollectorIngestionAdapter {
   return new HackerNewsAdapter(
     parseHnMode(input.mode),
     input.pollIntervalMs,

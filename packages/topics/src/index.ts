@@ -6,4 +6,4 @@ export {
   extractTopics,
   extractUrls,
   loadAllowlist,
-} from "@rising-intelligence/pipeline";
+} from "./topic-extraction.js";

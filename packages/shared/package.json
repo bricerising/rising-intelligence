@@ -9,9 +9,25 @@
       "types": "./dist/config.d.ts",
       "default": "./dist/config.js"
     },
+    "./env": {
+      "types": "./dist/env.d.ts",
+      "default": "./dist/env.js"
+    },
+    "./secrets": {
+      "types": "./dist/secrets.d.ts",
+      "default": "./dist/secrets.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "default": "./dist/paths.js"
+    },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "default": "./dist/lifecycle.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
     },
     "./logging": {
       "types": "./dist/logging.d.ts",
@@ -24,6 +40,10 @@
     "./resilience": {
       "types": "./dist/resilience.d.ts",
       "default": "./dist/resilience.js"
+    },
+    "./database": {
+      "types": "./dist/database.d.ts",
+      "default": "./dist/database.js"
     },
     "./errors": {
       "types": "./dist/errors.d.ts",
@@ -48,10 +68,8 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.48.0",
     "@opentelemetry/sdk-node": "^0.48.0",
     "dotenv": "^16.4.0",
-    "kafkajs": "^2.2.4",
     "pino": "^9.6.0",
     "prom-client": "^15.1.0",
-    "yaml": "^2.8.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {

@@ -1,10 +1,11 @@
 import { z } from "zod";
 import {
-  getSecretValue,
-  loadDotEnv,
+  type ServiceConfig,
   parseConfig,
   zBooleanEnv,
 } from "@rising-intelligence/shared/config";
+import { loadDotEnv } from "@rising-intelligence/shared/env";
+import { getSecretValue } from "@rising-intelligence/shared/secrets";
 
 const ConfigSchema = z.object({
   // Service
@@ -48,6 +49,7 @@ const ConfigSchema = z.object({
   // RSS
   RSS_ENABLED: zBooleanEnv("true"),
   RSS_POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  EDGAR_ENABLED: zBooleanEnv("true"),
   EDGAR_FORMS_ALLOWLIST: z.string().default("8-K,6-K,10-Q,10-K,20-F,40-F"),
   EDGAR_FETCH_DETAIL_METADATA: zBooleanEnv("true"),
   EDGAR_DOWNLOAD_PRIMARY_DOCS: zBooleanEnv("false"),
@@ -76,6 +78,10 @@ const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+// Compile-time check: Config satisfies the shared ServiceConfig contract.
+type _AssertServiceConfig = Config extends ServiceConfig ? true : never;
+const _assert: _AssertServiceConfig = true; void _assert;
 
 export function loadConfig(): Config {
   loadDotEnv();

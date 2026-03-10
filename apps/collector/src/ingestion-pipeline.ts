@@ -15,9 +15,19 @@ import { generateDlqId as defaultGenerateDlqId } from "./serializer.js";
 import {
   extractTopics as defaultTopicExtractor,
   type CompiledAllowlist,
-} from "./topics/extractor.js";
-import type { DeadLetterEvent, RawEvent, Source } from "./types.js";
+} from "@rising-intelligence/pipeline";
+import type { CollectorIngestionPublisher } from "./publishing-facade.js";
+import {
+  normalizeCollectorIngestionEvent,
+  type CollectorIngestionEvent,
+  type DeadLetterEvent,
+  type Source,
+} from "./types.js";
 
+/**
+ * Collector-internal ingestion job chain.
+ * External callers should depend on the collector ingestion boundary.
+ */
 export type CollectorEventProcessResult =
   | {
     status: "ingested";
@@ -38,8 +48,7 @@ export interface CollectorEventProcessorInput {
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
   healthContext: HealthContext;
   logger: Logger;
-  publishRawEvent(event: RawEvent): Promise<void>;
-  publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
+  publisher: CollectorIngestionPublisher;
   now?: () => Date;
   generateDlqId?: () => string;
   topicExtractor?: (
@@ -48,12 +57,26 @@ export interface CollectorEventProcessorInput {
   ) => string[];
 }
 
-export interface CollectorEventProcessor {
-  process(event: RawEvent): Promise<CollectorEventProcessResult>;
+export interface CollectorIngestionJob {
+  event: CollectorIngestionEvent;
+}
+
+export function createCollectorIngestionJob(
+  event: CollectorIngestionEvent
+): CollectorIngestionJob {
+  return { event };
+}
+
+export interface CollectorIngestionCommand {
+  execute(job: CollectorIngestionJob): Promise<CollectorEventProcessResult>;
+}
+
+export interface CollectorEventProcessor extends CollectorIngestionCommand {
+  process(event: CollectorIngestionEvent): Promise<CollectorEventProcessResult>;
 }
 
 interface ProcessingState {
-  event: RawEvent;
+  event: CollectorIngestionEvent;
   topics: string[];
 }
 
@@ -79,8 +102,7 @@ interface RuntimeContext {
   checkpointStore: Pick<CheckpointStore, "hasSeen" | "markSeen">;
   healthContext: HealthContext;
   logger: Logger;
-  publishRawEvent(event: RawEvent): Promise<void>;
-  publishDeadLetterEvent(event: DeadLetterEvent): Promise<void>;
+  publisher: CollectorIngestionPublisher;
   now: () => Date;
   generateDlqId: () => string;
   topicExtractor: (
@@ -99,7 +121,7 @@ type ProcessingStep = AsyncChainStep<ProcessingContext, CollectorEventProcessRes
 
 interface ValidationFailureStrategyContext {
   runtime: RuntimeContext;
-  event: RawEvent;
+  event: CollectorIngestionEvent;
 }
 
 interface ValidationFailureStrategy {
@@ -111,8 +133,8 @@ function isNonBlank(value: string): boolean {
   return value.trim().length > 0;
 }
 
-function hasRequiredFields(event: RawEvent): boolean {
-  return isNonBlank(event.event_id) && isNonBlank(event.text);
+function hasRequiredFields(event: CollectorIngestionEvent): boolean {
+  return isNonBlank(event.eventId) && isNonBlank(event.text);
 }
 
 interface RssFeedMetadata {
@@ -120,7 +142,9 @@ interface RssFeedMetadata {
   feedUrl: string;
 }
 
-function parseRssFeedMetadata(sourceMeta: RawEvent["source_meta"]): RssFeedMetadata | null {
+function parseRssFeedMetadata(
+  sourceMeta: CollectorIngestionEvent["sourceMeta"]
+): RssFeedMetadata | null {
   if (!sourceMeta || typeof sourceMeta !== "object") {
     return null;
   }
@@ -150,7 +174,7 @@ const RECORD_PARSE_ERROR_STRATEGY: ValidationFailureStrategy = {
 const RECORD_RSS_FEED_ERROR_STRATEGY: ValidationFailureStrategy = {
   name: "record-rss-feed-error",
   handle({ runtime, event }): void {
-    const feedMetadata = parseRssFeedMetadata(event.source_meta);
+    const feedMetadata = parseRssFeedMetadata(event.sourceMeta);
     if (!feedMetadata) {
       return;
     }
@@ -190,9 +214,9 @@ function createDeduplicateStep(): ProcessingStep {
   return {
     name: "deduplicate",
     async execute({ runtime, state }, next): Promise<CollectorEventProcessResult> {
-      if (runtime.checkpointStore.hasSeen(runtime.adapterSource, state.event.event_id)) {
+      if (runtime.checkpointStore.hasSeen(runtime.adapterSource, state.event.eventId)) {
         runtime.logger.debug(
-          { eventId: state.event.event_id },
+          { eventId: state.event.eventId },
           "Duplicate event skipped"
         );
         return { status: "duplicate" };
@@ -217,10 +241,10 @@ function createValidationStep(): ProcessingStep {
         source: runtime.adapterName,
         error_code: "VALIDATION_FAILED",
         error_message: "Missing required fields: event_id or text",
-        raw_reference: state.event.url ?? state.event.event_id,
+        raw_reference: state.event.url ?? state.event.eventId,
       };
 
-      await runtime.publishDeadLetterEvent(dlqEvent);
+      await runtime.publisher.publishRejectedEvent(dlqEvent);
       runtime.validationFailureStrategy.handle({
         runtime,
         event: state.event,
@@ -258,8 +282,8 @@ function createPublishStep(): ProcessingStep {
   return {
     name: "publish",
     async execute({ runtime, state }): Promise<CollectorEventProcessResult> {
-      await runtime.publishRawEvent(state.event);
-      runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.event_id);
+      await runtime.publisher.publishAcceptedEvent(state.event);
+      runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.eventId);
       incrementEventsIngested(runtime.healthContext, runtime.adapterSource);
       runtime.healthContext.lastEventAt = runtime.now();
 
@@ -289,25 +313,37 @@ export function createCollectorEventProcessor(
     createPublishStep(),
   ];
 
-  return {
-    async process(event: RawEvent): Promise<CollectorEventProcessResult> {
-      return runAsyncChain(
-        steps,
-        {
-          runtime,
-          state: { event, topics: [] },
+  const execute = async (
+    job: CollectorIngestionJob
+  ): Promise<CollectorEventProcessResult> => {
+    const normalizedEvent = normalizeCollectorIngestionEvent(job.event);
+
+    return runAsyncChain(
+      steps,
+      {
+        runtime,
+        state: {
+          event: normalizedEvent,
+          topics: [],
         },
-        {
-          onEnd() {
-            throw new Error("Collector event pipeline terminated unexpectedly");
-          },
-          duplicateNextError(stepName) {
-            return new Error(
-              `Collector event pipeline step "${stepName}" called next() multiple times`
-            );
-          },
-        }
-      );
+      },
+      {
+        onEnd() {
+          throw new Error("Collector event pipeline terminated unexpectedly");
+        },
+        duplicateNextError(stepName) {
+          return new Error(
+            `Collector event pipeline step "${stepName}" called next() multiple times`
+          );
+        },
+      }
+    );
+  };
+
+  return {
+    execute,
+    async process(event: CollectorIngestionEvent): Promise<CollectorEventProcessResult> {
+      return execute(createCollectorIngestionJob(event));
     },
   };
 }
