@@ -1,8 +1,8 @@
 import type { Logger } from "pino";
 import {
-  createCollectionIngestion,
+  createCollectedContent,
   createCollectorSourceRecord,
-  type CollectionIngestion,
+  type CollectedContent,
   type CollectorSourceAdapter,
   type FetchResult,
   type Source,
@@ -315,7 +315,7 @@ export class HackerNewsAdapter implements CollectorSourceAdapter {
 
   private async itemToCollectedContent(
     item: HNItem
-  ): Promise<CollectionIngestion | null> {
+  ): Promise<CollectedContent | null> {
     if (!item.id) return null;
 
     const title = item.title ?? "";
@@ -335,7 +335,7 @@ export class HackerNewsAdapter implements CollectorSourceAdapter {
 
     const combinedText = `${title} ${text}`;
 
-    return createCollectionIngestion({
+    return createCollectedContent({
       eventId: `hn:${item.id}`,
       source: "hackernews",
       fetchedAt: new Date().toISOString(),

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import type { Logger } from "pino";
 import {
-  createCollectionIngestion,
+  createCollectedContent,
   createCollectorSourceRecord,
   type CollectorSourceAdapter,
   type FetchResult,
@@ -817,7 +817,7 @@ export class RSSAdapter implements CollectorSourceAdapter {
         };
       }
 
-      const content = createCollectionIngestion({
+      const content = createCollectedContent({
         eventId,
         source: "rss",
         fetchedAt: new Date().toISOString(),

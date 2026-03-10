@@ -43,18 +43,16 @@ import {
   NonRetryableProcessingError,
   // LLM generation facade
   createSummaryRequestGenerationFacade,
-  type SummaryRequestGenerationFacade,
 } from "./internals.js";
 import {
+  createBriefExecutionInput,
   createBriefOrchestrator,
   type BriefOrchestrator,
-  type OrchestratorContext,
-  type OrchestratorRuntime,
+  type BriefExecutionInput,
 } from "./brief-orchestrator.js";
 import { serializeError } from "@rising-intelligence/shared/errors";
 import {
   createBriefOrchestrationRequest,
-  type BriefOrchestrationRequest,
 } from "./types.js";
 
 export interface ProcessContext {
@@ -93,9 +91,7 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
-  orchestrationRequest: BriefOrchestrationRequest;
-  orchestratorContext: OrchestratorContext;
-  orchestratorRuntime: OrchestratorRuntime;
+  execution: BriefExecutionInput;
 }
 
 const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
@@ -123,7 +119,7 @@ class SummaryRequestRuntimeFactory {
     const logger = ctx.logger.child({ requestId: request.requestId });
     const groundingFacade = resolveGroundingFacade(ctx);
 
-    const orchestratorContext: OrchestratorContext = {
+    const environment: BriefExecutionInput["environment"] = {
       config: ctx.config,
       logger,
       healthContext: ctx.healthContext,
@@ -131,7 +127,7 @@ class SummaryRequestRuntimeFactory {
       redis: ctx.redis,
     };
 
-    const orchestratorRuntime: OrchestratorRuntime = {
+    const services: BriefExecutionInput["services"] = {
       budgetGovernor: this.dependencies.createBriefBudgetGovernor({
         prisma: ctx.prisma,
         redis: ctx.redis,
@@ -153,18 +149,18 @@ class SummaryRequestRuntimeFactory {
     let resolvedRequest: ParsedSummaryRequest;
     try {
       resolvedRequest = await this.queryModeRequestResolver.resolve(
-        orchestratorContext,
+        environment,
         request,
         logger
       );
     } catch (error) {
       if (error instanceof NonRetryableProcessingError) {
         await handleNonRetryableFailure({
-          ctx: orchestratorContext,
-          resultStore: orchestratorRuntime.resultStore,
-          publisher: orchestratorRuntime.publisher,
+          ctx: environment,
+          resultStore: services.resultStore,
+          publisher: services.publisher,
           requestId: request.requestId,
-          producedAt: orchestratorRuntime.producedAt,
+          producedAt: services.producedAt,
           error,
           logger,
           logMessage: "Summary request failed non-retryable pre-processing",
@@ -172,8 +168,8 @@ class SummaryRequestRuntimeFactory {
         return null;
       }
 
-      incrementError(orchestratorContext.healthContext, "generation_error");
-      incrementGeneration(orchestratorContext.healthContext, "failure");
+      incrementError(environment.healthContext, "generation_error");
+      incrementGeneration(environment.healthContext, "failure");
       logger.error(
         { error: serializeError(error) },
         "Failed to resolve summary request into brief orchestration input"
@@ -182,9 +178,11 @@ class SummaryRequestRuntimeFactory {
     }
 
     return {
-      orchestrationRequest: createBriefOrchestrationRequest(resolvedRequest),
-      orchestratorContext,
-      orchestratorRuntime,
+      execution: createBriefExecutionInput({
+        request: createBriefOrchestrationRequest(resolvedRequest),
+        environment,
+        services,
+      }),
     };
   }
 }
@@ -207,13 +205,7 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       return;
     }
 
-    const { orchestrationRequest, orchestratorContext, orchestratorRuntime } = runtime;
-
-    await this.orchestrator.execute(
-      orchestratorContext,
-      orchestratorRuntime,
-      orchestrationRequest
-    );
+    await this.orchestrator.execute(runtime.execution);
   }
 }
 

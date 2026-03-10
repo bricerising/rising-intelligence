@@ -35,42 +35,55 @@ import {
   handleSummaryRequestFailure,
 } from "./failure-handling.js";
 import type { Config } from "./config.js";
-import type { BriefOrchestrationRequest } from "./types.js";
+import {
+  createBriefOrchestrationRequest,
+  type BriefOrchestrationRequest,
+} from "./types.js";
 import type { PrismaClient } from "@rising-intelligence/db";
 import type { Redis } from "ioredis";
 
-// ── Context shared with the orchestrator ────────────────────────────────────
-
-export interface OrchestratorContext {
-  config: Config;
-  logger: pino.Logger;
-  healthContext: HealthContext;
-  prisma: PrismaClient;
-  redis: Redis;
+export interface BriefExecutionInput {
+  request: BriefOrchestrationRequest;
+  environment: {
+    config: Config;
+    logger: pino.Logger;
+    healthContext: HealthContext;
+    prisma: PrismaClient;
+    redis: Redis;
+  };
+  services: {
+    budgetGovernor: BriefBudgetGovernor;
+    publisher: BriefResultPublisher;
+    resultStore: BriefResultStore;
+    generationFacade: SummaryRequestGenerationFacade;
+    producedAt: Date;
+  };
 }
 
-// ── Runtime collaborators built per-request ─────────────────────────────────
+type OrchestratorContext = BriefExecutionInput["environment"];
+type OrchestratorRuntime = BriefExecutionInput["services"];
 
-export interface OrchestratorRuntime {
-  budgetGovernor: BriefBudgetGovernor;
-  publisher: BriefResultPublisher;
-  resultStore: BriefResultStore;
-  generationFacade: SummaryRequestGenerationFacade;
-  producedAt: Date;
+export function createBriefExecutionInput(
+  input: BriefExecutionInput
+): BriefExecutionInput {
+  return {
+    request: createBriefOrchestrationRequest(input.request),
+    environment: {
+      ...input.environment,
+    },
+    services: {
+      ...input.services,
+      producedAt: new Date(input.services.producedAt.getTime()),
+    },
+  };
 }
-
-// ── Orchestrator interface ──────────────────────────────────────────────────
 
 export interface BriefOrchestrator {
   /**
    * Runs the brief orchestration lifecycle:
    * idempotency → budget → generation → persistence → publishing → metrics.
    */
-  execute(
-    ctx: OrchestratorContext,
-    runtime: OrchestratorRuntime,
-    input: BriefOrchestrationRequest
-  ): Promise<void>;
+  execute(input: BriefExecutionInput): Promise<void>;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -133,11 +146,8 @@ function emitSuccessMetrics(
 // ── Default implementation ──────────────────────────────────────────────────
 
 class DefaultBriefOrchestrator implements BriefOrchestrator {
-  async execute(
-    ctx: OrchestratorContext,
-    runtime: OrchestratorRuntime,
-    input: BriefOrchestrationRequest
-  ): Promise<void> {
+  async execute(input: BriefExecutionInput): Promise<void> {
+    const { environment: ctx, services: runtime, request } = input;
     const {
       budgetGovernor,
       publisher,
@@ -151,7 +161,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
     let existingResult: StoredBriefResult | null = null;
 
     try {
-      existingResult = await resultStore.load(input.requestId);
+      existingResult = await resultStore.load(request.requestId);
     } catch (error) {
       incrementError(ctx.healthContext, "idempotency_error");
       logger.error({ error: serializeError(error) }, "Failed to load persisted brief result");
@@ -162,7 +172,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
       incrementDuplicatesSkipped(ctx.healthContext);
       incrementGeneration(ctx.healthContext, "skipped");
       try {
-        await publisher.publishResult(input.requestId, existingResult.payload);
+        await publisher.publishResult(request.requestId, existingResult.payload);
         logger.info({ status: existingResult.status }, "Republished persisted brief result for duplicate request");
         return;
       } catch (error) {
@@ -178,8 +188,8 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
     // ── Phase 2: Budget reservation ─────────────────────────────────────
     const dateKey = getBudgetDateKey(producedAt);
     const dailyBudgetUsd =
-      input.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
-    const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(input));
+      request.budget?.dailyBudgetUsd ?? ctx.config.LLM_DAILY_BUDGET_USD;
+    const estimatedCostUsd = normalizeUsd(estimateRequestCostUsd(request));
     let budgetDecision: BriefBudgetDecision | null = null;
     let spentBudgetUsd = 0;
 
@@ -211,7 +221,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         ctx,
         resultStore,
         publisher,
-        input.requestId,
+        request.requestId,
         producedAt,
         "budget_exceeded",
         "Daily brief budget exceeded",
@@ -233,7 +243,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
     try {
       const successResult = await generationFacade.buildSuccessResult({
         ctx,
-        request: input,
+        request,
         producedAt,
         estimatedCostUsd,
       });
@@ -250,11 +260,11 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         incrementGeneration(ctx.healthContext, "skipped");
         const republishedStatus = await republishPersistedResult(
           resultStore,
-          input.requestId,
+          request.requestId,
           publisher
         );
         if (!republishedStatus) {
-          throw new Error(`Persisted result missing after duplicate insert for request ${input.requestId}`);
+          throw new Error(`Persisted result missing after duplicate insert for request ${request.requestId}`);
         }
         logger.info({ status: republishedStatus }, "Detected duplicate during persist and republished stored result");
         return;
@@ -285,7 +295,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         }
       }
 
-      await publisher.publishResult(input.requestId, successResult.payload);
+      await publisher.publishResult(request.requestId, successResult.payload);
 
       // ── Phase 5: Metrics ──────────────────────────────────────────────
       emitSuccessMetrics(ctx.healthContext, successResult);
@@ -328,7 +338,7 @@ class DefaultBriefOrchestrator implements BriefOrchestrator {
         ctx,
         resultStore,
         publisher,
-        requestId: input.requestId,
+        requestId: request.requestId,
         producedAt,
         logger,
         persistedCreated,

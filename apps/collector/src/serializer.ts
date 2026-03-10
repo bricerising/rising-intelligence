@@ -4,10 +4,10 @@ import {
 } from "@rising-intelligence/pipeline";
 import {
   normalizeCollectorIngestionEvent,
-  normalizeCollectionIngestion,
+  normalizeCollectedContent,
   type CollectorAcceptedEvent,
   type CollectorIngestionEvent,
-  type CollectionIngestion,
+  type CollectedContent,
   type RawEvent,
   type DeadLetterEvent,
   type CollectorHeartbeat,
@@ -23,7 +23,7 @@ const STATUS_TO_PROTO: Record<string, number> = {
   error: 3,
 };
 
-interface RawEventWirePayload {
+interface CollectorPublicationPayload {
   event_id: string;
   source: number;
   fetched_at: string;
@@ -57,10 +57,10 @@ interface RawEventWirePayload {
   source_meta_json: string;
 }
 
-export function toRawEventWirePayload(
-  content: CollectionIngestion
-): RawEventWirePayload {
-  const normalizedContent = normalizeCollectionIngestion(content);
+export function toCollectorPublicationPayload(
+  content: CollectedContent
+): CollectorPublicationPayload {
+  const normalizedContent = normalizeCollectedContent(content);
 
   return {
     event_id: normalizedContent.eventId,
@@ -99,16 +99,14 @@ export function toRawEventWirePayload(
   };
 }
 
-export function serializeCollectionIngestion(
-  content: CollectionIngestion
-): Buffer {
-  return Buffer.from(JSON.stringify(toRawEventWirePayload(content)));
+export function serializeCollectedContent(content: CollectedContent): Buffer {
+  return Buffer.from(JSON.stringify(toCollectorPublicationPayload(content)));
 }
 
 export function serializeCollectorIngestionEvent(
   event: CollectorIngestionEvent
 ): Buffer {
-  return serializeCollectionIngestion(event);
+  return serializeCollectedContent(event);
 }
 
 export function serializeCollectorAcceptedEvent(
@@ -127,7 +125,8 @@ export function serializeRawEvent(event: RawEvent): Buffer {
   return serializeCollectorAcceptedEvent(event);
 }
 
-export const serializeCollectedContent = serializeCollectionIngestion;
+export const toRawEventWirePayload = toCollectorPublicationPayload;
+export const serializeCollectionIngestion = serializeCollectedContent;
 
 /**
  * Serialize DeadLetterEvent to JSON for Kafka.

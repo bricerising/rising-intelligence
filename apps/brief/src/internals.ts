@@ -197,8 +197,8 @@ export {
 
 // Orchestration boundary
 export {
+  createBriefExecutionInput,
   createBriefOrchestrator,
+  type BriefExecutionInput,
   type BriefOrchestrator,
-  type OrchestratorContext,
-  type OrchestratorRuntime,
 } from "./brief-orchestrator.js";
