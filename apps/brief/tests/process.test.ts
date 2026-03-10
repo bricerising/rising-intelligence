@@ -13,7 +13,7 @@ import {
   createSummaryRequestProcessor,
   processSummaryRequest,
   type ParsedSummaryRequest,
-} from "../src/contract.js";
+} from "../src/testing.js";
 
 function makeLogger() {
   const logger = {

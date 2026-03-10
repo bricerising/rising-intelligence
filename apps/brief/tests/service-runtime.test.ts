@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createServiceBootstrap, type Config } from "../src/contract.js";
+import { createServiceBootstrap, type Config } from "../src/testing.js";
 
 function createConfig(overrides: Partial<Config> = {}): Config {
   return {

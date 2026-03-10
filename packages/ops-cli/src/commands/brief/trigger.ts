@@ -1,8 +1,5 @@
 import {
-  createBriefingJobPayload,
   parseCanonicalSource,
-  type BriefingJobPayload,
-  type BriefingLlmProvider as LlmProvider,
 } from "@rising-intelligence/pipeline";
 import {
   createProducerConnection,
@@ -10,10 +7,15 @@ import {
 } from "@rising-intelligence/pipeline/transport";
 import { createPrismaClient } from "@rising-intelligence/db";
 import {
-  BRIEF_CONFIG_DEFAULTS,
   BRIEF_KAFKA_TOPICS,
+  BRIEF_OPERATION_DEFAULTS,
+  BRIEF_QUERY_MODE_WINDOWS,
+  BRIEF_SUPPORTED_WINDOWS,
   BRIEF_TRIGGER_DEFAULTS,
-} from "@rising-intelligence/brief/contract";
+  createBriefSummaryRequest,
+  type BriefSummaryRequestPayload,
+  type LlmProvider,
+} from "@rising-intelligence/brief/operations";
 import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import {
@@ -144,12 +146,16 @@ function parseRequestType(rawType: string): RequestType {
 
 function parseWindow(rawValue: string): number {
   if (!/^\d+$/u.test(rawValue)) {
-    throw new Error(`Invalid window value '${rawValue}'. Supported values are 1, 2, 3`);
+    throw new Error(
+      `Invalid window value '${rawValue}'. Supported values are ${BRIEF_SUPPORTED_WINDOWS.join(", ")}`
+    );
   }
 
   const parsed = Number(rawValue);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3) {
-    throw new Error(`Invalid window ${parsed}. Supported values are 1, 2, 3`);
+  if (!BRIEF_SUPPORTED_WINDOWS.includes(parsed as (typeof BRIEF_SUPPORTED_WINDOWS)[number])) {
+    throw new Error(
+      `Invalid window ${parsed}. Supported values are ${BRIEF_SUPPORTED_WINDOWS.join(", ")}`
+    );
   }
 
   return parsed;
@@ -328,8 +334,10 @@ const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
     parsedLookbackDays,
     baseConfig,
   }): QueryModeTriggerBriefConfig {
-    if (!parsedWindows.includes(2)) {
-      throw new Error("Query mode requires TREND_WINDOW_60M (window=2)");
+    if (!BRIEF_QUERY_MODE_WINDOWS.every((window) => parsedWindows.includes(window))) {
+      throw new Error(
+        `Query mode requires windows ${BRIEF_QUERY_MODE_WINDOWS.join(", ")}`
+      );
     }
 
     const queryTopicResolution = resolveQueryTopicGlobs(flags);
@@ -338,7 +346,7 @@ const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
       parseNumberEnv(
         "BRIEF_MAX_QUERY_EVENTS_PER_TOPIC",
         getEnvString("BRIEF_MAX_QUERY_EVENTS_PER_TOPIC"),
-        BRIEF_CONFIG_DEFAULTS.briefMaxQueryEventsPerTopic
+        BRIEF_OPERATION_DEFAULTS.maxQueryEventsPerTopic
       );
     const queryMaxEventsPerTopic = Math.min(
       assertPositiveInteger(requestedQueryMaxEvents, "--max-events-per-topic"),
@@ -350,7 +358,7 @@ const QUERY_TRIGGER_MODE_STRATEGY: TriggerModeStrategy<
     return {
       ...baseConfig,
       mode: "query",
-      windows: [2],
+      windows: [...BRIEF_QUERY_MODE_WINDOWS],
       warnings: queryTopicResolution.warnings,
       queryLookbackDays: parsedLookbackDays,
       queryTopicGlobs: queryTopicResolution.queryTopicGlobs,
@@ -474,7 +482,7 @@ class TriggerBriefConfigBuilder {
     const kafkaBrokersRaw =
       getStringFlag(this.flags, "kafka-brokers")
       || getEnvString("KAFKA_BROKERS")
-      || BRIEF_CONFIG_DEFAULTS.kafkaBrokers;
+      || BRIEF_OPERATION_DEFAULTS.kafkaBrokers;
     const requestedAtRaw = getStringFlag(this.flags, "requested-at") || new Date().toISOString();
     const requestTypeRaw = getStringFlag(this.flags, "type") || BRIEF_TRIGGER_DEFAULTS.requestType;
     const windowsRaw =
@@ -512,14 +520,14 @@ class TriggerBriefConfigBuilder {
       parseNumberEnv(
         "BRIEF_MAX_LOOKBACK_DAYS",
         getEnvString("BRIEF_MAX_LOOKBACK_DAYS"),
-        BRIEF_CONFIG_DEFAULTS.briefMaxLookbackDays
+        BRIEF_OPERATION_DEFAULTS.maxLookbackDays
       );
     const lookbackDays =
       getNumberFlag(this.flags, "lookback-days") ??
       parseNumberEnv(
         "BRIEF_DEFAULT_LOOKBACK_DAYS",
         getEnvString("BRIEF_DEFAULT_LOOKBACK_DAYS"),
-        BRIEF_CONFIG_DEFAULTS.briefDefaultLookbackDays
+        BRIEF_OPERATION_DEFAULTS.defaultLookbackDays
       );
 
     const parsedMaxLookbackDays = assertPositiveInteger(maxLookbackDays, "--max-lookback-days");
@@ -578,7 +586,7 @@ class TriggerBriefConfigBuilder {
           getStringFlag(this.flags, "llm-provider")
             || getEnvString("BRIEF_LLM_PROVIDER")
             || getEnvString("LLM_PROVIDER")
-            || BRIEF_CONFIG_DEFAULTS.llmProvider
+            || BRIEF_OPERATION_DEFAULTS.llmProvider
         ),
       dryRun: getBooleanFlag(this.flags, "dry-run"),
       noWait: getBooleanFlag(this.flags, "no-wait"),
@@ -599,7 +607,7 @@ function resolveConfig(flags: CliFlags): TriggerBriefConfig {
   return new TriggerBriefConfigBuilder(flags, TRIGGER_MODE_STRATEGY_FACTORY).build();
 }
 
-function buildTriggerJobPayload(config: TriggerBriefConfig): BriefingJobPayload {
+function buildTriggerJobPayload(config: TriggerBriefConfig): BriefSummaryRequestPayload {
   const commonInput = {
     requestId: config.requestId,
     requestedAt: config.requestedAtIso,
@@ -625,7 +633,7 @@ function buildTriggerJobPayload(config: TriggerBriefConfig): BriefingJobPayload 
   };
 
   if (config.mode === "query") {
-    return createBriefingJobPayload({
+    return createBriefSummaryRequest({
       ...commonInput,
       query: {
         lookbackDays: config.queryLookbackDays,
@@ -638,7 +646,7 @@ function buildTriggerJobPayload(config: TriggerBriefConfig): BriefingJobPayload 
   }
 
   const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
-  return createBriefingJobPayload({
+  return createBriefSummaryRequest({
     ...commonInput,
     topics: [
       {

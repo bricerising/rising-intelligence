@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createBriefBudgetGovernor,
   createBriefBudgetLedger,
-} from "../src/contract.js";
+} from "../src/testing.js";
 
 function makeLogger() {
   return {

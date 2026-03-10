@@ -6,7 +6,7 @@ import {
   createBriefRuntimeFactory,
   type BriefRuntimeFactoryDependencies,
   type Config,
-} from "../src/contract.js";
+} from "../src/testing.js";
 
 function createConfig(overrides: Partial<Config> = {}): Config {
   return {

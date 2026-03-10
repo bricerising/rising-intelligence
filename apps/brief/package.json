@@ -10,6 +10,14 @@
     "./contract": {
       "types": "./src/contract.ts",
       "default": "./dist/contract.js"
+    },
+    "./operations": {
+      "types": "./src/operations.ts",
+      "default": "./dist/operations.js"
+    },
+    "./testing": {
+      "types": "./src/testing.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {

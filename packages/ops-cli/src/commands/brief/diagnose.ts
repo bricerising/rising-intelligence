@@ -5,13 +5,13 @@ import {
   type PipelineLogger,
 } from "@rising-intelligence/pipeline/transport";
 import {
-  BRIEF_CONFIG_DEFAULTS,
   BRIEF_KAFKA_TOPICS,
+  BRIEF_OPERATION_DEFAULTS,
   BRIEF_TRIGGER_DEFAULTS,
   createBriefSummaryRequest,
   type BriefSummaryRequestPayload,
   type LlmProvider,
-} from "@rising-intelligence/brief/contract";
+} from "@rising-intelligence/brief/operations";
 import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
@@ -155,7 +155,7 @@ export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
         getStringFlag(flags, "llm-provider") ||
           getEnvString("BRIEF_LLM_PROVIDER") ||
           getEnvString("LLM_PROVIDER") ||
-          BRIEF_CONFIG_DEFAULTS.llmProvider
+          BRIEF_OPERATION_DEFAULTS.llmProvider
       ),
     skipTrigger: getBooleanFlag(flags, "skip-trigger"),
     skipLogs: getBooleanFlag(flags, "skip-logs"),
@@ -185,7 +185,7 @@ function buildRequestPayload(config: DiagnoseConfig): BriefSummaryRequestPayload
       lookbackDays: config.lookbackDays,
       topicGlobs: config.topicGlobs,
       maxEventsPerTopic: Math.min(
-        BRIEF_CONFIG_DEFAULTS.briefMaxQueryEventsPerTopic,
+        BRIEF_OPERATION_DEFAULTS.maxQueryEventsPerTopic,
         BRIEF_TRIGGER_DEFAULTS.maxEvidencePerTopic
       ),
       evidenceStrategy: BRIEF_TRIGGER_DEFAULTS.queryEvidenceStrategy,

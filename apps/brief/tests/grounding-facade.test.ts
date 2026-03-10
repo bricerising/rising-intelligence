@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSummaryRequestGroundingFacade,
   type ParsedSummaryRequest,
-} from "../src/contract.js";
+} from "../src/testing.js";
 
 function makeRequest(evidenceUrl: string | null): ParsedSummaryRequest {
   return {
