@@ -27,7 +27,7 @@ import {
 } from "./types.js";
 
 /**
- * Collector-internal event processing chain.
+ * Collector-internal ingestion job chain.
  * External callers should depend on the collector ingestion boundary.
  */
 export type CollectorEventProcessResult =
@@ -59,7 +59,21 @@ export interface CollectorEventProcessorInput {
   ) => string[];
 }
 
-export interface CollectorEventProcessor {
+export interface CollectorIngestionJob {
+  event: CollectorAcceptedEvent;
+}
+
+export function createCollectorIngestionJob(
+  event: CollectorAcceptedEvent
+): CollectorIngestionJob {
+  return { event };
+}
+
+export interface CollectorIngestionCommand {
+  execute(job: CollectorIngestionJob): Promise<CollectorEventProcessResult>;
+}
+
+export interface CollectorEventProcessor extends CollectorIngestionCommand {
   process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult>;
 }
 
@@ -305,34 +319,42 @@ export function createCollectorEventProcessor(
     createPublishStep(),
   ];
 
-  return {
-    async process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult> {
-      const normalizedEvent = normalizeCollectorIngestionEvent(event);
-      const acceptedEvent = isRawEvent(event)
-        ? event
-        : normalizedEvent;
+  const execute = async (
+    job: CollectorIngestionJob
+  ): Promise<CollectorEventProcessResult> => {
+    const event = job.event;
+    const normalizedEvent = normalizeCollectorIngestionEvent(event);
+    const acceptedEvent = isRawEvent(event)
+      ? event
+      : normalizedEvent;
 
-      return runAsyncChain(
-        steps,
-        {
-          runtime,
-          state: {
-            event: normalizedEvent,
-            acceptedEvent,
-            topics: [],
-          },
+    return runAsyncChain(
+      steps,
+      {
+        runtime,
+        state: {
+          event: normalizedEvent,
+          acceptedEvent,
+          topics: [],
         },
-        {
-          onEnd() {
-            throw new Error("Collector event pipeline terminated unexpectedly");
-          },
-          duplicateNextError(stepName) {
-            return new Error(
-              `Collector event pipeline step "${stepName}" called next() multiple times`
-            );
-          },
-        }
-      );
+      },
+      {
+        onEnd() {
+          throw new Error("Collector event pipeline terminated unexpectedly");
+        },
+        duplicateNextError(stepName) {
+          return new Error(
+            `Collector event pipeline step "${stepName}" called next() multiple times`
+          );
+        },
+      }
+    );
+  };
+
+  return {
+    execute,
+    async process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult> {
+      return execute(createCollectorIngestionJob(event));
     },
   };
 }

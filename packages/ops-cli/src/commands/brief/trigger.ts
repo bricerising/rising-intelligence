@@ -1,16 +1,18 @@
 import {
+  createBriefingJobPayload,
+  parseCanonicalSource,
+  type BriefingJobPayload,
+  type BriefingLlmProvider as LlmProvider,
+} from "@rising-intelligence/pipeline";
+import {
   createProducerConnection,
   type PipelineLogger,
 } from "@rising-intelligence/pipeline/transport";
-import { parseCanonicalSource } from "@rising-intelligence/pipeline";
 import { createPrismaClient } from "@rising-intelligence/db";
 import {
   BRIEF_CONFIG_DEFAULTS,
   BRIEF_KAFKA_TOPICS,
   BRIEF_TRIGGER_DEFAULTS,
-  createBriefSummaryRequest,
-  type BriefSummaryRequestPayload,
-  type LlmProvider,
 } from "@rising-intelligence/brief/contract";
 import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
@@ -597,7 +599,7 @@ function resolveConfig(flags: CliFlags): TriggerBriefConfig {
   return new TriggerBriefConfigBuilder(flags, TRIGGER_MODE_STRATEGY_FACTORY).build();
 }
 
-function buildSummaryRequest(config: TriggerBriefConfig): BriefSummaryRequestPayload {
+function buildTriggerJobPayload(config: TriggerBriefConfig): BriefingJobPayload {
   const commonInput = {
     requestId: config.requestId,
     requestedAt: config.requestedAtIso,
@@ -623,7 +625,7 @@ function buildSummaryRequest(config: TriggerBriefConfig): BriefSummaryRequestPay
   };
 
   if (config.mode === "query") {
-    return createBriefSummaryRequest({
+    return createBriefingJobPayload({
       ...commonInput,
       query: {
         lookbackDays: config.queryLookbackDays,
@@ -636,7 +638,7 @@ function buildSummaryRequest(config: TriggerBriefConfig): BriefSummaryRequestPay
   }
 
   const primaryWindow = config.windows.includes(2) ? 2 : config.windows[0];
-  return createBriefSummaryRequest({
+  return createBriefingJobPayload({
     ...commonInput,
     topics: [
       {
@@ -910,19 +912,16 @@ function formatBriefResult(result: BriefResult): string {
 
 export async function briefTrigger(flags: CliFlags): Promise<void> {
   const config = resolveConfig(flags);
-  const payload = buildSummaryRequest(config);
+  const payload = buildTriggerJobPayload(config);
 
   if (config.warnings.length > 0) {
     for (const warning of config.warnings) {
-      // eslint-disable-next-line no-console
       console.warn(`⚠️  ${warning}`);
     }
-    // eslint-disable-next-line no-console
     console.warn("");
   }
 
   if (config.dryRun) {
-    // eslint-disable-next-line no-console
     console.log(
       JSON.stringify(
         {
@@ -942,20 +941,16 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
   // Check data freshness
   const freshnessIssues = await checkDataFreshness(flags);
   if (freshnessIssues.length > 0) {
-    // eslint-disable-next-line no-console
     console.warn("⚠️  Data freshness warnings:");
     for (const issue of freshnessIssues) {
-      // eslint-disable-next-line no-console
       console.warn(`  [${issue.category}] ${issue.message}`);
     }
-    // eslint-disable-next-line no-console
     console.warn("Proceeding with brief request anyway...\n");
   }
 
   // Set up result consumer BEFORE publishing the request to avoid race condition
   let waiter: RequestResultWaiter<BriefResult> | undefined;
   if (!config.noWait) {
-    // eslint-disable-next-line no-console
     console.log(`⏳ Setting up result listener (timeout: ${config.timeoutSeconds}s)...`);
     waiter = await setupRequestResultWaiter<BriefResult>({
       kafkaBrokers: config.kafkaBrokers,
@@ -989,13 +984,11 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
     await producer.disconnect();
   }
 
-  // eslint-disable-next-line no-console
   console.log(
     `✅ Published ${config.mode} summary request ${config.requestId} to ${config.summaryRequestsTopic}`
   );
 
   if (config.noWait) {
-    // eslint-disable-next-line no-console
     console.log(`Request ID: ${config.requestId}`);
     return;
   }
@@ -1005,16 +998,13 @@ export async function briefTrigger(flags: CliFlags): Promise<void> {
     const result = await waiter!.waitForResult();
 
     const formatted = formatBriefResult(result);
-    // eslint-disable-next-line no-console
     console.log(formatted);
 
     if (result.failure) {
       process.exit(1);
     }
   } catch (error) {
-    // eslint-disable-next-line no-console
     console.error(`\n❌ ${(error as Error).message}`);
-    // eslint-disable-next-line no-console
     console.error(`Request ID: ${config.requestId}`);
     process.exit(1);
   } finally {

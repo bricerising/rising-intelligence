@@ -2,6 +2,7 @@ import type { CompiledAllowlist } from "@rising-intelligence/pipeline";
 import type { Logger } from "pino";
 import type { CheckpointStore } from "./checkpoint.js";
 import {
+  createCollectorIngestionJob,
   createCollectorEventProcessor,
   type CollectorEventProcessResult,
 } from "./ingestion-pipeline.js";
@@ -34,7 +35,7 @@ export function createCollectorIngestion(
 
   return {
     async ingest(event: CollectorAcceptedEvent): Promise<CollectorIngestionResult> {
-      return processor.process(event);
+      return processor.execute(createCollectorIngestionJob(event));
     },
   };
 }

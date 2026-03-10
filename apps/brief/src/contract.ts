@@ -1,4 +1,7 @@
-import type { CanonicalSource } from "@rising-intelligence/pipeline";
+import {
+  createBriefingJobPayload,
+  type CanonicalSource,
+} from "@rising-intelligence/pipeline";
 import {
   BRIEF_CONFIG_DEFAULTS,
   getConfig,
@@ -208,72 +211,8 @@ export interface BriefSummaryRequestPayload {
   }>;
 }
 
-function buildReport(
-  report: BriefSummaryRequestReportInput | undefined
-): BriefSummaryRequestPayload["report"] | undefined {
-  if (!report) {
-    return undefined;
-  }
-
-  const payload = {
-    ...(report.timezone ? { timezone: report.timezone } : {}),
-    ...(report.startAt ? { start_at: report.startAt } : {}),
-    ...(report.endAt ? { end_at: report.endAt } : {}),
-  };
-
-  return Object.keys(payload).length > 0 ? payload : undefined;
-}
-
 export function createBriefSummaryRequest(
   input: CreateBriefSummaryRequestInput
 ): BriefSummaryRequestPayload {
-  const report = buildReport(input.report);
-
-  return {
-    request_id: input.requestId,
-    requested_at: input.requestedAt,
-    type: input.type,
-    windows: [...input.windows],
-    ...(input.budget
-      ? {
-          budget: {
-            daily_budget_usd: input.budget.dailyBudgetUsd,
-            max_topics: input.budget.maxTopics,
-            max_evidence_per_topic: input.budget.maxEvidencePerTopic,
-            max_output_tokens: input.budget.maxOutputTokens,
-          },
-        }
-      : {}),
-    ...(input.query
-      ? {
-          query: {
-            lookback_days: input.query.lookbackDays,
-            topic_globs: [...input.query.topicGlobs],
-            max_events_per_topic: input.query.maxEventsPerTopic,
-            evidence_strategy: input.query.evidenceStrategy,
-          },
-        }
-      : {}),
-    ...(report ? { report } : {}),
-    ...(input.llmProvider ? { llm_provider: input.llmProvider } : {}),
-    topics: input.topics.map((topic) => ({
-      topic: topic.topic,
-      metrics: topic.metrics.map((metric) => ({
-        topic: metric.topic,
-        window: metric.window,
-        score: metric.score,
-        volume: metric.volume,
-        acceleration: metric.acceleration,
-      })),
-      evidence: topic.evidence.map((evidence) => ({
-        event_id: evidence.eventId,
-        source: evidence.source,
-        url: evidence.url,
-        title: evidence.title,
-        published_at: evidence.publishedAt,
-        fetched_at: evidence.fetchedAt,
-        text_excerpt: evidence.textExcerpt,
-      })),
-    })),
-  };
+  return createBriefingJobPayload(input) as BriefSummaryRequestPayload;
 }

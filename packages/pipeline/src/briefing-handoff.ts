@@ -164,6 +164,38 @@ export interface SummaryRequestPayload {
     | null;
 }
 
+export type BriefingJobType = "daily" | "threshold";
+export type BriefingEvidenceStrategy = "diversity" | "recency" | "engagement";
+export type BriefingLlmProvider = "internal" | "http" | "codex-cli";
+
+type SummaryRequestBudgetInput = NonNullable<SummaryRequestPayloadInput["budget"]>;
+type SummaryRequestQueryInput = NonNullable<SummaryRequestPayloadInput["query"]>;
+type SummaryRequestReportInput = NonNullable<SummaryRequestPayloadInput["report"]>;
+
+export interface BriefingJobInput<
+  TEvidence extends BriefEvidenceRecordInput = BriefEvidenceRecordInput,
+> extends Omit<
+  SummaryRequestPayloadInput<TEvidence>,
+  "type" | "budget" | "query" | "report"
+> {
+  type: BriefingJobType;
+  budget?: SummaryRequestBudgetInput;
+  query?: SummaryRequestQueryInput & {
+    evidenceStrategy?: BriefingEvidenceStrategy;
+  };
+  report?: SummaryRequestReportInput;
+  llmProvider?: BriefingLlmProvider;
+}
+
+export interface BriefingJobPayload
+  extends Omit<SummaryRequestPayload, "type" | "budget" | "query" | "report"> {
+  type: BriefingJobType;
+  budget?: NonNullable<SummaryRequestPayload["budget"]>;
+  query?: NonNullable<SummaryRequestPayload["query"]>;
+  report?: NonNullable<SummaryRequestPayload["report"]>;
+  llm_provider?: BriefingLlmProvider;
+}
+
 export interface BuildSummaryRequestPayloadOptions {
   onSuspiciousEvidence?: (input: {
     topic: string;
@@ -558,5 +590,85 @@ export function buildSummaryRequestPayload(
           end_at: toIsoString(request.report.endAt, "report.end_at"),
         }
       : null,
+  };
+}
+
+function cloneSummaryRequestTopics(
+  topics: SummaryRequestPayload["topics"]
+): BriefingJobPayload["topics"] {
+  return topics.map((topic) => ({
+    topic: topic.topic,
+    metrics: topic.metrics.map((metric) => ({
+      topic: metric.topic,
+      window: metric.window,
+      score: metric.score,
+      volume: metric.volume,
+      acceleration: metric.acceleration,
+    })),
+    evidence: topic.evidence.map((evidence) => ({
+      event_id: evidence.event_id,
+      source: evidence.source,
+      url: evidence.url,
+      title: evidence.title,
+      published_at: evidence.published_at,
+      fetched_at: evidence.fetched_at,
+      text_excerpt: evidence.text_excerpt,
+    })),
+  }));
+}
+
+export function createBriefingJobPayload(
+  input: BriefingJobInput,
+  options: BuildSummaryRequestPayloadOptions = {}
+): BriefingJobPayload {
+  const { llmProvider, ...request } = input;
+  const payload = buildSummaryRequestPayload(
+    {
+      ...request,
+      budget: request.budget ?? null,
+      query: request.query ?? null,
+      report: request.report ?? null,
+    },
+    options
+  );
+
+  const report = payload.report
+    ? {
+        ...(payload.report.timezone ? { timezone: payload.report.timezone } : {}),
+        ...(payload.report.start_at ? { start_at: payload.report.start_at } : {}),
+        ...(payload.report.end_at ? { end_at: payload.report.end_at } : {}),
+      }
+    : undefined;
+
+  return {
+    request_id: payload.request_id,
+    requested_at: payload.requested_at,
+    type: input.type,
+    windows: [...payload.windows],
+    topics: cloneSummaryRequestTopics(payload.topics),
+    ...(payload.budget
+      ? {
+          budget: {
+            daily_budget_usd: payload.budget.daily_budget_usd,
+            max_topics: payload.budget.max_topics,
+            max_evidence_per_topic: payload.budget.max_evidence_per_topic,
+            max_output_tokens: payload.budget.max_output_tokens,
+          },
+        }
+      : {}),
+    ...(payload.query
+      ? {
+          query: {
+            lookback_days: payload.query.lookback_days,
+            topic_globs: payload.query.topic_globs
+              ? [...payload.query.topic_globs]
+              : undefined,
+            max_events_per_topic: payload.query.max_events_per_topic,
+            evidence_strategy: payload.query.evidence_strategy,
+          },
+        }
+      : {}),
+    ...(report && Object.keys(report).length > 0 ? { report } : {}),
+    ...(llmProvider ? { llm_provider: llmProvider } : {}),
   };
 }

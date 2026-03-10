@@ -8,9 +8,9 @@
  * strategies, failure handling) are delegated to focused internal modules
  * behind the internals barrel.
  *
- * Once request translation is complete, budgeting, generation, persistence,
- * publishing, failure handling, and metrics are mediated through the
- * BriefOrchestrator boundary.
+ * Once request translation is complete, a prepared brief execution job is
+ * handed to the BriefOrchestrator boundary for budgeting, generation,
+ * persistence, publishing, failure handling, and metrics.
  */
 
 import type { PrismaClient } from "@rising-intelligence/db";
@@ -45,15 +45,12 @@ import {
   createSummaryRequestGenerationFacade,
 } from "./internals.js";
 import {
-  createBriefExecutionInput,
+  createBriefExecutionJob,
   createBriefOrchestrator,
   type BriefOrchestrator,
-  type BriefExecutionInput,
+  type BriefExecutionJob,
 } from "./brief-orchestrator.js";
 import { serializeError } from "@rising-intelligence/shared/errors";
-import {
-  createBriefOrchestrationRequest,
-} from "./types.js";
 
 export interface ProcessContext {
   config: Config;
@@ -91,7 +88,7 @@ type SummaryRequestProcessorDependencyOverrides = FunctionDependencyOverrides<
 >;
 
 interface SummaryRequestRuntime {
-  execution: BriefExecutionInput;
+  job: BriefExecutionJob;
 }
 
 const DEFAULT_SUMMARY_REQUEST_PROCESSOR_DEPENDENCIES: SummaryRequestProcessorDependencies = {
@@ -119,7 +116,7 @@ class SummaryRequestRuntimeFactory {
     const logger = ctx.logger.child({ requestId: request.requestId });
     const groundingFacade = resolveGroundingFacade(ctx);
 
-    const environment: BriefExecutionInput["environment"] = {
+    const environment: BriefExecutionJob["environment"] = {
       config: ctx.config,
       logger,
       healthContext: ctx.healthContext,
@@ -127,7 +124,7 @@ class SummaryRequestRuntimeFactory {
       redis: ctx.redis,
     };
 
-    const services: BriefExecutionInput["services"] = {
+    const services: BriefExecutionJob["services"] = {
       budgetGovernor: this.dependencies.createBriefBudgetGovernor({
         prisma: ctx.prisma,
         redis: ctx.redis,
@@ -172,14 +169,14 @@ class SummaryRequestRuntimeFactory {
       incrementGeneration(environment.healthContext, "failure");
       logger.error(
         { error: serializeError(error) },
-        "Failed to resolve summary request into brief orchestration input"
+        "Failed to resolve summary request into a brief execution job"
       );
       throw error;
     }
 
     return {
-      execution: createBriefExecutionInput({
-        request: createBriefOrchestrationRequest(resolvedRequest),
+      job: createBriefExecutionJob({
+        request: resolvedRequest,
         environment,
         services,
       }),
@@ -205,7 +202,7 @@ class DefaultSummaryRequestProcessor implements SummaryRequestProcessor {
       return;
     }
 
-    await this.orchestrator.execute(runtime.execution);
+    await this.orchestrator.execute(runtime.job);
   }
 }
 

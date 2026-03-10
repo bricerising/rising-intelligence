@@ -1,10 +1,10 @@
 /**
  * Brief orchestration boundary.
  *
- * Mediates between translated brief orchestration input and the brief
+ * Mediates between prepared brief execution jobs and the brief
  * service's internal subsystems (budgeting, generation, persistence,
- * publishing, failure handling, metrics). Source ingestion stays outside this
- * boundary as a collector-owned capability.
+ * publishing, failure handling, metrics). Trigger assembly, query resolution,
+ * and source ingestion stay outside this boundary.
  */
 
 import { BriefStatus } from "@rising-intelligence/db";
@@ -42,7 +42,7 @@ import {
 import type { PrismaClient } from "@rising-intelligence/db";
 import type { Redis } from "ioredis";
 
-export interface BriefExecutionInput {
+export interface BriefExecutionJob {
   request: BriefOrchestrationRequest;
   environment: {
     config: Config;
@@ -60,12 +60,14 @@ export interface BriefExecutionInput {
   };
 }
 
-type OrchestratorContext = BriefExecutionInput["environment"];
-type OrchestratorRuntime = BriefExecutionInput["services"];
+export type BriefExecutionInput = BriefExecutionJob;
 
-export function createBriefExecutionInput(
-  input: BriefExecutionInput
-): BriefExecutionInput {
+type OrchestratorContext = BriefExecutionJob["environment"];
+type OrchestratorRuntime = BriefExecutionJob["services"];
+
+export function createBriefExecutionJob(
+  input: BriefExecutionJob
+): BriefExecutionJob {
   return {
     request: createBriefOrchestrationRequest(input.request),
     environment: {
@@ -78,12 +80,18 @@ export function createBriefExecutionInput(
   };
 }
 
+export function createBriefExecutionInput(
+  input: BriefExecutionInput
+): BriefExecutionInput {
+  return createBriefExecutionJob(input);
+}
+
 export interface BriefOrchestrator {
   /**
    * Runs the brief orchestration lifecycle:
    * idempotency → budget → generation → persistence → publishing → metrics.
    */
-  execute(input: BriefExecutionInput): Promise<void>;
+  execute(job: BriefExecutionJob): Promise<void>;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -146,8 +154,8 @@ function emitSuccessMetrics(
 // ── Default implementation ──────────────────────────────────────────────────
 
 class DefaultBriefOrchestrator implements BriefOrchestrator {
-  async execute(input: BriefExecutionInput): Promise<void> {
-    const { environment: ctx, services: runtime, request } = input;
+  async execute(job: BriefExecutionJob): Promise<void> {
+    const { environment: ctx, services: runtime, request } = job;
     const {
       budgetGovernor,
       publisher,
