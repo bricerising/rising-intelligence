@@ -8,7 +8,7 @@ import {
 } from "./ingestion-pipeline.js";
 import type { HealthContext } from "./health.js";
 import type { CollectorIngestionPublisher } from "./publishing-facade.js";
-import type { CollectorAcceptedEvent, Source } from "./types.js";
+import type { CollectorIngestionEvent, Source } from "./types.js";
 
 export type CollectorIngestionResult = CollectorEventProcessResult;
 
@@ -25,7 +25,7 @@ export interface CreateCollectorIngestionInput {
 }
 
 export interface CollectorIngestion {
-  ingest(event: CollectorAcceptedEvent): Promise<CollectorIngestionResult>;
+  ingest(event: CollectorIngestionEvent): Promise<CollectorIngestionResult>;
 }
 
 export function createCollectorIngestion(
@@ -34,7 +34,7 @@ export function createCollectorIngestion(
   const processor = createCollectorEventProcessor(input);
 
   return {
-    async ingest(event: CollectorAcceptedEvent): Promise<CollectorIngestionResult> {
+    async ingest(event: CollectorIngestionEvent): Promise<CollectorIngestionResult> {
       return processor.execute(createCollectorIngestionJob(event));
     },
   };

@@ -7,7 +7,7 @@ import type { CheckpointStore } from "../checkpoint.js";
 import type { Config } from "../config.js";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import type { MarketFilterProfile } from "../market-filters.js";
-import type { CollectorSourceAdapter } from "../types.js";
+import type { CollectorIngestionAdapter } from "../types.js";
 import {
   createHackerNewsAdapter,
   type CreateHackerNewsAdapterInput,
@@ -65,17 +65,19 @@ type UnsupportedAdapterName = "reddit" | "bluesky" | "mastodon" | "github";
 type AdapterName = ImplementedAdapterName | UnsupportedAdapterName;
 
 export interface CollectorAdapterBuildResult {
-  adapters: CollectorSourceAdapter[];
+  adapters: CollectorIngestionAdapter[];
   unsupportedEnabledAdapters: UnsupportedAdapterName[];
 }
 
-export interface CollectorSourceAdapterFactory {
-  buildSourceAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
+export interface CollectorIngestionAdapterFactory {
+  buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
 }
 
-export interface CollectorIngestionAdapterFactory
-  extends CollectorSourceAdapterFactory {
-  buildIngestionAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
+/**
+ * @deprecated Use CollectorIngestionAdapterFactory.
+ */
+export interface CollectorSourceAdapterFactory {
+  buildSourceAdapters(input: BuildCollectorAdaptersInput): CollectorAdapterBuildResult;
 }
 
 type AdapterEnabledPredicate = (config: CollectorAdapterFactoryConfig) => boolean;
@@ -106,7 +108,7 @@ interface ImplementedAdapterDefinition
   create(
     input: BuildCollectorAdaptersInput,
     constructors: AdapterConstructors
-  ): CollectorSourceAdapter;
+  ): CollectorIngestionAdapter;
 }
 
 interface UnsupportedAdapterDefinition
@@ -267,7 +269,8 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
 
 const DEFAULT_ADAPTER_DEFINITIONS = createAdapterDefinitions();
 
-export class CollectorAdapterFactory implements CollectorIngestionAdapterFactory {
+export class CollectorAdapterFactory
+  implements CollectorIngestionAdapterFactory, CollectorSourceAdapterFactory {
   private readonly constructors: AdapterConstructors;
   private readonly definitions: ReadonlyArray<AdapterDefinitionItem>;
 
@@ -283,13 +286,7 @@ export class CollectorAdapterFactory implements CollectorIngestionAdapterFactory
   buildIngestionAdapters(
     input: BuildCollectorAdaptersInput
   ): CollectorAdapterBuildResult {
-    return this.buildSourceAdapters(input);
-  }
-
-  buildSourceAdapters(
-    input: BuildCollectorAdaptersInput
-  ): CollectorAdapterBuildResult {
-    const adapters: CollectorSourceAdapter[] = [];
+    const adapters: CollectorIngestionAdapter[] = [];
     const unsupportedEnabledAdapters: UnsupportedAdapterName[] = [];
 
     for (const definition of this.definitions) {
@@ -309,6 +306,15 @@ export class CollectorAdapterFactory implements CollectorIngestionAdapterFactory
       adapters,
       unsupportedEnabledAdapters,
     };
+  }
+
+  /**
+   * @deprecated Use buildIngestionAdapters.
+   */
+  buildSourceAdapters(
+    input: BuildCollectorAdaptersInput
+  ): CollectorAdapterBuildResult {
+    return this.buildIngestionAdapters(input);
   }
 }
 

@@ -5,7 +5,7 @@ import {
   createCollectedContent,
   createCollectorSourceRecord,
   type CollectedContent,
-  type CollectorSourceAdapter,
+  type CollectorIngestionAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -76,7 +76,7 @@ function parseDate(dateStr: string | undefined): string | undefined {
  * Polls Lobsters RSS feed for new stories.
  * Lobsters is a high-signal, computing-focused community.
  */
-export class LobstersAdapter implements CollectorSourceAdapter {
+export class LobstersAdapter implements CollectorIngestionAdapter {
   readonly name = "lobsters";
   readonly source: Source = "lobsters";
   readonly pollIntervalMs: number;
@@ -244,7 +244,7 @@ export interface CreateLobstersAdapterInput {
 
 export function createLobstersAdapter(
   input: CreateLobstersAdapterInput
-): CollectorSourceAdapter {
+): CollectorIngestionAdapter {
   return new LobstersAdapter(
     input.pollIntervalMs,
     input.maxItems,

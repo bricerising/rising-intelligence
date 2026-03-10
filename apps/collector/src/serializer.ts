@@ -3,8 +3,8 @@ import {
   sourceToProtoEnum,
 } from "@rising-intelligence/pipeline";
 import {
-  normalizeCollectorIngestionEvent,
   normalizeCollectedContent,
+  toCollectedContent,
   type CollectorAcceptedEvent,
   type CollectorIngestionEvent,
   type CollectedContent,
@@ -112,9 +112,7 @@ export function serializeCollectorIngestionEvent(
 export function serializeCollectorAcceptedEvent(
   event: CollectorAcceptedEvent
 ): Buffer {
-  return serializeCollectorIngestionEvent(
-    normalizeCollectorIngestionEvent(event)
-  );
+  return serializeCollectorIngestionEvent(event);
 }
 
 /**
@@ -122,7 +120,7 @@ export function serializeCollectorAcceptedEvent(
  * In MVP, we use JSON encoding. Can switch to protobuf binary later.
  */
 export function serializeRawEvent(event: RawEvent): Buffer {
-  return serializeCollectorAcceptedEvent(event);
+  return serializeCollectedContent(toCollectedContent(event));
 }
 
 export const toRawEventWirePayload = toCollectorPublicationPayload;

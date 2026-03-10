@@ -384,18 +384,16 @@ export function toCollectedContent(event: RawEvent): CollectedContent {
   });
 }
 
-export type CollectorAcceptedEvent = CollectorIngestionEvent | RawEvent;
-
-export function isRawEvent(event: CollectorAcceptedEvent): event is RawEvent {
-  return "event_id" in event;
-}
+/**
+ * @deprecated Use CollectorIngestionEvent. RawEvent materialization belongs at
+ * the collector publication boundary.
+ */
+export type CollectorAcceptedEvent = CollectorIngestionEvent;
 
 export function normalizeCollectorIngestionEvent(
   event: CollectorAcceptedEvent
 ): CollectorIngestionEvent {
-  return isRawEvent(event)
-    ? toCollectedContent(event)
-    : normalizeCollectedContent(event);
+  return normalizeCollectedContent(event);
 }
 
 export function createRawEvent(input: CreateRawEventInput): RawEvent {
@@ -470,7 +468,7 @@ export interface CollectorHeartbeat {
 /**
  * Adapter interface for source-specific ingestion logic.
  */
-export interface CollectorSourceAdapter {
+export interface CollectorIngestionAdapter {
   /** Unique name for this adapter (used in logs and metrics) */
   readonly name: string;
 
@@ -484,20 +482,48 @@ export interface CollectorSourceAdapter {
   initialize(): Promise<void>;
 
   /** Fetch new items and yield them with checkpoint data */
-  fetch(): AsyncIterable<FetchResult>;
+  fetch(): AsyncIterable<CollectorIngestionRecord>;
 
   /** Clean up resources on shutdown */
   shutdown(): Promise<void>;
 }
 
-export type SourceAdapter = CollectorSourceAdapter;
+/**
+ * @deprecated Use CollectorIngestionAdapter.
+ */
+export type CollectorSourceAdapter = CollectorIngestionAdapter;
+/**
+ * @deprecated Use CollectorIngestionAdapter.
+ */
+export type SourceAdapter = CollectorIngestionAdapter;
 
-export interface CollectorSourceRecord {
+export interface CollectorIngestionRecord {
   content: CollectorIngestionEvent;
   checkpointKey: string;
   checkpointValue: string;
 }
 
+export interface CreateCollectorIngestionRecordInput
+  extends CollectorIngestionRecord {}
+
+export function createCollectorIngestionRecord(
+  input: CreateCollectorIngestionRecordInput
+): CollectorIngestionRecord {
+  return {
+    content: normalizeCollectorIngestionEvent(input.content),
+    checkpointKey: input.checkpointKey,
+    checkpointValue: input.checkpointValue,
+  };
+}
+
+/**
+ * @deprecated Use CollectorIngestionRecord.
+ */
+export interface CollectorSourceRecord extends CollectorIngestionRecord {}
+
+/**
+ * @deprecated Use CollectorIngestionRecord.
+ */
 export interface FetchResult extends CollectorSourceRecord {
   /**
    * @deprecated Use `content`; this alias remains for callers migrating off
@@ -506,17 +532,22 @@ export interface FetchResult extends CollectorSourceRecord {
   event: RawEvent;
 }
 
-export interface CreateCollectorSourceRecordInput extends CollectorSourceRecord {}
+/**
+ * @deprecated Use CreateCollectorIngestionRecordInput.
+ */
+export interface CreateCollectorSourceRecordInput
+  extends CreateCollectorIngestionRecordInput {}
 
+/**
+ * @deprecated Use createCollectorIngestionRecord.
+ */
 export function createCollectorSourceRecord(
   input: CreateCollectorSourceRecordInput
 ): FetchResult {
-  const content = normalizeCollectorIngestionEvent(input.content);
+  const record = createCollectorIngestionRecord(input);
 
   return {
-    content,
-    event: toRawEvent(content),
-    checkpointKey: input.checkpointKey,
-    checkpointValue: input.checkpointValue,
+    ...record,
+    event: toRawEvent(record.content),
   };
 }

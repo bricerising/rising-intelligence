@@ -3,7 +3,7 @@ import {
   createCollectedContent,
   createCollectorSourceRecord,
   type CollectedContent,
-  type CollectorSourceAdapter,
+  type CollectorIngestionAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -200,7 +200,7 @@ async function delayBetweenStoryRequests(): Promise<void> {
  * Hacker News adapter.
  * Polls HN Firebase API for top/new/best stories.
  */
-export class HackerNewsAdapter implements CollectorSourceAdapter {
+export class HackerNewsAdapter implements CollectorIngestionAdapter {
   readonly name = "hackernews";
   readonly source: Source = "hackernews";
   readonly pollIntervalMs: number;
@@ -387,7 +387,7 @@ export interface CreateHackerNewsAdapterInput {
 
 export function createHackerNewsAdapter(
   input: CreateHackerNewsAdapterInput
-): CollectorSourceAdapter {
+): CollectorIngestionAdapter {
   return new HackerNewsAdapter(
     parseHnMode(input.mode),
     input.pollIntervalMs,

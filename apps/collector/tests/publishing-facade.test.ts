@@ -6,7 +6,12 @@ import {
   createCollectorIngestionPublisher,
   createCollectorPublisher,
 } from "../src/publishing-facade.js";
-import type { CollectorHeartbeat, DeadLetterEvent, RawEvent } from "../src/types.js";
+import type {
+  CollectorHeartbeat,
+  CollectorIngestionEvent,
+  DeadLetterEvent,
+  RawEvent,
+} from "../src/types.js";
 
 function createTestLogger() {
   return {
@@ -113,12 +118,14 @@ describe("collector publishing facade", () => {
     const publisher = createCollectorPublisher({ connection, logger });
     const ingestionPublisher = createCollectorIngestionPublisher(publisher);
 
-    await ingestionPublisher.publishAcceptedEvent({
-      event_id: "evt-2",
+    const event: CollectorIngestionEvent = {
+      eventId: "evt-2",
       source: "rss",
-      fetched_at: "2026-02-10T00:00:00.000Z",
+      fetchedAt: "2026-02-10T00:00:00.000Z",
       text: "Ingested payload",
-    });
+    };
+
+    await ingestionPublisher.publishAcceptedEvent(event);
     await ingestionPublisher.publishRejectedEvent({
       dlq_id: "dlq:2",
       occurred_at: "2026-02-10T00:00:00.000Z",

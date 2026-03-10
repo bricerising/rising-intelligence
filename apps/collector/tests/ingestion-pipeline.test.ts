@@ -7,7 +7,11 @@ import {
 } from "../src/collector-ingestion.js";
 import { createHealthContext } from "../src/health.js";
 import type { CompiledAllowlist } from "@rising-intelligence/pipeline";
-import type { DeadLetterEvent, RawEvent, Source } from "../src/types.js";
+import type {
+  CollectorIngestionEvent,
+  DeadLetterEvent,
+  Source,
+} from "../src/types.js";
 
 function createLogger() {
   return {
@@ -35,14 +39,16 @@ function createAllowlist(): CompiledAllowlist {
   };
 }
 
-function createEvent(overrides: Partial<RawEvent> = {}): RawEvent {
+function createEvent(
+  overrides: Partial<CollectorIngestionEvent> = {}
+): CollectorIngestionEvent {
   return {
-    event_id: "evt-1",
+    eventId: "evt-1",
     source: "rss",
-    fetched_at: "2026-02-10T00:00:00.000Z",
+    fetchedAt: "2026-02-10T00:00:00.000Z",
     title: "AWS update",
     text: "aws launched a new feature",
-    source_meta: {
+    sourceMeta: {
       feed_name: "AWS Blog",
       feed_url: "https://aws.amazon.com/blogs/aws/feed/",
     },
@@ -80,7 +86,9 @@ function createHarness(options: CreateHarnessOptions = {}): TestHarness {
 
   const checkpointStore = createCheckpointStore(hasSeen);
   const healthContext = createHealthContext();
-  const publishAcceptedEvent = vi.fn(async (_event: RawEvent) => undefined);
+  const publishAcceptedEvent = vi.fn(
+    async (_event: CollectorIngestionEvent) => undefined
+  );
   const publishRejectedEvent = vi.fn(async (_event: DeadLetterEvent) => undefined);
 
   const fixedNow = new Date("2026-02-10T12:00:00.000Z");
@@ -125,10 +133,13 @@ describe("collector ingestion pipeline", () => {
       status: "ingested",
       topics: ["aws"],
     });
-    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(publishAcceptedEvent).toHaveBeenCalledWith({
+      ...event,
+      tags: ["aws"],
+    });
     expect(publishRejectedEvent).not.toHaveBeenCalled();
     expect(checkpointStore.markSeen).toHaveBeenCalledWith("rss", "evt-1");
-    expect(event.tags).toEqual(["aws"]);
+    expect(event.tags).toBeUndefined();
     expect(healthContext.metrics.eventsIngested.get("rss")).toBe(1);
     expect(healthContext.metrics.topicsExtracted.get("aws")).toBe(1);
     expect(healthContext.lastEventAt?.toISOString()).toBe(
@@ -152,8 +163,11 @@ describe("collector ingestion pipeline", () => {
       status: "ingested",
       topics: ["aws"],
     });
-    expect(event.tags).toEqual(["market.pos", "aws"]);
-    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(event.tags).toEqual(["market.pos"]);
+    expect(publishAcceptedEvent).toHaveBeenCalledWith({
+      ...event,
+      tags: ["market.pos", "aws"],
+    });
     expect(publishRejectedEvent).not.toHaveBeenCalled();
   });
 
@@ -173,8 +187,11 @@ describe("collector ingestion pipeline", () => {
       status: "ingested",
       topics: ["aws"],
     });
-    expect(event.tags).toEqual(["market.pos", "aws"]);
-    expect(publishAcceptedEvent).toHaveBeenCalledWith(event);
+    expect(event.tags).toEqual([" market.pos ", "aws", "market.pos", ""]);
+    expect(publishAcceptedEvent).toHaveBeenCalledWith({
+      ...event,
+      tags: ["market.pos", "aws"],
+    });
     expect(publishRejectedEvent).not.toHaveBeenCalled();
   });
 
@@ -261,7 +278,7 @@ describe("collector ingestion pipeline", () => {
       source: "hackernews",
       text: "",
       url: "https://news.ycombinator.com/item?id=1",
-      source_meta: {
+      sourceMeta: {
         feed_name: "Should not be counted for non-rss",
         feed_url: "https://example.com/ignored-feed",
       },
@@ -287,9 +304,9 @@ describe("collector ingestion pipeline", () => {
 
   it.each([
     {
-      label: "event_id",
+      label: "eventId",
       event: createEvent({
-        event_id: "   ",
+        eventId: "   ",
         url: "https://example.com/missing-id",
       }),
     },

@@ -4,7 +4,7 @@
  * Mediates between prepared brief execution jobs and the brief
  * service's internal subsystems (budgeting, generation, persistence,
  * publishing, failure handling, metrics). Trigger assembly, query resolution,
- * and source ingestion stay outside this boundary.
+ * and collector-owned ingestion stay outside this boundary.
  */
 
 import { BriefStatus } from "@rising-intelligence/db";

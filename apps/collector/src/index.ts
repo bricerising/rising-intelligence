@@ -14,7 +14,7 @@ import {
   incrementCheckpointUpdated,
 } from "./health.js";
 import { createAdapterErrorPolicy } from "./adapter-error-policy.js";
-import type { CollectorHeartbeat, CollectorSourceAdapter } from "./types.js";
+import type { CollectorHeartbeat, CollectorIngestionAdapter } from "./types.js";
 import {
   createCollectorHeartbeatPublisher,
   createCollectorIngestionPublisher,
@@ -53,7 +53,7 @@ async function initializeCollector(): Promise<CollectorContext> {
 
 async function runAdapter(
   ctx: CollectorContext,
-  adapter: CollectorSourceAdapter
+  adapter: CollectorIngestionAdapter
 ): Promise<void> {
   const { kafkaContext, healthContext, checkpointStore, allowlist } = ctx;
   const adapterLogger = ctx.logger.child({ adapter: adapter.name });

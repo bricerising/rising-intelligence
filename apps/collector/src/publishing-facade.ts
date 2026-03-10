@@ -11,8 +11,8 @@ import {
 import {
   normalizeCollectorIngestionEvent,
   toRawEvent,
-  type CollectorAcceptedEvent,
   type CollectorHeartbeat,
+  type CollectorIngestionEvent,
   type DeadLetterEvent,
   type RawEvent,
 } from "./types.js";
@@ -30,7 +30,7 @@ export interface CollectorPublisher {
 }
 
 export interface CollectorIngestionPublisher {
-  publishAcceptedEvent(event: CollectorAcceptedEvent): Promise<void>;
+  publishAcceptedEvent(event: CollectorIngestionEvent): Promise<void>;
   publishRejectedEvent(event: DeadLetterEvent): Promise<void>;
 }
 
@@ -93,7 +93,7 @@ export function createCollectorIngestionPublisher(
   publisher: Pick<CollectorPublisher, "publishRawEvent" | "publishDeadLetterEvent">
 ): CollectorIngestionPublisher {
   return {
-    async publishAcceptedEvent(event: CollectorAcceptedEvent): Promise<void> {
+    async publishAcceptedEvent(event: CollectorIngestionEvent): Promise<void> {
       await publisher.publishRawEvent(
         toRawEvent(normalizeCollectorIngestionEvent(event))
       );

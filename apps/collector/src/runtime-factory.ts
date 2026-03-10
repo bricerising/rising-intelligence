@@ -34,7 +34,7 @@ import {
   type MarketFilterProfile,
 } from "./market-filters.js";
 import { loadAllowlist, type CompiledAllowlist } from "@rising-intelligence/pipeline";
-import type { CollectorSourceAdapter } from "./types.js";
+import type { CollectorIngestionAdapter } from "./types.js";
 
 type RuntimeLoggerComponent = "checkpoint";
 interface PipelineProducerContext {
@@ -66,7 +66,7 @@ export interface CollectorRuntimeContext {
   checkpointStore: CheckpointStore;
   allowlist: CompiledAllowlist;
   marketFilterProfiles: MarketFilterProfile[];
-  adapters: CollectorSourceAdapter[];
+  adapters: CollectorIngestionAdapter[];
   shutdownRequested: boolean;
   lastSeenCleanupAt: number;
 }
@@ -188,11 +188,7 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         "Content fetcher configuration loaded"
       );
 
-      const buildSourceAdapters = typeof adapterFactory.buildSourceAdapters === "function"
-        ? adapterFactory.buildSourceAdapters.bind(adapterFactory)
-        : adapterFactory.buildIngestionAdapters.bind(adapterFactory);
-
-      const { adapters, unsupportedEnabledAdapters } = buildSourceAdapters({
+      const { adapters, unsupportedEnabledAdapters } = adapterFactory.buildIngestionAdapters({
         config,
         checkpointStore,
         logger,

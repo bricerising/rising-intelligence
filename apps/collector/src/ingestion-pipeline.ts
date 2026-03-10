@@ -18,9 +18,7 @@ import {
 } from "@rising-intelligence/pipeline";
 import type { CollectorIngestionPublisher } from "./publishing-facade.js";
 import {
-  isRawEvent,
   normalizeCollectorIngestionEvent,
-  type CollectorAcceptedEvent,
   type CollectorIngestionEvent,
   type DeadLetterEvent,
   type Source,
@@ -60,11 +58,11 @@ export interface CollectorEventProcessorInput {
 }
 
 export interface CollectorIngestionJob {
-  event: CollectorAcceptedEvent;
+  event: CollectorIngestionEvent;
 }
 
 export function createCollectorIngestionJob(
-  event: CollectorAcceptedEvent
+  event: CollectorIngestionEvent
 ): CollectorIngestionJob {
   return { event };
 }
@@ -74,12 +72,11 @@ export interface CollectorIngestionCommand {
 }
 
 export interface CollectorEventProcessor extends CollectorIngestionCommand {
-  process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult>;
+  process(event: CollectorIngestionEvent): Promise<CollectorEventProcessResult>;
 }
 
 interface ProcessingState {
   event: CollectorIngestionEvent;
-  acceptedEvent: CollectorAcceptedEvent;
   topics: string[];
 }
 
@@ -271,9 +268,6 @@ function createTopicExtractionStep(): ProcessingStep {
       );
       state.topics = topics;
       state.event.tags = mergeTags(state.event.tags, topics);
-      if (isRawEvent(state.acceptedEvent)) {
-        state.acceptedEvent.tags = state.event.tags;
-      }
 
       for (const topic of topics) {
         incrementTopicsExtracted(runtime.healthContext, topic);
@@ -288,7 +282,7 @@ function createPublishStep(): ProcessingStep {
   return {
     name: "publish",
     async execute({ runtime, state }): Promise<CollectorEventProcessResult> {
-      await runtime.publisher.publishAcceptedEvent(state.acceptedEvent);
+      await runtime.publisher.publishAcceptedEvent(state.event);
       runtime.checkpointStore.markSeen(runtime.adapterSource, state.event.eventId);
       incrementEventsIngested(runtime.healthContext, runtime.adapterSource);
       runtime.healthContext.lastEventAt = runtime.now();
@@ -322,11 +316,7 @@ export function createCollectorEventProcessor(
   const execute = async (
     job: CollectorIngestionJob
   ): Promise<CollectorEventProcessResult> => {
-    const event = job.event;
-    const normalizedEvent = normalizeCollectorIngestionEvent(event);
-    const acceptedEvent = isRawEvent(event)
-      ? event
-      : normalizedEvent;
+    const normalizedEvent = normalizeCollectorIngestionEvent(job.event);
 
     return runAsyncChain(
       steps,
@@ -334,7 +324,6 @@ export function createCollectorEventProcessor(
         runtime,
         state: {
           event: normalizedEvent,
-          acceptedEvent,
           topics: [],
         },
       },
@@ -353,7 +342,7 @@ export function createCollectorEventProcessor(
 
   return {
     execute,
-    async process(event: CollectorAcceptedEvent): Promise<CollectorEventProcessResult> {
+    async process(event: CollectorIngestionEvent): Promise<CollectorEventProcessResult> {
       return execute(createCollectorIngestionJob(event));
     },
   };

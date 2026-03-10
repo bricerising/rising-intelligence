@@ -6,7 +6,7 @@ import type { Logger } from "pino";
 import {
   createCollectedContent,
   createCollectorSourceRecord,
-  type CollectorSourceAdapter,
+  type CollectorIngestionAdapter,
   type FetchResult,
   type Source,
 } from "../types.js";
@@ -412,7 +412,7 @@ interface EdgarMetaResult {
  * RSS/Atom feed adapter.
  * Polls configured feeds and yields collector source records for new items.
  */
-export class RSSAdapter implements CollectorSourceAdapter {
+export class RSSAdapter implements CollectorIngestionAdapter {
   readonly name = "rss";
   readonly source: Source = "rss";
   readonly pollIntervalMs: number;
@@ -868,7 +868,7 @@ export interface CreateRSSAdapterInput {
 
 export function createRSSAdapter(
   input: CreateRSSAdapterInput
-): CollectorSourceAdapter {
+): CollectorIngestionAdapter {
   return new RSSAdapter(
     input.feedsConfigPath,
     input.pollIntervalMs,
