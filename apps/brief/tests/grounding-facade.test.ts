@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createSummaryRequestGroundingFacade } from "../src/grounding-facade.js";
-import type { ParsedSummaryRequest } from "../src/types.js";
+import {
+  createSummaryRequestGroundingFacade,
+  type ParsedSummaryRequest,
+} from "../src/contract.js";
 
 function makeRequest(evidenceUrl: string | null): ParsedSummaryRequest {
   return {

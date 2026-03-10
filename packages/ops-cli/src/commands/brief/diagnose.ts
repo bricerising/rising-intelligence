@@ -4,6 +4,14 @@ import {
   createProducerConnection,
   type PipelineLogger,
 } from "@rising-intelligence/pipeline/transport";
+import {
+  BRIEF_CONFIG_DEFAULTS,
+  BRIEF_KAFKA_TOPICS,
+  BRIEF_TRIGGER_DEFAULTS,
+  createBriefSummaryRequest,
+  type BriefSummaryRequestPayload,
+  type LlmProvider,
+} from "@rising-intelligence/brief/contract";
 import { getEnvString } from "@rising-intelligence/shared/env";
 import type { CliFlags } from "../../lib/args.js";
 import { getBooleanFlag, getStringFlag, parseKafkaBrokers } from "../../lib/flags.js";
@@ -41,7 +49,7 @@ interface DiagnoseConfig {
   briefHealthUrl: string;
   lookbackDays: number;
   topicGlobs: string[];
-  llmProvider?: string;
+  llmProvider?: LlmProvider;
   skipTrigger: boolean;
   skipLogs: boolean;
   dockerComposeFile: string;
@@ -107,6 +115,17 @@ function parseTopicGlobs(rawValue: string): string[] {
   return [...new Set(values)];
 }
 
+function parseLlmProvider(rawValue: string): LlmProvider {
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "internal" || normalized === "http" || normalized === "codex-cli") {
+    return normalized;
+  }
+
+  throw new Error(
+    `Invalid llm-provider: ${rawValue}. Must be one of: internal, http, codex-cli`
+  );
+}
+
 export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
   const timeoutRaw = getStringFlag(flags, "timeout") || "120";
   const lookbackDaysRaw = getStringFlag(flags, "lookback-days") || "2";
@@ -121,21 +140,23 @@ export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
     summaryRequestsTopic:
       getStringFlag(flags, "summary-requests-topic") ||
       getEnvString("KAFKA_TOPIC_SUMMARY_REQUESTS") ||
-      "summary.requests",
+      BRIEF_KAFKA_TOPICS.summaryRequests,
     summaryResultsTopic:
       getStringFlag(flags, "summary-results-topic") ||
       getEnvString("KAFKA_TOPIC_SUMMARY_RESULTS") ||
-      "summary.results",
+      BRIEF_KAFKA_TOPICS.summaryResults,
     requestId: getStringFlag(flags, "request-id") || `diagnose-${Date.now()}`,
     timeoutSeconds: parsePositiveIntegerStrict(timeoutRaw, "--timeout"),
     briefHealthUrl: getStringFlag(flags, "brief-health-url") || DEFAULT_BRIEF_HEALTH_URL,
     lookbackDays: parsePositiveIntegerStrict(lookbackDaysRaw, "--lookback-days"),
     topicGlobs: parseTopicGlobs(topicGlobsRaw),
     llmProvider:
-      getStringFlag(flags, "llm-provider") ||
-      getEnvString("BRIEF_LLM_PROVIDER") ||
-      getEnvString("LLM_PROVIDER") ||
-      "codex-cli",
+      parseLlmProvider(
+        getStringFlag(flags, "llm-provider") ||
+          getEnvString("BRIEF_LLM_PROVIDER") ||
+          getEnvString("LLM_PROVIDER") ||
+          BRIEF_CONFIG_DEFAULTS.llmProvider
+      ),
     skipTrigger: getBooleanFlag(flags, "skip-trigger"),
     skipLogs: getBooleanFlag(flags, "skip-logs"),
     dockerComposeFile: getStringFlag(flags, "docker-compose-file") || DEFAULT_DOCKER_COMPOSE_FILE,
@@ -147,28 +168,31 @@ export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
   };
 }
 
-function buildRequestPayload(config: DiagnoseConfig): Record<string, unknown> {
+function buildRequestPayload(config: DiagnoseConfig): BriefSummaryRequestPayload {
   const requestedAt = new Date().toISOString();
-  return {
-    request_id: config.requestId,
-    requested_at: requestedAt,
-    type: "daily",
-    windows: [2],
+  return createBriefSummaryRequest({
+    requestId: config.requestId,
+    requestedAt,
+    type: BRIEF_TRIGGER_DEFAULTS.requestType,
+    windows: [...BRIEF_TRIGGER_DEFAULTS.windows],
     budget: {
-      daily_budget_usd: 5,
-      max_topics: 5,
-      max_evidence_per_topic: 3,
-      max_output_tokens: 1200,
+      dailyBudgetUsd: BRIEF_TRIGGER_DEFAULTS.dailyBudgetUsd,
+      maxTopics: BRIEF_TRIGGER_DEFAULTS.maxTopics,
+      maxEvidencePerTopic: BRIEF_TRIGGER_DEFAULTS.maxEvidencePerTopic,
+      maxOutputTokens: BRIEF_TRIGGER_DEFAULTS.maxOutputTokens,
     },
     query: {
-      lookback_days: config.lookbackDays,
-      topic_globs: config.topicGlobs,
-      max_events_per_topic: 3,
-      evidence_strategy: "diversity",
+      lookbackDays: config.lookbackDays,
+      topicGlobs: config.topicGlobs,
+      maxEventsPerTopic: Math.min(
+        BRIEF_CONFIG_DEFAULTS.briefMaxQueryEventsPerTopic,
+        BRIEF_TRIGGER_DEFAULTS.maxEvidencePerTopic
+      ),
+      evidenceStrategy: BRIEF_TRIGGER_DEFAULTS.queryEvidenceStrategy,
     },
+    llmProvider: config.llmProvider,
     topics: [],
-    ...(config.llmProvider ? { llm_provider: config.llmProvider } : {}),
-  };
+  });
 }
 
 async function checkBriefHealth(url: string): Promise<DiagnoseOutput["checks"]["health"]> {
@@ -251,7 +275,7 @@ async function collectRequestLogs(config: DiagnoseConfig): Promise<string[]> {
 
 async function publishDiagnosticRequest(
   config: DiagnoseConfig,
-  payload: Record<string, unknown>
+  payload: BriefSummaryRequestPayload
 ): Promise<void> {
   const producer = await createProducerConnection({
     brokers: config.kafkaBrokers,

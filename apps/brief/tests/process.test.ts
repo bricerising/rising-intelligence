@@ -8,12 +8,12 @@ vi.mock("../src/llm/codex-cli.js", () => ({
   executeCodexCli: codexCliMocks.executeCodexCli,
 }));
 
-import { createHealthContext } from "../src/health.js";
 import {
+  createHealthContext,
   createSummaryRequestProcessor,
   processSummaryRequest,
-} from "../src/process.js";
-import type { ParsedSummaryRequest } from "../src/types.js";
+  type ParsedSummaryRequest,
+} from "../src/contract.js";
 
 function makeLogger() {
   const logger = {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Config } from "../src/config.js";
+import type { Config } from "../src/contract.js";
 import { executeCodexCli } from "../src/llm/codex-cli.js";
 
 const logger = pino({ level: "silent" });

@@ -5,6 +5,13 @@
   "description": "Brief service: Kafka (summary.requests) -> brief generation pipeline",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./contract": {
+      "types": "./src/contract.ts",
+      "default": "./dist/contract.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",

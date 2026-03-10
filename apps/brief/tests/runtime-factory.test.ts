@@ -1,12 +1,12 @@
 import type { Server } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConsumerConnection, ProducerConnection } from "@rising-intelligence/pipeline/transport";
-import type { Config } from "../src/config.js";
-import { createHealthContext } from "../src/health.js";
 import {
+  createHealthContext,
   createBriefRuntimeFactory,
   type BriefRuntimeFactoryDependencies,
-} from "../src/runtime-factory.js";
+  type Config,
+} from "../src/contract.js";
 
 function createConfig(overrides: Partial<Config> = {}): Config {
   return {
