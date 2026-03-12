@@ -267,6 +267,18 @@ topics:
       - type: keyword
         value: "Mixtral"
 
+  - key: ai.huggingface
+    display_name: Hugging Face
+    priority: 75
+    aliases: ["HuggingFace", "HF"]
+    matchers:
+      - type: keyword
+        value: "Hugging Face"
+      - type: keyword
+        value: "HuggingFace"
+      - type: regex
+        pattern: "huggingface\\.co"
+
   # ===========================================================================
   # Cloud / Infrastructure (Priority 60-70)
   # ===========================================================================
@@ -302,6 +314,16 @@ topics:
         value: "Terraform"
       - type: keyword
         value: "OpenTofu"
+
+  - key: cloud.cncf
+    display_name: CNCF
+    priority: 60
+    aliases: ["Cloud Native Computing Foundation"]
+    matchers:
+      - type: keyword
+        value: "CNCF"
+      - type: keyword
+        value: "Cloud Native Computing Foundation"
 
   # ===========================================================================
   # Programming Languages / Frameworks (Priority 50-65)
@@ -529,6 +551,20 @@ topics:
         value: "ransomware"
       - type: regex
         pattern: "\\bcyber[- ]?espionage\\b"
+
+  - key: security.cve
+    display_name: Security Advisories (CVE)
+    priority: 75
+    aliases: ["CVE", "Security Advisory"]
+    matchers:
+      - type: regex
+        pattern: "CVE-\\d{4}-\\d+"
+      - type: keyword
+        value: "security advisory"
+      - type: keyword
+        value: "NVD"
+      - type: keyword
+        value: "CVSS"
 
   # ===========================================================================
   # AI Research (Priority 70-75: Papers and preprints)

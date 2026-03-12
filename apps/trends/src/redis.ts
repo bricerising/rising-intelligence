@@ -15,6 +15,7 @@ local dedupTtlSeconds = tonumber(ARGV[2])
 local maxEvidencePerTopic = tonumber(ARGV[3])
 local engagementScore = tonumber(ARGV[4])
 local planCount = tonumber(ARGV[5])
+local volumeWeight = tonumber(ARGV[6])
 
 local dedupAdded = redis.call("SADD", dedupKey, eventId)
 redis.call("EXPIRE", dedupKey, dedupTtlSeconds)
@@ -23,14 +24,14 @@ if dedupAdded == 0 then
   return 0
 end
 
-local argIndex = 6
+local argIndex = 7
 for _ = 1, planCount do
   local counterKey = ARGV[argIndex]
   local counterTtl = tonumber(ARGV[argIndex + 1])
   local evidenceKey = ARGV[argIndex + 2]
   local evidenceTtl = tonumber(ARGV[argIndex + 3])
 
-  redis.call("INCR", counterKey)
+  redis.call("INCRBY", counterKey, volumeWeight)
   redis.call("EXPIRE", counterKey, counterTtl)
   redis.call("ZADD", evidenceKey, engagementScore, eventId)
   redis.call("ZREMRANGEBYRANK", evidenceKey, 0, -(maxEvidencePerTopic + 1))
@@ -136,6 +137,7 @@ export async function applyEventToWindows(
   const dedupTtlSeconds = getWindowSeconds(dedupWindow) * 3;
   const priorityWeight = (event.feedPriority ?? 50) / 50;
   const engagementScore = Math.round((event.engagementScore ?? 0) * priorityWeight);
+  const volumeWeight = Math.max(1, Math.round((event.feedPriority ?? 50) / 50));
   const windowPlans: Array<{
     counterKey: string;
     counterTtlSeconds: number;
@@ -177,6 +179,7 @@ export async function applyEventToWindows(
     maxEvidencePerTopic,
     engagementScore,
     windowPlans.length,
+    volumeWeight,
     ...planArgs
   );
   const dedupAdded = typeof scriptResult === "number"

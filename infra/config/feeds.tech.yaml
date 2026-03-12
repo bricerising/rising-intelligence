@@ -342,6 +342,22 @@ cloud_security_advisories:
     topics: ["cloud.gcp", "gcp.gke", "security"]
     notes: "Google Kubernetes Engine security advisories"
 
+  - name: GitHub Security Advisories
+    url: https://github.com/advisories.atom
+    poll_interval_seconds: 3600
+    priority: 90
+    category: security_bulletin
+    topics: ["security.general", "security.cve", "dev.github"]
+    notes: "GitHub-curated security advisories across the open source ecosystem"
+
+  - name: MSRC Security Updates
+    url: https://api.msrc.microsoft.com/update-guide/rss
+    poll_interval_seconds: 3600
+    priority: 88
+    category: security_bulletin
+    topics: ["security.general", "cloud.azure"]
+    notes: "Microsoft Security Response Center vulnerability disclosures and patches"
+
 # =============================================================================
 # Cloud Service Health Status Feeds
 # =============================================================================
@@ -746,6 +762,14 @@ ai_research:
     topics: ["ai.research"]
     notes: "arXiv vision papers - multimodal models, image generation"
 
+  - name: Hugging Face Blog
+    url: https://huggingface.co/blog/feed.xml
+    poll_interval_seconds: 7200
+    priority: 85
+    category: ai_research
+    topics: ["ai.huggingface", "ai.llm"]
+    notes: "Official Hugging Face blog - model releases, open-source ML updates"
+
 # =============================================================================
 # Aggregated Tech News (Curated, High-Signal)
 # =============================================================================
@@ -784,6 +808,14 @@ aggregators:
     category: aggregator
     topics: ["ai.general"]
     notes: "InfoQ AI/ML-specific feed"
+
+  - name: CNCF Blog
+    url: https://www.cncf.io/blog/feed/
+    poll_interval_seconds: 7200
+    priority: 75
+    category: aggregator
+    topics: ["cloud.kubernetes", "cloud.cncf"]
+    notes: "Cloud Native Computing Foundation blog - Kubernetes, cloud-native ecosystem"
 
   # TechCrunch (optional - can be noisy)
   - name: TechCrunch

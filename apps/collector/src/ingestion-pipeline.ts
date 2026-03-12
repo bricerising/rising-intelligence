@@ -258,14 +258,71 @@ function createValidationStep(): ProcessingStep {
   };
 }
 
+function parseDeclaredTopics(
+  sourceMeta: CollectorIngestionEvent["sourceMeta"]
+): string[] {
+  if (!sourceMeta || typeof sourceMeta !== "object") {
+    return [];
+  }
+
+  const declared = sourceMeta.feed_topics_declared;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+
+  return declared.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
+}
+
+function mergeDeclaredTopics(
+  extractedTopics: string[],
+  declaredTopics: string[],
+  allowlist: CompiledAllowlist
+): string[] {
+  if (declaredTopics.length === 0) {
+    return extractedTopics;
+  }
+
+  const allowlistKeys = new Set(allowlist.topics.map((t) => t.key));
+  const existingKeys = new Set(extractedTopics);
+
+  const validDeclared = declaredTopics.filter(
+    (topic) =>
+      allowlistKeys.has(topic) &&
+      !allowlist.mutedTopics.has(topic) &&
+      !existingKeys.has(topic)
+  );
+
+  if (validDeclared.length === 0) {
+    return extractedTopics;
+  }
+
+  const merged = [...extractedTopics, ...validDeclared];
+
+  const priorityMap = new Map(allowlist.topics.map((t) => [t.key, t.priority]));
+  merged.sort((a, b) => {
+    const pa = priorityMap.get(a) ?? allowlist.defaultPriority;
+    const pb = priorityMap.get(b) ?? allowlist.defaultPriority;
+    if (pb !== pa) {
+      return pb - pa;
+    }
+    return a.localeCompare(b);
+  });
+
+  return merged.slice(0, allowlist.maxTopicsPerEvent);
+}
+
 function createTopicExtractionStep(): ProcessingStep {
   return {
     name: "extract-topics",
     async execute({ runtime, state }, next): Promise<CollectorEventProcessResult> {
-      const topics = runtime.topicExtractor(
+      const extractedTopics = runtime.topicExtractor(
         { title: state.event.title, text: state.event.text, url: state.event.url },
         runtime.allowlist
       );
+
+      const declaredTopics = parseDeclaredTopics(state.event.sourceMeta);
+      const topics = mergeDeclaredTopics(extractedTopics, declaredTopics, runtime.allowlist);
+
       state.topics = topics;
       state.event.tags = mergeTags(state.event.tags, topics);
 
