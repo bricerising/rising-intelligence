@@ -115,13 +115,27 @@ async function computeWindowMetrics(
   const countsByTopic = new Map<string, number>();
   const dayOfWeek = getDayOfWeekKey(new Date(bucket));
 
+  // Build a single pipeline for all topics (4 commands per topic)
+  const pipeline = redis.pipeline();
   for (const topic of allowlist.topics) {
-    const [currentRaw, previousRaw, baselineRaw, evidenceEventIds] = await Promise.all([
-      redis.get(getCounterKey(window, topic.key, bucket)),
-      redis.get(getPreviousCounterKey(window, topic.key)),
-      redis.get(`baseline:${window}:${topic.key}:${dayOfWeek}`),
-      redis.zrevrange(getEvidenceKey(window, topic.key), 0, maxEvidencePerTopic - 1),
-    ]);
+    pipeline.get(getCounterKey(window, topic.key, bucket));
+    pipeline.get(getPreviousCounterKey(window, topic.key));
+    pipeline.get(`baseline:${window}:${topic.key}:${dayOfWeek}`);
+    pipeline.zrevrange(getEvidenceKey(window, topic.key), 0, maxEvidencePerTopic - 1);
+  }
+
+  const results = await pipeline.exec();
+  if (!results) {
+    throw new Error("Redis pipeline execution returned null");
+  }
+
+  for (let i = 0; i < allowlist.topics.length; i++) {
+    const topic = allowlist.topics[i];
+    const base = i * 4;
+    const currentRaw = results[base][1] as string | null;
+    const previousRaw = results[base + 1][1] as string | null;
+    const baselineRaw = results[base + 2][1] as string | null;
+    const evidenceEventIds = (results[base + 3][1] as string[] | null) ?? [];
 
     const volume = parseCount(currentRaw);
     const prevVolume = parseCount(previousRaw);

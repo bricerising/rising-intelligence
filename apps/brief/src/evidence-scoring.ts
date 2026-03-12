@@ -196,6 +196,7 @@ export interface EvidenceInsight {
   categories: Set<SignalCategory>;
   score: number;
   recencyMs: number;
+  source?: string;
 }
 
 export function buildEvidenceInsight(
@@ -259,7 +260,44 @@ export function buildEvidenceInsight(
     categories,
     score,
     recencyMs: getEvidenceRecencyMs(evidence),
+    source: evidence.source,
   };
+}
+
+const MAX_ITEMS_PER_SOURCE = 2;
+
+function applySourceDiversity(
+  sorted: EvidenceInsight[],
+  limit: number
+): EvidenceInsight[] {
+  const selected: EvidenceInsight[] = [];
+  const sourceCounts = new Map<string, number>();
+  const deferred: EvidenceInsight[] = [];
+
+  for (const insight of sorted) {
+    if (selected.length >= limit) {
+      break;
+    }
+
+    const source = insight.source ?? "";
+    const count = sourceCounts.get(source) ?? 0;
+
+    if (count < MAX_ITEMS_PER_SOURCE) {
+      selected.push(insight);
+      sourceCounts.set(source, count + 1);
+    } else {
+      deferred.push(insight);
+    }
+  }
+
+  for (const insight of deferred) {
+    if (selected.length >= limit) {
+      break;
+    }
+    selected.push(insight);
+  }
+
+  return selected;
 }
 
 export function collectTopEvidenceInsights(
@@ -286,7 +324,7 @@ export function collectTopEvidenceInsights(
       return true;
     });
 
-  return insights.slice(0, limit);
+  return applySourceDiversity(insights, limit);
 }
 
 // ── Internal highlight building ─────────────────────────────────────────────

@@ -43,6 +43,18 @@ import {
 
 // ── LLM response schema ────────────────────────────────────────────────────
 
+const OptionalLlmMetaStringSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  },
+  z.string().min(1).optional()
+);
+
 const LlmHighlightSchema = z.object({
   topic: z.string().min(1),
   what_happened: z.string().min(1),
@@ -63,8 +75,8 @@ const LlmResponseSchema = z.object({
     .optional(),
   meta: z
     .object({
-      provider: z.string().min(1).optional(),
-      model: z.string().min(1).optional(),
+      provider: OptionalLlmMetaStringSchema,
+      model: OptionalLlmMetaStringSchema,
       estimated_cost_usd: z.number().nonnegative().optional(),
     })
     .optional(),
@@ -101,6 +113,15 @@ export function normalizeUsdDelta(value: number): number {
 
   const rounded = Number(value.toFixed(6));
   return rounded === 0 ? 0 : rounded;
+}
+
+function formatSchemaIssue(issue: z.ZodIssue | undefined): string {
+  if (!issue) {
+    return "unknown validation error";
+  }
+
+  const path = issue.path.length > 0 ? issue.path.join(".") : "";
+  return path ? `${path}: ${issue.message}` : issue.message;
 }
 
 // ── Success result types ────────────────────────────────────────────────────
@@ -553,6 +574,7 @@ function buildCodexCliPrompt(
     "Return valid JSON only with this shape:",
     '{ "title": string, "highlights": [{ "topic": string, "what_happened": string, "why_it_matters": string, "suggested_action": string, "citations": string[] }], "notes": string, "usage": { "prompt_tokens": number, "completion_tokens": number }, "meta": { "provider": string, "model": string, "estimated_cost_usd": number } }',
     "If usage or cost are unknown, set them to 0.",
+    "If provider or model are unknown, omit those meta fields or set them to 'unknown'. Never use empty strings.",
   ];
 
   promptSections.push(
@@ -619,7 +641,9 @@ async function callHttpLlm(
 
   const parsed = LlmResponseSchema.safeParse(decoded);
   if (!parsed.success) {
-    throw new LlmGenerationError(`LLM endpoint response validation failed: ${parsed.error.issues[0]?.message}`);
+    throw new LlmGenerationError(
+      `LLM endpoint response validation failed: ${formatSchemaIssue(parsed.error.issues[0])}`
+    );
   }
 
   return parsed.data;
@@ -646,7 +670,7 @@ async function callCodexCliLlm(
   const parsed = LlmResponseSchema.safeParse(decoded);
   if (!parsed.success) {
     throw new LlmGenerationError(
-      `Codex CLI response validation failed: ${parsed.error.issues[0]?.message}`
+      `Codex CLI response validation failed: ${formatSchemaIssue(parsed.error.issues[0])}`
     );
   }
 

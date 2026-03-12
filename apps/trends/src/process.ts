@@ -12,10 +12,13 @@ import { serializeError } from "@rising-intelligence/shared/errors";
 import type pino from "pino";
 import type { Config } from "./config.js";
 import type { CompiledAllowlist } from "./allowlist.js";
-import { filterTrackedTags } from "./allowlist.js";
 import { deserializeCollectorHeartbeat } from "./collector-heartbeat-adapter.js";
 import { recordCollectorHeartbeat } from "./collector-heartbeat-store.js";
 import { deserializeRawEvent } from "./deserialize.js";
+import {
+  isEventFreshEnoughForTracking,
+  prepareTrendEvent,
+} from "./event-preparation.js";
 import type { ParsedRawEvent } from "./types.js";
 import {
   type CollectorHeartbeatState,
@@ -90,16 +93,25 @@ const RAW_EVENT_MESSAGE_STRATEGY: MessageStrategy<TrendsContext, ParsedRawEvent>
     );
   },
   async onMessage(ctx, messageContext, event): Promise<void> {
-    const trackedTopics = filterTrackedTags(event.tags, ctx.allowlist);
-    if (trackedTopics.length === 0) {
+    const preparedEvent = prepareTrendEvent(event, ctx.allowlist);
+    if (preparedEvent.topics.length === 0) {
+      return;
+    }
+
+    if (
+      !isEventFreshEnoughForTracking(
+        preparedEvent,
+        ctx.config.MAX_TRACKED_EVENT_AGE_MS
+      )
+    ) {
       return;
     }
 
     try {
       const result = await applyEventToWindows(
         ctx.redis,
-        event,
-        trackedTopics,
+        preparedEvent,
+        preparedEvent.topics,
         ctx.config.WINDOWS,
         ctx.config.MAX_EVIDENCE_PER_TOPIC
       );

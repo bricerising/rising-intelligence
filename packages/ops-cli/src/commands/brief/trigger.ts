@@ -101,6 +101,8 @@ interface ExplicitModeSelection {
 
 type TriggerModeSelection = QueryModeSelection | ExplicitModeSelection;
 
+const DEFAULT_TIMEOUT_SECONDS = 600;
+
 function parseNumber(rawValue: string, key: string): number {
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) {
@@ -280,7 +282,7 @@ function parseOptionalTimezone(rawValue: string | undefined): string | undefined
 function resolveTimeoutSeconds(flags: CliFlags): number {
   const rawTimeout = getStringFlag(flags, "timeout");
   if (rawTimeout === undefined) {
-    return 300;
+    return DEFAULT_TIMEOUT_SECONDS;
   }
 
   return assertPositiveInteger(parseNumber(rawTimeout, "--timeout"), "--timeout");

@@ -36,9 +36,15 @@ export interface Engagement {
   shares?: number;
 }
 
+export interface ExtractedEntities {
+  cves?: string[];
+  ghsas?: string[];
+}
+
 export interface Extracted {
   hashtags?: string[];
   urls?: string[];
+  entities?: ExtractedEntities;
 }
 
 /**
@@ -128,9 +134,15 @@ export interface RawEventEngagementInput {
   shares?: number | null;
 }
 
+export interface RawEventExtractedEntitiesInput {
+  cves?: Array<string | null | undefined> | null;
+  ghsas?: Array<string | null | undefined> | null;
+}
+
 export interface RawEventExtractedInput {
   hashtags?: Array<string | null | undefined> | null;
   urls?: Array<string | null | undefined> | null;
+  entities?: RawEventExtractedEntitiesInput | null;
 }
 
 export interface CreateRawEventInput {
@@ -260,6 +272,25 @@ function normalizeEngagement(
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeExtractedEntities(
+  entities: RawEventExtractedEntitiesInput | null | undefined
+): ExtractedEntities | undefined {
+  if (!entities) {
+    return undefined;
+  }
+
+  const cves = normalizeStringArray(entities.cves);
+  const ghsas = normalizeStringArray(entities.ghsas);
+  if (!cves && !ghsas) {
+    return undefined;
+  }
+
+  return {
+    cves,
+    ghsas,
+  };
+}
+
 function normalizeExtracted(
   extracted: RawEventExtractedInput | null | undefined
 ): Extracted | undefined {
@@ -269,13 +300,15 @@ function normalizeExtracted(
 
   const hashtags = normalizeStringArray(extracted.hashtags);
   const urls = normalizeStringArray(extracted.urls);
-  if (!hashtags && !urls) {
+  const entities = normalizeExtractedEntities(extracted.entities);
+  if (!hashtags && !urls && !entities) {
     return undefined;
   }
 
   return {
     hashtags,
     urls,
+    entities,
   };
 }
 

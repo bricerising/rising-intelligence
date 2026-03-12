@@ -22,18 +22,45 @@ describe("trends snapshot publishing", () => {
       ["prev:15m:ai.openai", "10"],
     ]);
 
-    const pipeline = {
+    const evidenceByKey = new Map<string, string[]>([
+      ["evidence:15m:aws.bedrock", ["event-2", "event-1"]],
+      ["evidence:15m:ai.openai", ["event-3"]],
+    ]);
+
+    // Track pipeline commands in order, then return matching results on exec()
+    const snapshotPipelineCommands: Array<{ cmd: string; args: unknown[] }> = [];
+    const snapshotPipeline = {
+      get: vi.fn((key: string) => {
+        snapshotPipelineCommands.push({ cmd: "get", args: [key] });
+        return snapshotPipeline;
+      }),
+      zrevrange: vi.fn((key: string, start: number, stop: number) => {
+        snapshotPipelineCommands.push({ cmd: "zrevrange", args: [key, start, stop] });
+        return snapshotPipeline;
+      }),
+      exec: vi.fn(async () =>
+        snapshotPipelineCommands.map(({ cmd, args }) => {
+          if (cmd === "get") return [null, rawValues.get(args[0] as string) ?? null];
+          if (cmd === "zrevrange") return [null, evidenceByKey.get(args[0] as string) ?? []];
+          return [null, null];
+        })
+      ),
+    };
+
+    // writePreviousWindowCounts pipeline
+    const writePipeline = {
       set: vi.fn().mockReturnThis(),
       expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
 
+    let pipelineCallCount = 0;
     const redis = {
-      get: vi.fn(async (key: string) => rawValues.get(key) ?? null),
-      zrevrange: vi.fn(async (key: string) =>
-        key.includes("aws.bedrock") ? ["event-2", "event-1"] : ["event-3"]
-      ),
-      pipeline: vi.fn(() => pipeline),
+      pipeline: vi.fn(() => {
+        pipelineCallCount++;
+        // First pipeline call is computeWindowMetrics, second is writePreviousWindowCounts
+        return pipelineCallCount === 1 ? snapshotPipeline : writePipeline;
+      }),
     };
 
     const publishedMessages: Array<{ topic: string; key: string; value: Buffer }> = [];
@@ -100,8 +127,8 @@ describe("trends snapshot publishing", () => {
     expect(healthContext.metrics.topicMetrics.getScore("aws.bedrock", "15m")).toBe(32);
     expect(healthContext.metrics.baselineComputeDurationSeconds.count).toBe(1);
 
-    expect(pipeline.set).toHaveBeenCalledWith("prev:15m:aws.bedrock", "8");
-    expect(pipeline.expire).toHaveBeenCalledWith("prev:15m:aws.bedrock", 1800);
-    expect(pipeline.exec).toHaveBeenCalledOnce();
+    expect(writePipeline.set).toHaveBeenCalledWith("prev:15m:aws.bedrock", "8");
+    expect(writePipeline.expire).toHaveBeenCalledWith("prev:15m:aws.bedrock", 1800);
+    expect(writePipeline.exec).toHaveBeenCalledOnce();
   });
 });

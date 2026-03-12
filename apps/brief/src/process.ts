@@ -64,10 +64,8 @@ export interface ProcessContext {
 }
 
 function resolveGroundingFacade(ctx: ProcessContext): SummaryRequestGroundingFacade {
-  return ctx.groundingFacade ?? DEFAULT_GROUNDING_FACADE;
+  return ctx.groundingFacade ?? createSummaryRequestGroundingFacade();
 }
-
-const DEFAULT_GROUNDING_FACADE = createSummaryRequestGroundingFacade();
 
 export interface SummaryRequestProcessor {
   processSummaryRequest(ctx: ProcessContext, request: ParsedSummaryRequest): Promise<void>;
@@ -217,11 +215,10 @@ export function createSummaryRequestProcessor(
   return new DefaultSummaryRequestProcessor(dependencies);
 }
 
-const DEFAULT_SUMMARY_REQUEST_PROCESSOR = createSummaryRequestProcessor();
-
 export async function processSummaryRequest(
   ctx: ProcessContext,
   request: ParsedSummaryRequest
 ): Promise<void> {
-  await DEFAULT_SUMMARY_REQUEST_PROCESSOR.processSummaryRequest(ctx, request);
+  const processor = createSummaryRequestProcessor();
+  await processor.processSummaryRequest(ctx, request);
 }

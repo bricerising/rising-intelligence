@@ -18,6 +18,19 @@ import {
 const briefGroundingFacade = createSummaryRequestGroundingFacade();
 const summaryRequestProcessor = createSummaryRequestProcessor();
 
+function isDuplicateTrendSnapshotError(error: unknown): boolean {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2002";
+  }
+
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "P2002"
+  );
+}
+
 export interface BriefService {
   handleSummaryRequest(
     ctx: BriefRuntimeContext,
@@ -60,6 +73,10 @@ async function persistTrendSnapshot(
     });
     ctx.healthContext.postgresHealthy = true;
   } catch (error) {
+    if (isDuplicateTrendSnapshotError(error)) {
+      ctx.healthContext.postgresHealthy = true;
+      return;
+    }
     ctx.healthContext.postgresHealthy = false;
     throw error;
   }

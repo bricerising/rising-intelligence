@@ -49,10 +49,19 @@ interface RssFeedErrorMetric {
   count: number;
 }
 
+export interface FeedHealthEntry {
+  feed: string;
+  feedUrl: string;
+  lastSuccessAt: number; // Unix timestamp seconds
+  lastItemCount: number;
+  consecutiveErrors: number;
+}
+
 export interface Metrics {
   eventsIngested: Map<string, number>;
   eventsFailed: Map<string, Map<string, number>>;
   rssFeedErrors: Map<string, RssFeedErrorMetric>;
+  feedHealth: Map<string, FeedHealthEntry>;
   pollDurationSeconds: Map<string, HistogramState>;
   pollItemsCount: Map<string, HistogramState>;
   checkpointUpdated: Map<string, number>;
@@ -65,6 +74,7 @@ export function createMetrics(): Metrics {
     eventsIngested: new Map(),
     eventsFailed: new Map(),
     rssFeedErrors: new Map(),
+    feedHealth: new Map(),
     pollDurationSeconds: new Map(),
     pollItemsCount: new Map(),
     checkpointUpdated: new Map(),
@@ -269,6 +279,36 @@ export function formatMetrics(ctx: HealthContext): string {
     );
   }
 
+  const feedEntries = [...ctx.metrics.feedHealth.entries()].sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+
+  if (feedEntries.length > 0) {
+    lines.push("# HELP ri_collector_feed_last_success_timestamp Per-feed last successful poll (Unix seconds)");
+    lines.push("# TYPE ri_collector_feed_last_success_timestamp gauge");
+    for (const [, entry] of feedEntries) {
+      lines.push(
+        `ri_collector_feed_last_success_timestamp{feed="${quoteMetricLabelValue(entry.feed)}"} ${entry.lastSuccessAt}`
+      );
+    }
+
+    lines.push("# HELP ri_collector_feed_consecutive_errors Per-feed consecutive error count");
+    lines.push("# TYPE ri_collector_feed_consecutive_errors gauge");
+    for (const [, entry] of feedEntries) {
+      lines.push(
+        `ri_collector_feed_consecutive_errors{feed="${quoteMetricLabelValue(entry.feed)}"} ${entry.consecutiveErrors}`
+      );
+    }
+
+    lines.push("# HELP ri_collector_feed_last_item_count Items returned on last successful poll");
+    lines.push("# TYPE ri_collector_feed_last_item_count gauge");
+    for (const [, entry] of feedEntries) {
+      lines.push(
+        `ri_collector_feed_last_item_count{feed="${quoteMetricLabelValue(entry.feed)}"} ${entry.lastItemCount}`
+      );
+    }
+  }
+
   lines.push("# HELP ri_collector_up 1 when service dependencies are healthy");
   lines.push("# TYPE ri_collector_up gauge");
   lines.push(`ri_collector_up ${getHealthStatus(ctx).status === "unhealthy" ? 0 : 1}`);
@@ -377,6 +417,53 @@ export function incrementCheckpointUpdated(ctx: HealthContext, source: string, c
 export function incrementRateLimitBackoff(ctx: HealthContext, source: string, count = 1): void {
   const current = ctx.metrics.rateLimitBackoff.get(source) ?? 0;
   ctx.metrics.rateLimitBackoff.set(source, current + count);
+}
+
+const FEED_HEALTH_CARDINALITY_LIMIT = 200;
+
+export interface RecordFeedSuccessInput {
+  feed: string;
+  feedUrl: string;
+  itemCount: number;
+}
+
+export function recordFeedSuccess(ctx: HealthContext, input: RecordFeedSuccessInput): void {
+  const key = input.feed;
+  const existing = ctx.metrics.feedHealth.get(key);
+  if (existing) {
+    existing.lastSuccessAt = Math.floor(Date.now() / 1000);
+    existing.lastItemCount = input.itemCount;
+    existing.consecutiveErrors = 0;
+  } else if (ctx.metrics.feedHealth.size < FEED_HEALTH_CARDINALITY_LIMIT) {
+    ctx.metrics.feedHealth.set(key, {
+      feed: input.feed,
+      feedUrl: input.feedUrl,
+      lastSuccessAt: Math.floor(Date.now() / 1000),
+      lastItemCount: input.itemCount,
+      consecutiveErrors: 0,
+    });
+  }
+}
+
+export interface RecordFeedErrorInput {
+  feed: string;
+  feedUrl: string;
+}
+
+export function recordFeedError(ctx: HealthContext, input: RecordFeedErrorInput): void {
+  const key = input.feed;
+  const existing = ctx.metrics.feedHealth.get(key);
+  if (existing) {
+    existing.consecutiveErrors += 1;
+  } else if (ctx.metrics.feedHealth.size < FEED_HEALTH_CARDINALITY_LIMIT) {
+    ctx.metrics.feedHealth.set(key, {
+      feed: input.feed,
+      feedUrl: input.feedUrl,
+      lastSuccessAt: 0,
+      lastItemCount: 0,
+      consecutiveErrors: 1,
+    });
+  }
 }
 
 export function incrementTopicsExtracted(ctx: HealthContext, topic: string, count = 1): void {

@@ -36,6 +36,7 @@ export class CheckpointStore {
     // Open database
     const db = new Database(this.path);
     db.pragma("journal_mode = WAL");
+    db.pragma("auto_vacuum = INCREMENTAL");
     db.pragma("synchronous = NORMAL");
 
     // Create tables
@@ -182,7 +183,9 @@ export class CheckpointStore {
    * @param olderThan SQLite interval string, e.g., "-7 days"
    */
   cleanupSeen(olderThan: string = "-7 days"): number {
-    const result = this.getConnection().statements.cleanupSeen.run(olderThan);
+    const conn = this.getConnection();
+    const result = conn.statements.cleanupSeen.run(olderThan);
+    conn.db.pragma("incremental_vacuum");
     this.logger.info(
       { deleted: result.changes, olderThan },
       "Cleaned up old seen events"

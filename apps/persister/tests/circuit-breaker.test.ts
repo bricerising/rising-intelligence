@@ -87,9 +87,12 @@ describe("PostgresCircuitBreaker", () => {
     cb.recordFailure(openTime);
     cb.recordFailure(openTime); // opens, counter resets
 
-    // After circuit closes, need full threshold again
+    // After openMs, circuit enters half-open; probe success closes it
     const afterClose = openTime + 6000;
-    expect(cb.isOpen(afterClose)).toBe(false);
+    expect(cb.isOpen(afterClose)).toBe(false); // enters half-open
+    cb.recordSuccess(); // probe succeeds → fully closed
+
+    // Now need full threshold again
     expect(cb.recordFailure(afterClose)).toBe(false); // 1 of 2
     expect(cb.recordFailure(afterClose)).toBe(true);  // 2 of 2 - opens again
   });
@@ -102,5 +105,50 @@ describe("PostgresCircuitBreaker", () => {
     expect(opened).toBe(true);
     expect(cb.isOpen(0)).toBe(true);
     expect(cb.isOpen(1000)).toBe(false);
+  });
+
+  it("enters half-open state after openMs elapses", () => {
+    const cb = new PostgresCircuitBreaker(2, 5000);
+    const now = 1000;
+
+    cb.recordFailure(now);
+    cb.recordFailure(now); // opens
+
+    expect(cb.isHalfOpen()).toBe(false);
+    expect(cb.isOpen(now + 5000)).toBe(false); // triggers half-open
+    expect(cb.isHalfOpen()).toBe(true);
+  });
+
+  it("closes circuit on successful probe in half-open state", () => {
+    const cb = new PostgresCircuitBreaker(2, 5000);
+    const now = 1000;
+
+    cb.recordFailure(now);
+    cb.recordFailure(now); // opens
+
+    cb.isOpen(now + 5000); // triggers half-open
+    expect(cb.isHalfOpen()).toBe(true);
+
+    cb.recordSuccess(); // probe succeeds → close
+    expect(cb.isHalfOpen()).toBe(false);
+    expect(cb.isOpen(now + 5000)).toBe(false);
+  });
+
+  it("reopens circuit on failed probe in half-open state", () => {
+    const cb = new PostgresCircuitBreaker(2, 5000);
+    const now = 1000;
+
+    cb.recordFailure(now);
+    cb.recordFailure(now); // opens
+
+    const afterOpen = now + 5000;
+    cb.isOpen(afterOpen); // triggers half-open
+    expect(cb.isHalfOpen()).toBe(true);
+
+    const reopened = cb.recordFailure(afterOpen); // probe fails → reopen
+    expect(reopened).toBe(true);
+    expect(cb.isHalfOpen()).toBe(false);
+    expect(cb.isOpen(afterOpen)).toBe(true);
+    expect(cb.isOpen(afterOpen + 5000)).toBe(false); // new full openMs
   });
 });

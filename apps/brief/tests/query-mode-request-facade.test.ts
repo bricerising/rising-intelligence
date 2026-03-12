@@ -194,6 +194,136 @@ describe("query mode request resolver", () => {
     });
   });
 
+  it("ignores duplicate trend snapshots with the same generatedAt", async () => {
+    const resolver = createQueryModeRequestResolver();
+    const logger = makeLogger();
+    const ctx = makeContext({
+      prisma: {
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-20T10:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  { topic: "aws.bedrock", score: 100, volume: 20, acceleration: 1.5 },
+                  { topic: "data.kafka", score: 1, volume: 1, acceleration: 0.1 },
+                ],
+              },
+            },
+            {
+              generatedAt: new Date("2026-02-20T10:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  { topic: "aws.bedrock", score: 100, volume: 20, acceleration: 1.5 },
+                  { topic: "data.kafka", score: 1, volume: 1, acceleration: 0.1 },
+                ],
+              },
+            },
+            {
+              generatedAt: new Date("2026-02-20T11:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  { topic: "aws.bedrock", score: 0, volume: 0, acceleration: 0 },
+                  { topic: "data.kafka", score: 90, volume: 15, acceleration: 1.2 },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-kafka",
+              source: Source.rss,
+              url: "https://example.com/kafka",
+              title: "Kafka update",
+              publishedAt: new Date("2026-02-20T11:10:00.000Z"),
+              fetchedAt: new Date("2026-02-20T11:15:00.000Z"),
+              text: "Kafka brokers and producers got updated guidance.",
+              topics: ["data.kafka"],
+              engagementScore: 3,
+            },
+          ]),
+        },
+      } as any,
+    });
+
+    const resolved = await resolver.resolve(
+      ctx,
+      makeRequest({
+        budget: {
+          dailyBudgetUsd: 5,
+          maxTopics: 1,
+          maxEvidencePerTopic: 2,
+          maxOutputTokens: 1200,
+        },
+        query: {
+          lookbackDays: 7,
+          topicGlobs: ["*"],
+          maxEventsPerTopic: 5,
+          evidenceStrategy: "recency",
+        },
+      }),
+      logger
+    );
+
+    expect(resolved.topics).toHaveLength(1);
+    expect(resolved.topics[0]?.topic).toBe("data.kafka");
+  });
+
+  it("deduplicates same-source events that resolve to the same canonical URL", async () => {
+    const resolver = createQueryModeRequestResolver();
+    const logger = makeLogger();
+    const ctx = makeContext({
+      prisma: {
+        briefTrendSnapshot: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              generatedAt: new Date("2026-02-20T11:00:00.000Z"),
+              snapshot: {
+                topics: [
+                  { topic: "aws.bedrock", score: 9, volume: 8, acceleration: 1.2 },
+                ],
+              },
+            },
+          ]),
+        },
+        rawEvent: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              eventId: "evt-bedrock-1",
+              source: Source.rss,
+              url: "https://example.com/bedrock",
+              title: "Bedrock launch notes",
+              publishedAt: new Date("2026-02-20T10:00:00.000Z"),
+              fetchedAt: new Date("2026-02-20T10:05:00.000Z"),
+              text: "Highlights from the latest Bedrock release.",
+              topics: ["aws.bedrock"],
+              engagementScore: 3,
+            },
+            {
+              eventId: "evt-bedrock-2",
+              source: Source.rss,
+              url: "https://example.com/bedrock",
+              title: "Bedrock launch notes duplicated",
+              publishedAt: new Date("2026-02-20T09:58:00.000Z"),
+              fetchedAt: new Date("2026-02-20T10:06:00.000Z"),
+              text: "Highlights from the latest Bedrock release.",
+              topics: ["aws.bedrock"],
+              engagementScore: 2,
+            },
+          ]),
+        },
+      } as any,
+    });
+
+    const resolved = await resolver.resolve(ctx, makeRequest(), logger);
+
+    expect(resolved.topics).toHaveLength(1);
+    expect(resolved.topics[0]?.evidence).toHaveLength(1);
+    expect(resolved.topics[0]?.evidence[0]?.eventId).toBe("evt-bedrock-1");
+  });
+
   it("returns invalid_request when lookback exceeds configured maximum", async () => {
     const resolver = createQueryModeRequestResolver();
     const logger = makeLogger();

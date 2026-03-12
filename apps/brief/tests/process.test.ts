@@ -454,6 +454,96 @@ describe("processSummaryRequest", () => {
     expect(persistedPayload.brief.meta.model).toBe("gpt-5-codex");
   });
 
+  it("falls back to configured codex metadata when the model returns blank meta values", async () => {
+    codexCliMocks.executeCodexCli.mockResolvedValue({
+      title: "Codex Brief",
+      highlights: [
+        {
+          topic: "aws.bedrock",
+          what_happened: "Major model updates shipped this week.",
+          why_it_matters: "Teams can reduce latency by adopting new regional deployments.",
+          suggested_action: "Review rollout notes and validate runtime defaults.",
+          citations: ["https://example.com/1"],
+        },
+      ],
+      notes: "Coverage is limited to one grounded topic.",
+      usage: {
+        prompt_tokens: 160,
+        completion_tokens: 90,
+      },
+      meta: {
+        provider: "   ",
+        model: "",
+        estimated_cost_usd: 0.03,
+      },
+    });
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.brief.meta.provider).toBe("codex-cli");
+    expect(persistedPayload.brief.meta.model).toBe("gpt-5-codex");
+  });
+
+  it("includes the failing schema path when codex-cli response validation fails", async () => {
+    codexCliMocks.executeCodexCli.mockResolvedValue({
+      title: "Codex Brief",
+      highlights: [
+        {
+          topic: "aws.bedrock",
+          what_happened: "Major model updates shipped this week.",
+          why_it_matters: "Teams can reduce latency by adopting new regional deployments.",
+          suggested_action: "Review rollout notes and validate runtime defaults.",
+          citations: [""],
+        },
+      ],
+      notes: "Coverage is limited to one grounded topic.",
+      usage: {
+        prompt_tokens: 160,
+        completion_tokens: 90,
+      },
+      meta: {
+        provider: "codex-cli",
+        model: "gpt-5-codex",
+        estimated_cost_usd: 0.03,
+      },
+    });
+
+    const ctx = makeContext({
+      config: {
+        KAFKA_TOPIC_SUMMARY_RESULTS: "summary.results",
+        LLM_PROVIDER: "codex-cli",
+        LLM_DAILY_BUDGET_USD: 5,
+        LLM_ENDPOINT_URL: "http://mock-llm:8080/v1/generate",
+        LLM_TIMEOUT_MS: 5000,
+        LLM_CODEX_CLI_COMMAND: "codex",
+        LLM_CODEX_MODEL: "gpt-5-codex",
+        LLM_CODEX_PROFILE: "",
+        LLM_CODEX_TIMEOUT_MS: 60000,
+      },
+    });
+
+    await processSummaryRequest(ctx, makeRequest());
+
+    const persistedPayload = ctx.prisma.briefResult.create.mock.calls[0][0].data.result as any;
+    expect(persistedPayload.failure.error_code).toBe("llm_error");
+    expect(persistedPayload.failure.error_message).toContain("highlights.0.citations.0");
+  });
+
   it("emits retryable llm_error failure when codex-cli request fails", async () => {
     codexCliMocks.executeCodexCli.mockRejectedValue(new Error("token expired"));
 

@@ -1,6 +1,7 @@
 import {
   buildBriefEvidenceRecordFromCollectedContent,
   BRIEF_EVIDENCE_EXCERPT_MAX_LENGTH,
+  canonicalizeBriefEvidenceUrl,
 } from "@rising-intelligence/pipeline";
 import { TrendWindow, type Prisma, type PrismaClient } from "@rising-intelligence/db";
 import type { Logger } from "pino";
@@ -58,6 +59,50 @@ interface QueryModeStorage {
   ): Promise<QueryModeRawEvent[]>;
 }
 
+function dedupeTrendSnapshots(
+  snapshots: readonly TrendSnapshotRecord[]
+): TrendSnapshotRecord[] {
+  const deduped: TrendSnapshotRecord[] = [];
+  const seen = new Set<string>();
+
+  for (const snapshot of snapshots) {
+    const dedupeKey = snapshot.generatedAt.toISOString();
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    deduped.push(snapshot);
+  }
+
+  return deduped;
+}
+
+function dedupeRawEventsBySourceAndCanonicalUrl(
+  events: readonly QueryModeRawEvent[]
+): QueryModeRawEvent[] {
+  const deduped: QueryModeRawEvent[] = [];
+  const seen = new Set<string>();
+
+  for (const event of events) {
+    const canonicalUrl = canonicalizeBriefEvidenceUrl(event.url);
+    if (!canonicalUrl) {
+      deduped.push(event);
+      continue;
+    }
+
+    const dedupeKey = `${event.source}:${canonicalUrl}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    deduped.push(event);
+  }
+
+  return deduped;
+}
+
 class PrismaQueryModeStorageAdapter implements QueryModeStorage {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -65,7 +110,7 @@ class PrismaQueryModeStorageAdapter implements QueryModeStorage {
     lookbackStart: Date,
     requestedAt: Date
   ): Promise<TrendSnapshotRecord[]> {
-    return this.prisma.briefTrendSnapshot.findMany({
+    const snapshots = await this.prisma.briefTrendSnapshot.findMany({
       where: {
         window: TrendWindow.WINDOW_60M,
         generatedAt: {
@@ -81,6 +126,8 @@ class PrismaQueryModeStorageAdapter implements QueryModeStorage {
         snapshot: true,
       },
     });
+
+    return dedupeTrendSnapshots(snapshots);
   }
 
   async loadRawEvents(
@@ -126,7 +173,7 @@ class PrismaQueryModeStorageAdapter implements QueryModeStorage {
         url: event.url,
       });
     }
-    return events;
+    return dedupeRawEventsBySourceAndCanonicalUrl(events);
   }
 }
 

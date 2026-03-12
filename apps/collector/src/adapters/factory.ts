@@ -20,6 +20,7 @@ import {
   createRSSAdapter,
   type CreateRSSAdapterInput,
   type RSSFeedErrorReport,
+  type RSSFeedSuccessReport,
 } from "./rss.js";
 
 const COLLECTOR_ADAPTER_FACTORY_CONFIG_KEYS = [
@@ -58,6 +59,7 @@ export interface BuildCollectorAdaptersInput {
   contentFetcherConfig: ContentFetcherConfig;
   marketFilterProfiles: readonly MarketFilterProfile[];
   onRssFeedError?: (report: RSSFeedErrorReport) => void;
+  onRssFeedSuccess?: (report: RSSFeedSuccessReport) => void;
 }
 
 type ImplementedAdapterName = "rss" | "hackernews" | "lobsters";
@@ -204,17 +206,19 @@ function createRssAdapterInput(input: BuildCollectorAdaptersInput): CreateRSSAda
   };
 }
 
-function withOptionalRssFeedError(
+function withOptionalRssCallbacks(
   input: CreateRSSAdapterInput,
-  onRssFeedError?: (report: RSSFeedErrorReport) => void
+  onRssFeedError?: (report: RSSFeedErrorReport) => void,
+  onRssFeedSuccess?: (report: RSSFeedSuccessReport) => void
 ): CreateRSSAdapterInput {
-  if (!onRssFeedError) {
+  if (!onRssFeedError && !onRssFeedSuccess) {
     return input;
   }
 
   return {
     ...input,
-    onFeedError: onRssFeedError,
+    ...(onRssFeedError && { onFeedError: onRssFeedError }),
+    ...(onRssFeedSuccess && { onFeedSuccess: onRssFeedSuccess }),
   };
 }
 
@@ -251,7 +255,7 @@ function createAdapterDefinitions(): ReadonlyArray<AdapterDefinitionItem> {
   return new CollectorAdapterDefinitionBuilder()
     .implemented("rss", (config) => config.RSS_ENABLED, (input, constructors) =>
       constructors.createRSSAdapter(
-        withOptionalRssFeedError(createRssAdapterInput(input), input.onRssFeedError)
+        withOptionalRssCallbacks(createRssAdapterInput(input), input.onRssFeedError, input.onRssFeedSuccess)
       )
     )
     .implemented("hackernews", (config) => config.HN_ENABLED, (input, constructors) =>

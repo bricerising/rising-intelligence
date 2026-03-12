@@ -354,3 +354,158 @@ describe("collector ingestion pipeline", () => {
     expect(healthContext.lastEventAt).toBeUndefined();
   });
 });
+
+describe("declared topics merge", () => {
+  function createMultiTopicAllowlist(): CompiledAllowlist {
+    return {
+      topics: [
+        {
+          key: "aws",
+          displayName: "AWS",
+          priority: 100,
+          matchers: [{ type: "keyword", value: "aws" }],
+        },
+        {
+          key: "aws.lambda",
+          displayName: "AWS Lambda",
+          priority: 80,
+          matchers: [{ type: "keyword", value: "lambda" }],
+        },
+        {
+          key: "ai.llm",
+          displayName: "LLM",
+          priority: 70,
+          matchers: [{ type: "keyword", value: "llm" }],
+        },
+      ],
+      maxTopicsPerEvent: 3,
+      defaultPriority: 50,
+      mutedTopics: new Set<string>(["ai.llm"]),
+    };
+  }
+
+  function createDeclaredHarness(
+    allowlist?: CompiledAllowlist
+  ): TestHarness {
+    const checkpointStore = createCheckpointStore(false);
+    const healthContext = createHealthContext();
+    const publishAcceptedEvent = vi.fn(
+      async (_event: CollectorIngestionEvent) => undefined
+    );
+    const publishRejectedEvent = vi.fn(async (_event: DeadLetterEvent) => undefined);
+
+    const ingestion = createCollectorIngestion({
+      adapterName: "rss",
+      adapterSource: "rss",
+      allowlist: allowlist ?? createMultiTopicAllowlist(),
+      checkpointStore,
+      healthContext,
+      logger: createLogger(),
+      publisher: {
+        publishAcceptedEvent,
+        publishRejectedEvent,
+      },
+      now: () => new Date("2026-02-10T12:00:00.000Z"),
+      generateDlqId: () => "dlq:test",
+    });
+
+    return {
+      ingestion,
+      healthContext,
+      checkpointStore,
+      publishAcceptedEvent,
+      publishRejectedEvent,
+    };
+  }
+
+  it("adds declared topic not found in text", async () => {
+    const { ingestion, publishAcceptedEvent } = createDeclaredHarness();
+
+    const event = createEvent({
+      text: "aws released something interesting",
+      sourceMeta: {
+        feed_name: "AWS Lambda Blog",
+        feed_url: "https://aws.amazon.com/blogs/lambda/feed/",
+        feed_topics_declared: ["aws.lambda"],
+      },
+    });
+
+    const result = await ingestion.ingest(event);
+    expect(result.status).toBe("ingested");
+    if (result.status === "ingested") {
+      expect(result.topics).toContain("aws.lambda");
+      expect(result.topics).toContain("aws");
+    }
+    const publishedEvent = publishAcceptedEvent.mock.calls[0][0];
+    expect(publishedEvent.tags).toContain("aws.lambda");
+  });
+
+  it("ignores declared topic not in allowlist", async () => {
+    const { ingestion } = createDeclaredHarness();
+
+    const event = createEvent({
+      text: "aws released something",
+      sourceMeta: {
+        feed_name: "AWS Blog",
+        feed_url: "https://aws.amazon.com/blogs/aws/feed/",
+        feed_topics_declared: ["nonexistent.topic"],
+      },
+    });
+
+    const result = await ingestion.ingest(event);
+    expect(result.status).toBe("ingested");
+    if (result.status === "ingested") {
+      expect(result.topics).not.toContain("nonexistent.topic");
+    }
+  });
+
+  it("ignores muted declared topic", async () => {
+    const { ingestion } = createDeclaredHarness();
+
+    const event = createEvent({
+      text: "aws released something",
+      sourceMeta: {
+        feed_name: "AWS Blog",
+        feed_url: "https://aws.amazon.com/blogs/aws/feed/",
+        feed_topics_declared: ["ai.llm"],
+      },
+    });
+
+    const result = await ingestion.ingest(event);
+    expect(result.status).toBe("ingested");
+    if (result.status === "ingested") {
+      expect(result.topics).not.toContain("ai.llm");
+    }
+  });
+
+  it("respects max topics cap when merging declared topics", async () => {
+    const allowlist: CompiledAllowlist = {
+      topics: [
+        { key: "aws", displayName: "AWS", priority: 100, matchers: [{ type: "keyword", value: "aws" }] },
+        { key: "aws.lambda", displayName: "Lambda", priority: 80, matchers: [{ type: "keyword", value: "lambda" }] },
+        { key: "aws.s3", displayName: "S3", priority: 75, matchers: [] },
+        { key: "aws.ec2", displayName: "EC2", priority: 70, matchers: [] },
+      ],
+      maxTopicsPerEvent: 2,
+      defaultPriority: 50,
+      mutedTopics: new Set<string>(),
+    };
+
+    const { ingestion } = createDeclaredHarness(allowlist);
+
+    const event = createEvent({
+      text: "aws lambda function deployed",
+      sourceMeta: {
+        feed_name: "AWS Blog",
+        feed_url: "https://aws.amazon.com/blogs/aws/feed/",
+        feed_topics_declared: ["aws.s3", "aws.ec2"],
+      },
+    });
+
+    const result = await ingestion.ingest(event);
+    expect(result.status).toBe("ingested");
+    if (result.status === "ingested") {
+      expect(result.topics.length).toBeLessThanOrEqual(2);
+    }
+  });
+});

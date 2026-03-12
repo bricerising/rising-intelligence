@@ -513,3 +513,32 @@ export function extractHashtags(text: string): string[] {
   }
   return [...new Set(matches)];
 }
+
+/**
+ * Extracted security and software entities from event text.
+ */
+export interface ExtractedEntities {
+  cves: string[];
+  ghsas: string[];
+}
+
+const CVE_REGEX = /\bCVE-\d{4}-\d{4,7}\b/g;
+const GHSA_REGEX = /GHSA(-[23456789cfghjmpqrvwx]{4}){3}/g;
+
+/**
+ * Extract security-relevant entity identifiers (CVE IDs, GHSA IDs) from text.
+ * Returns deduplicated, sorted arrays of canonical identifiers.
+ */
+export function extractEntities(text: string): ExtractedEntities {
+  const cveMatches = text.match(CVE_REGEX);
+  const cves = cveMatches
+    ? [...new Set(cveMatches.map((m) => m.toUpperCase()))].sort()
+    : [];
+
+  const ghsaMatches = text.match(GHSA_REGEX);
+  const ghsas = ghsaMatches
+    ? [...new Set(ghsaMatches.map((m) => m.toUpperCase()))].sort()
+    : [];
+
+  return { cves, ghsas };
+}

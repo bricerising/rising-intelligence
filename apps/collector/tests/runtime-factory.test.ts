@@ -259,6 +259,7 @@ describe("createCollectorRuntimeFactory", () => {
       contentFetcherConfig,
       marketFilterProfiles,
       onRssFeedError: expect.any(Function),
+      onRssFeedSuccess: expect.any(Function),
     });
 
     expect(adapters[0].initialize).toHaveBeenCalledTimes(1);

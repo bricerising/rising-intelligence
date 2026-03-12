@@ -35,6 +35,7 @@ describe("trends config", () => {
     expect(config.KAFKA_TOPIC_RAW_EVENTS).toBe("events.raw");
     expect(config.KAFKA_TOPIC_TRENDS_SNAPSHOTS).toBe("trends.snapshots");
     expect(config.WINDOWS).toEqual(["15m", "60m"]);
+    expect(config.MAX_TRACKED_EVENT_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
     expect(config.DATABASE_URL).toBe("postgresql://rising:rising@localhost:5432/rising_intelligence");
   });
 

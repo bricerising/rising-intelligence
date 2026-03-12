@@ -26,6 +26,8 @@ import {
 import {
   createHealthContext,
   incrementRssFeedError,
+  recordFeedError,
+  recordFeedSuccess,
   startHealthServer,
   type HealthContext,
 } from "./health.js";
@@ -195,11 +197,11 @@ class DefaultCollectorRuntimeFactory implements CollectorRuntimeFactory {
         contentFetcherConfig,
         marketFilterProfiles,
         onRssFeedError: ({ feed, feedUrl, errorType }) => {
-          incrementRssFeedError(healthContext, {
-            feed,
-            feedUrl,
-            errorType,
-          });
+          incrementRssFeedError(healthContext, { feed, feedUrl, errorType });
+          recordFeedError(healthContext, { feed, feedUrl });
+        },
+        onRssFeedSuccess: ({ feed, feedUrl, itemCount }) => {
+          recordFeedSuccess(healthContext, { feed, feedUrl, itemCount });
         },
       });
 

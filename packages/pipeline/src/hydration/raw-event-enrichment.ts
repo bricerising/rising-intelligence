@@ -55,6 +55,24 @@ const TOPIC_INFERENCE_RULES: ReadonlyArray<{
   { key: "lang.rust", patterns: [/\brust\b/i, /\bcargo\b/i, /\bcrates?\b/i] },
   { key: "data.kafka", patterns: [/\bkafka\b/i, /\bredpanda\b/i] },
   { key: "cloud.azure", patterns: [/\bazure\b/i, /\bmicrosoft foundry\b/i] },
+  { key: "apple.xcode", patterns: [/\bxcode\b/i] },
+  {
+    key: "apple.macos",
+    patterns: [/\bmacos\b/i, /\b(sequoia|sonoma|ventura|monterey|catalina)\b/i],
+  },
+  {
+    key: "apple.ecosystem",
+    patterns: [
+      /\bapple\b/i,
+      /\biphone\b/i,
+      /\bipad\b/i,
+      /\bmac(book)?\b/i,
+      /\bapple watch\b/i,
+      /\bvision pro\b/i,
+      /\bairpods\b/i,
+      /\bhomepod\b/i,
+    ],
+  },
   {
     key: "security.general",
     patterns: [/\bcve-\d{4}-\d+\b/i, /\bvulnerability\b/i, /\bzero[- ]day\b/i, /\bexploit\b/i, /\brce\b/i],

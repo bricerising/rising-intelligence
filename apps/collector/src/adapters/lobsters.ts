@@ -10,7 +10,7 @@ import {
   type Source,
 } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
+import { extractUrls, extractHashtags, extractEntities } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -201,6 +201,7 @@ export class LobstersAdapter implements CollectorIngestionAdapter {
     });
 
     const combinedText = `${title} ${text}`;
+    const entities = extractEntities(combinedText);
 
     const communityTags = normalizeLobstersCommunityTags(item.categories);
 
@@ -221,6 +222,9 @@ export class LobstersAdapter implements CollectorIngestionAdapter {
       extracted: {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
+        entities: (entities.cves.length > 0 || entities.ghsas.length > 0)
+          ? entities
+          : undefined,
       },
       sourceMeta: buildLobstersSourceMeta(guid, communityTags, item),
     });

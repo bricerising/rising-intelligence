@@ -1,3 +1,28 @@
+FROM node:20-slim AS deps
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json* tsconfig.base.json tsconfig.json ./
+
+COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/README.md ./packages/shared/
+COPY packages/topics/package.json packages/topics/tsconfig.json ./packages/topics/
+COPY packages/pipeline/package.json packages/pipeline/tsconfig.json ./packages/pipeline/
+COPY packages/db/package.json packages/db/tsconfig.json ./packages/db/
+COPY packages/ops-cli/package.json packages/ops-cli/tsconfig.json packages/ops-cli/README.md ./packages/ops-cli/
+COPY apps/brief/package.json apps/brief/tsconfig.json ./apps/brief/
+
+RUN npm ci \
+  --workspace=@rising-intelligence/shared \
+  --workspace=@rising-intelligence/topics \
+  --workspace=@rising-intelligence/pipeline \
+  --workspace=@rising-intelligence/db \
+  --workspace=@rising-intelligence/brief \
+  --workspace=@rising-intelligence/ops-cli
+
 FROM node:20-slim AS build
 
 WORKDIR /app
@@ -6,7 +31,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json tsconfig.base.json tsconfig.json ./
+COPY package.json package-lock.json* tsconfig.base.json tsconfig.json ./
+
+COPY --from=deps /app/node_modules ./node_modules
 
 COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/README.md ./packages/shared/
 COPY packages/shared/src ./packages/shared/src
@@ -25,13 +52,15 @@ COPY packages/db/prisma ./packages/db/prisma
 
 COPY packages/ops-cli/package.json packages/ops-cli/tsconfig.json packages/ops-cli/README.md ./packages/ops-cli/
 COPY packages/ops-cli/src ./packages/ops-cli/src
+
+COPY apps/brief ./apps/brief
 COPY infra/config/topics.allowlist.yaml ./infra/config/topics.allowlist.yaml
 
-RUN npm install
 RUN npm run build --workspace=@rising-intelligence/shared
 RUN npm run build --workspace=@rising-intelligence/topics
 RUN npm run build --workspace=@rising-intelligence/pipeline
 RUN npm run build --workspace=@rising-intelligence/db
+RUN npm run build --workspace=@rising-intelligence/brief
 RUN npm run build --workspace=@rising-intelligence/ops-cli
 
 FROM node:20-slim
@@ -52,6 +81,8 @@ RUN apt-get update \
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
+COPY --from=build /app/apps/brief/dist ./apps/brief/dist
+COPY --from=build /app/apps/brief/package.json ./apps/brief/
 COPY --from=build /app/infra ./infra
 COPY --from=build /app/package.json ./package.json
 

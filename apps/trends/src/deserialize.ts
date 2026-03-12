@@ -3,6 +3,17 @@ import type { ParsedRawEvent, Source } from "./types.js";
 
 export { parseCanonicalSource as parseSource } from "@rising-intelligence/pipeline";
 
+function extractFeedPriority(sourceMeta: Record<string, unknown> | null): number {
+  if (!sourceMeta) {
+    return 50;
+  }
+  const raw = sourceMeta.feed_priority;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+    return raw;
+  }
+  return 50;
+}
+
 export function deserializeRawEvent(messageValue: Buffer): ParsedRawEvent {
   const shared = sharedDeserialize(messageValue);
   return {
@@ -13,7 +24,11 @@ export function deserializeRawEvent(messageValue: Buffer): ParsedRawEvent {
     url: shared.url,
     title: shared.title,
     text: shared.text,
+    lang: shared.lang,
     tags: shared.tags,
+    extractedUrls: shared.extractedUrls,
+    sourceMeta: shared.sourceMeta,
     engagementScore: shared.engagementScore ?? 0,
+    feedPriority: extractFeedPriority(shared.sourceMeta),
   };
 }

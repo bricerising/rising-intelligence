@@ -8,7 +8,7 @@ import {
   type Source,
 } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
+import { extractUrls, extractHashtags, extractEntities } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -334,6 +334,7 @@ export class HackerNewsAdapter implements CollectorIngestionAdapter {
     }
 
     const combinedText = `${title} ${text}`;
+    const entities = extractEntities(combinedText);
 
     return createCollectedContent({
       eventId: `hn:${item.id}`,
@@ -358,6 +359,9 @@ export class HackerNewsAdapter implements CollectorIngestionAdapter {
       extracted: {
         urls: extractUrls(combinedText),
         hashtags: extractHashtags(combinedText),
+        entities: (entities.cves.length > 0 || entities.ghsas.length > 0)
+          ? entities
+          : undefined,
       },
       sourceMeta: {
         hn_id: item.id,

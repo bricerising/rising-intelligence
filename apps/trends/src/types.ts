@@ -12,8 +12,16 @@ export interface ParsedRawEvent {
   url: string | null;
   title: string | null;
   text: string;
+  lang: string | null;
   tags: string[];
+  extractedUrls: string[];
+  sourceMeta: Record<string, unknown> | null;
   engagementScore: number;
+  feedPriority: number;
+}
+
+export interface PreparedTrendEvent extends ParsedRawEvent {
+  topics: string[];
 }
 
 export interface TopicSnapshotMetric {

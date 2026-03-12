@@ -15,6 +15,7 @@ local dedupTtlSeconds = tonumber(ARGV[2])
 local maxEvidencePerTopic = tonumber(ARGV[3])
 local engagementScore = tonumber(ARGV[4])
 local planCount = tonumber(ARGV[5])
+local volumeWeight = tonumber(ARGV[6])
 
 local dedupAdded = redis.call("SADD", dedupKey, eventId)
 redis.call("EXPIRE", dedupKey, dedupTtlSeconds)
@@ -23,20 +24,31 @@ if dedupAdded == 0 then
   return 0
 end
 
-local argIndex = 6
+local argIndex = 7
 for _ = 1, planCount do
   local counterKey = ARGV[argIndex]
   local counterTtl = tonumber(ARGV[argIndex + 1])
   local evidenceKey = ARGV[argIndex + 2]
   local evidenceTtl = tonumber(ARGV[argIndex + 3])
+  local storyUrlsKey = ARGV[argIndex + 4]
+  local storyUrlsTtl = tonumber(ARGV[argIndex + 5])
+  local storyMember = ARGV[argIndex + 6]
 
-  redis.call("INCR", counterKey)
-  redis.call("EXPIRE", counterKey, counterTtl)
+  local shouldIncrement = 1
+  if storyUrlsKey ~= "" and storyMember ~= "" then
+    shouldIncrement = redis.call("SADD", storyUrlsKey, storyMember)
+    redis.call("EXPIRE", storyUrlsKey, storyUrlsTtl)
+  end
+
+  if shouldIncrement == 1 then
+    redis.call("INCRBY", counterKey, volumeWeight)
+    redis.call("EXPIRE", counterKey, counterTtl)
+  end
   redis.call("ZADD", evidenceKey, engagementScore, eventId)
   redis.call("ZREMRANGEBYRANK", evidenceKey, 0, -(maxEvidencePerTopic + 1))
   redis.call("EXPIRE", evidenceKey, evidenceTtl)
 
-  argIndex = argIndex + 4
+  argIndex = argIndex + 7
 end
 
 return 1
@@ -62,6 +74,10 @@ export function getPreviousCounterKey(window: TrendWindow, topic: string): strin
 
 export function getEvidenceKey(window: TrendWindow, topic: string): string {
   return `evidence:${window}:${topic}`;
+}
+
+export function getStoryUrlsKey(window: TrendWindow, topic: string, bucket: string): string {
+  return `story_urls:${window}:${topic}:${bucket}`;
 }
 
 export function getDedupKey(window: TrendWindow, bucket: string): string {
@@ -134,12 +150,17 @@ export async function applyEventToWindows(
 
   const dedupKey = getDedupKey(dedupWindow, dedupBucket);
   const dedupTtlSeconds = getWindowSeconds(dedupWindow) * 3;
-  const engagementScore = event.engagementScore ?? 0;
+  const priorityWeight = (event.feedPriority ?? 50) / 50;
+  const engagementScore = Math.round((event.engagementScore ?? 0) * priorityWeight);
+  const volumeWeight = Math.max(1, Math.round((event.feedPriority ?? 50) / 50));
   const windowPlans: Array<{
     counterKey: string;
     counterTtlSeconds: number;
     evidenceKey: string;
     evidenceTtlSeconds: number;
+    storyUrlsKey: string;
+    storyUrlsTtlSeconds: number;
+    storyMember: string;
   }> = [];
 
   for (const window of windows) {
@@ -150,6 +171,7 @@ export async function applyEventToWindows(
 
     const ttlSeconds = getWindowSeconds(window) * 3;
     const evidenceTtlSeconds = getWindowSeconds(window) * 2;
+    const storyMember = event.url ?? "";
 
     for (const topic of topics) {
       windowPlans.push({
@@ -157,6 +179,9 @@ export async function applyEventToWindows(
         counterTtlSeconds: ttlSeconds,
         evidenceKey: getEvidenceKey(window, topic),
         evidenceTtlSeconds,
+        storyUrlsKey: storyMember ? getStoryUrlsKey(window, topic, bucket) : "",
+        storyUrlsTtlSeconds: ttlSeconds,
+        storyMember,
       });
     }
   }
@@ -166,6 +191,9 @@ export async function applyEventToWindows(
     plan.counterTtlSeconds,
     plan.evidenceKey,
     plan.evidenceTtlSeconds,
+    plan.storyUrlsKey,
+    plan.storyUrlsTtlSeconds,
+    plan.storyMember,
   ]);
   const scriptResult = await redis.eval(
     APPLY_EVENT_TO_WINDOWS_SCRIPT,
@@ -176,6 +204,7 @@ export async function applyEventToWindows(
     maxEvidencePerTopic,
     engagementScore,
     windowPlans.length,
+    volumeWeight,
     ...planArgs
   );
   const dedupAdded = typeof scriptResult === "number"

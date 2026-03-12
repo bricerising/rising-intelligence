@@ -146,6 +146,7 @@ Flags (brief trigger):
   --max-evidence-per-topic <n>     Default: $BRIEF_MAX_EVIDENCE_PER_TOPIC or 3
   --max-output-tokens <n>          Default: $BRIEF_MAX_OUTPUT_TOKENS or 1200
   --llm-provider <name>            Default: $BRIEF_LLM_PROVIDER or $LLM_PROVIDER or codex-cli
+  --timeout <seconds>              Default: 600
   --dry-run                        Print request payload without publishing
 
 Flags (brief diagnose):
@@ -154,7 +155,7 @@ Flags (brief diagnose):
   --summary-requests-topic <name>  Default: $KAFKA_TOPIC_SUMMARY_REQUESTS or summary.requests
   --summary-results-topic <name>   Default: $KAFKA_TOPIC_SUMMARY_RESULTS or summary.results
   --request-id <id>                Default: diagnose-<timestamp>
-  --timeout <seconds>              Default: 120
+  --timeout <seconds>              Default: 600
   --brief-health-url <url>         Default: http://localhost:3005/health
   --lookback-days <n>              Default: 2
   --topic-globs <csv>              Default: *
@@ -205,7 +206,7 @@ Examples:
   riops brief trigger --lookback-days 7 --topic-globs "aws.*,ai.*" --dry-run
   riops brief trigger --report-timezone America/New_York --report-start-at 2026-01-01T00:00:00-05:00 --report-end-at 2026-02-10T23:59:59-05:00 --dry-run
   riops brief trigger --topic-key aws.bedrock --evidence-url https://example.com/bedrock
-  riops brief diagnose --timeout 180
+  riops brief diagnose --timeout 600
   riops brief diagnose --docker-compose-file docker-compose.test.yml --docker-compose-project ri-brief-e2e-a --docker-service brief-test
   riops e2e brief-run --compose-project ri-brief-e2e --keep-up
 `);

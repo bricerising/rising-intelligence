@@ -11,7 +11,7 @@ import {
   type Source,
 } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
+import { extractUrls, extractHashtags, extractEntities } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -34,6 +34,7 @@ interface FeedConfig {
   name: string;
   url: string;
   poll_interval_seconds: number;
+  request_spacing_ms?: number;
   priority: number;
   enabled: boolean;
   category?: string;
@@ -48,6 +49,7 @@ interface FeedConfig {
 
 interface FeedDefaults {
   poll_interval_seconds?: number;
+  request_spacing_ms?: number;
   priority?: number;
   enabled?: boolean;
   market_gate?: boolean;
@@ -68,6 +70,12 @@ export interface RSSFeedErrorReport {
   errorType: "parse_error";
 }
 
+export interface RSSFeedSuccessReport {
+  feed: string;
+  feedUrl: string;
+  itemCount: number;
+}
+
 export interface RSSAdapterOptions {
   edgarEnabled?: boolean;
   marketFilterProfiles?: readonly MarketFilterProfile[];
@@ -79,6 +87,7 @@ export interface RSSAdapterOptions {
   secUserAgent?: string;
   random?: () => number;
   fetchEdgarDetailMetadata?: EdgarDetailMetadataFetcher;
+  onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
 }
 
 function hashUrl(url: string): string {
@@ -159,6 +168,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function expandGitHubReleases(section: unknown): Record<string, unknown>[] {
+  if (!isRecord(section)) {
+    return [];
+  }
+
+  const repos = section.repos;
+  if (!Array.isArray(repos)) {
+    return [];
+  }
+
+  const sectionPollInterval = typeof section.poll_interval_seconds === "number"
+    ? section.poll_interval_seconds
+    : 86400;
+  const sectionPriority = typeof section.priority === "number"
+    ? section.priority
+    : 70;
+
+  const entries: Record<string, unknown>[] = [];
+  for (const repo of repos) {
+    if (!isRecord(repo) || typeof repo.owner !== "string" || typeof repo.repo !== "string") {
+      continue;
+    }
+
+    entries.push({
+      name: `GitHub Releases - ${repo.owner}/${repo.repo}`,
+      url: `https://github.com/${repo.owner}/${repo.repo}/releases.atom`,
+      poll_interval_seconds: sectionPollInterval,
+      priority: sectionPriority,
+      category: "release_notes",
+      source_type: "github_releases",
+      topics: normalizeStringArray(repo.topics),
+    });
+  }
+
+  return entries;
+}
+
 function collectFeedEntries(value: unknown, result: Record<string, unknown>[]): void {
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -178,6 +228,12 @@ function collectFeedEntries(value: unknown, result: Record<string, unknown>[]): 
 
   for (const [key, nested] of Object.entries(value)) {
     if (key === "defaults") {
+      continue;
+    }
+    if (key === "github_releases") {
+      for (const entry of expandGitHubReleases(nested)) {
+        result.push(entry);
+      }
       continue;
     }
     collectFeedEntries(nested, result);
@@ -229,6 +285,10 @@ function normalizeFeedConfig(
         ?? DEFAULT_FEED_POLL_INTERVAL_SECONDS
     )
   );
+  const requestSpacingMsRaw = parseNumber(rawFeed.request_spacing_ms) ?? defaults.request_spacing_ms;
+  const requestSpacingMs = requestSpacingMsRaw === undefined
+    ? undefined
+    : Math.max(0, Math.floor(requestSpacingMsRaw));
 
   const priority = Math.max(
     1,
@@ -251,6 +311,7 @@ function normalizeFeedConfig(
     name,
     url,
     poll_interval_seconds: pollIntervalSeconds,
+    request_spacing_ms: requestSpacingMs,
     priority,
     enabled,
     category: typeof rawFeed.category === "string" ? rawFeed.category : undefined,
@@ -279,6 +340,7 @@ function loadFeedsConfig(paths: string): FeedConfig[] {
     const defaultsRoot = isRecord(root.defaults) ? root.defaults : {};
     const defaults: FeedDefaults = {
       poll_interval_seconds: parseNumber(defaultsRoot.poll_interval_seconds),
+      request_spacing_ms: parseNumber(defaultsRoot.request_spacing_ms),
       priority: parseNumber(defaultsRoot.priority),
       enabled: parseBoolean(defaultsRoot.enabled),
       market_gate: parseBoolean(defaultsRoot.market_gate),
@@ -423,6 +485,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
   private logger: Logger;
   private textEnrichmentStrategy: TextEnrichmentStrategy;
   private onFeedError?: (report: RSSFeedErrorReport) => void;
+  private onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
   private marketFilterProfiles: readonly MarketFilterProfile[];
   private edgarFormsAllowlist: Set<string>;
   private edgarFetchDetailMetadata: boolean;
@@ -433,6 +496,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
   private random: () => number;
   private fetchEdgarDetailMetadata: EdgarDetailMetadataFetcher;
   private nextPollAtByFeed = new Map<string, number>();
+  private nextRequestAtByHost = new Map<string, number>();
   private watchlistEntityTerms: string[];
 
   constructor(
@@ -448,6 +512,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
     this.checkpoints = checkpoints;
     this.logger = logger;
     this.onFeedError = onFeedError;
+    this.onFeedSuccess = options.onFeedSuccess;
     this.marketFilterProfiles = options.marketFilterProfiles ?? [];
     this.edgarFormsAllowlist = new Set(
       (options.edgarFormsAllowlist ?? DEFAULT_EDGAR_FORMS_ALLOWLIST)
@@ -553,6 +618,28 @@ export class RSSAdapter implements CollectorIngestionAdapter {
       return true;
     }
     return nowMs >= nextPollAt;
+  }
+
+  private async waitForFeedRequestWindow(feed: FeedConfig): Promise<void> {
+    const spacingMs = feed.request_spacing_ms;
+    if (!spacingMs || spacingMs <= 0) {
+      return;
+    }
+
+    let host: string;
+    try {
+      host = new URL(feed.url).host.toLowerCase();
+    } catch {
+      return;
+    }
+
+    const now = Date.now();
+    const nextAllowedAt = this.nextRequestAtByHost.get(host) ?? now;
+    const delayMs = nextAllowedAt - now;
+    if (delayMs > 0) {
+      await wait(delayMs);
+    }
+    this.nextRequestAtByHost.set(host, Date.now() + spacingMs);
   }
 
   async *fetch(): AsyncIterable<FetchResult> {
@@ -714,6 +801,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
 
     let parsedFeed;
     try {
+      await this.waitForFeedRequestWindow(feed);
       parsedFeed = await this.parser.parseURL(feed.url);
     } catch (error) {
       try {
@@ -737,6 +825,17 @@ export class RSSAdapter implements CollectorIngestionAdapter {
     }
 
     const items = parsedFeed.items ?? [];
+
+    try {
+      this.onFeedSuccess?.({
+        feed: feed.name,
+        feedUrl: feed.url,
+        itemCount: items.length,
+      });
+    } catch {
+      // Ignore metric recording errors
+    }
+
     if (items.length === 0) {
       this.logger.debug({ feed: feed.name }, "No items in feed");
       return;
@@ -791,6 +890,8 @@ export class RSSAdapter implements CollectorIngestionAdapter {
         guid,
         source_type: feed.source_type ?? "rss",
         signal_tier: inferSignalTier(feed),
+        feed_priority: feed.priority,
+        ...(feed.topics && feed.topics.length > 0 && { feed_topics_declared: feed.topics }),
       };
 
       if (feed.source_type === "edgar") {
@@ -817,6 +918,9 @@ export class RSSAdapter implements CollectorIngestionAdapter {
         };
       }
 
+      const combinedText = `${title} ${text}`;
+      const entities = extractEntities(combinedText);
+
       const content = createCollectedContent({
         eventId,
         source: "rss",
@@ -830,8 +934,11 @@ export class RSSAdapter implements CollectorIngestionAdapter {
           ? { displayName: item.creator }
           : undefined,
         extracted: {
-          urls: extractUrls(`${title} ${text}`),
-          hashtags: extractHashtags(`${title} ${text}`),
+          urls: extractUrls(combinedText),
+          hashtags: extractHashtags(combinedText),
+          entities: (entities.cves.length > 0 || entities.ghsas.length > 0)
+            ? entities
+            : undefined,
         },
         sourceMeta: sourceMeta,
       });
@@ -856,6 +963,7 @@ export interface CreateRSSAdapterInput {
   logger: Logger;
   contentFetcherConfig?: ContentFetcherConfig;
   onFeedError?: (report: RSSFeedErrorReport) => void;
+  onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
   marketFilterProfiles?: readonly MarketFilterProfile[];
   edgarEnabled?: boolean;
   edgarFormsAllowlist?: readonly string[];
@@ -885,6 +993,7 @@ export function createRSSAdapter(
       edgarPollIntervalSeconds: input.edgarPollIntervalSeconds,
       edgarPollJitterRatio: input.edgarPollJitterRatio,
       secUserAgent: input.secUserAgent,
+      onFeedSuccess: input.onFeedSuccess,
     }
   );
 }

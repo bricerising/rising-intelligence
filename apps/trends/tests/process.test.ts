@@ -20,6 +20,7 @@ vi.mock("../src/config.js", () => ({
     WINDOWS: ["15m", "60m"] as const,
     MAX_EVIDENCE_PER_TOPIC: 10,
     CONSUMER_LAG_UPDATE_INTERVAL_MS: 15000,
+    MAX_TRACKED_EVENT_AGE_MS: 7 * 24 * 60 * 60 * 1000,
   }),
 }));
 
@@ -90,6 +91,7 @@ function makeContext(overrides: Partial<TrendsContext> = {}): TrendsContext {
       WINDOWS: ["15m", "60m"],
       MAX_EVIDENCE_PER_TOPIC: 10,
       CONSUMER_LAG_UPDATE_INTERVAL_MS: 15000,
+      MAX_TRACKED_EVENT_AGE_MS: 7 * 24 * 60 * 60 * 1000,
     } as TrendsContext["config"],
     logger: makeLogger(),
     healthContext: createHealthContext(),
@@ -180,6 +182,23 @@ describe("trends processBatch", () => {
 
     expect(batch.acknowledge).toHaveBeenCalledWith("1");
     expect(mocks.applyEventToWindows).not.toHaveBeenCalled();
+  });
+
+  it("skips events whose publishedAt is outside the tracked freshness window", async () => {
+    const payload = {
+      ...makeValidPayload(),
+      published_at: "2026-01-20T10:00:00.000Z",
+    };
+    const msg = makePipelineMessage("1", payload);
+    const batch = makeBatchContext();
+    const ctx = makeContext();
+    const strategy = getStrategy(ctx, "events.raw");
+
+    await strategy.processBatch(ctx, batch, [msg]);
+
+    expect(batch.acknowledge).toHaveBeenCalledWith("1");
+    expect(mocks.applyEventToWindows).not.toHaveBeenCalled();
+    expect(ctx.healthContext.metrics.eventsProcessed).toBe(0);
   });
 
   it("increments duplicatesSkipped when dedup detects duplicate", async () => {
