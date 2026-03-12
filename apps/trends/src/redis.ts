@@ -134,7 +134,8 @@ export async function applyEventToWindows(
 
   const dedupKey = getDedupKey(dedupWindow, dedupBucket);
   const dedupTtlSeconds = getWindowSeconds(dedupWindow) * 3;
-  const engagementScore = event.engagementScore ?? 0;
+  const priorityWeight = (event.feedPriority ?? 50) / 50;
+  const engagementScore = Math.round((event.engagementScore ?? 0) * priorityWeight);
   const windowPlans: Array<{
     counterKey: string;
     counterTtlSeconds: number;

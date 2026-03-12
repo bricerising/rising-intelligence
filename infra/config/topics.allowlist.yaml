@@ -531,6 +531,46 @@ topics:
         pattern: "\\bcyber[- ]?espionage\\b"
 
   # ===========================================================================
+  # AI Research (Priority 70-75: Papers and preprints)
+  # ===========================================================================
+  - key: ai.research
+    display_name: AI Research Papers
+    priority: 70
+    aliases: ["Research Papers", "Preprint"]
+    matchers:
+      - type: keyword
+        value: "arXiv"
+      - type: regex
+        pattern: "\\b(preprint|arxiv\\.org|conference paper|peer.reviewed|ICML|NeurIPS|ICLR|ACL|CVPR|AAAI)\\b"
+      - type: regex
+        pattern: "\\b(state.of.the.art|SOTA|benchmark|ablation study)\\b"
+
+  # ===========================================================================
+  # Semiconductors & Hardware (Priority 65-70)
+  # ===========================================================================
+  - key: semiconductors.general
+    display_name: Semiconductors
+    priority: 65
+    aliases: ["Chips", "Chipmakers"]
+    matchers:
+      - type: regex
+        pattern: "\\b(NVIDIA|AMD|Intel|TSMC|Samsung Foundry|Qualcomm|Broadcom)\\b.*\\b(chip|GPU|CPU|NPU|TPU|silicon|fab|foundry|process node|nanometer|semiconductor)"
+      - type: regex
+        pattern: "\\b(semiconductor|chip\\s*maker|foundry|fab)\\b.*\\b(supply|shortage|capacity|expansion|investment)"
+      - type: regex
+        pattern: "\\b(H100|H200|A100|B100|B200|GB200|MI300|Blackwell|Hopper|Grace)\\b"
+
+  - key: hardware.gpu
+    display_name: GPU / Accelerators
+    priority: 70
+    aliases: ["GPU", "Accelerator", "TPU"]
+    matchers:
+      - type: regex
+        pattern: "\\b(GPU|TPU|NPU)\\b.*\\b(training|inference|compute|cluster|performance|benchmark)"
+      - type: regex
+        pattern: "\\b(CUDA|ROCm|Triton|TensorRT)\\b"
+
+  # ===========================================================================
   # POS & Payments Intelligence (Priority 78-82)
   # ===========================================================================
   - key: market.pos

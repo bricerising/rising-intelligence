@@ -159,6 +159,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function expandGitHubReleases(section: unknown): Record<string, unknown>[] {
+  if (!isRecord(section)) {
+    return [];
+  }
+
+  const repos = section.repos;
+  if (!Array.isArray(repos)) {
+    return [];
+  }
+
+  const sectionPollInterval = typeof section.poll_interval_seconds === "number"
+    ? section.poll_interval_seconds
+    : 86400;
+  const sectionPriority = typeof section.priority === "number"
+    ? section.priority
+    : 70;
+
+  const entries: Record<string, unknown>[] = [];
+  for (const repo of repos) {
+    if (!isRecord(repo) || typeof repo.owner !== "string" || typeof repo.repo !== "string") {
+      continue;
+    }
+
+    entries.push({
+      name: `GitHub Releases - ${repo.owner}/${repo.repo}`,
+      url: `https://github.com/${repo.owner}/${repo.repo}/releases.atom`,
+      poll_interval_seconds: sectionPollInterval,
+      priority: sectionPriority,
+      category: "release_notes",
+      source_type: "github_releases",
+      topics: normalizeStringArray(repo.topics),
+    });
+  }
+
+  return entries;
+}
+
 function collectFeedEntries(value: unknown, result: Record<string, unknown>[]): void {
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -178,6 +215,12 @@ function collectFeedEntries(value: unknown, result: Record<string, unknown>[]): 
 
   for (const [key, nested] of Object.entries(value)) {
     if (key === "defaults") {
+      continue;
+    }
+    if (key === "github_releases") {
+      for (const entry of expandGitHubReleases(nested)) {
+        result.push(entry);
+      }
       continue;
     }
     collectFeedEntries(nested, result);
@@ -791,6 +834,8 @@ export class RSSAdapter implements CollectorIngestionAdapter {
         guid,
         source_type: feed.source_type ?? "rss",
         signal_tier: inferSignalTier(feed),
+        feed_priority: feed.priority,
+        ...(feed.topics && feed.topics.length > 0 && { feed_topics_declared: feed.topics }),
       };
 
       if (feed.source_type === "edgar") {

@@ -14,6 +14,7 @@ export interface ParsedRawEvent {
   text: string;
   tags: string[];
   engagementScore: number;
+  feedPriority: number;
 }
 
 export interface TopicSnapshotMetric {

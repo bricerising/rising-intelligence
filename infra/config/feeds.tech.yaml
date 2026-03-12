@@ -695,9 +695,14 @@ ai_research:
     topics: ["ai.openai"]
     notes: "Official OpenAI updates - GPT releases, API changes, research"
 
-  # Anthropic (if they have a feed - check periodically)
-  # Note: Anthropic doesn't have an official RSS as of this config
-  # Monitor https://www.anthropic.com/news manually or via scraping
+  # Anthropic
+  - name: Anthropic News
+    url: https://www.anthropic.com/rss.xml
+    poll_interval_seconds: 1800
+    priority: 95
+    category: ai_research
+    topics: ["ai.anthropic"]
+    notes: "Official Anthropic updates - Claude releases, research, safety"
 
   # Meta AI - No official RSS, requires scraping or RSSHub
   # - name: Meta AI Blog
@@ -707,6 +712,39 @@ ai_research:
   #   category: ai_research
   #   topics: ["ai.meta"]
   #   notes: "Meta AI research - LLaMA releases, open-source models"
+
+  # arXiv Research Feeds (updated daily ~midnight ET)
+  - name: arXiv cs.AI (Artificial Intelligence)
+    url: https://rss.arxiv.org/rss/cs.AI
+    poll_interval_seconds: 21600  # Every 6 hours (feeds update daily)
+    priority: 80
+    category: ai_research
+    topics: ["ai.research", "ai.general"]
+    notes: "arXiv AI papers - new submissions in cs.AI category"
+
+  - name: arXiv cs.LG (Machine Learning)
+    url: https://rss.arxiv.org/rss/cs.LG
+    poll_interval_seconds: 21600
+    priority: 80
+    category: ai_research
+    topics: ["ai.research", "ai.llm"]
+    notes: "arXiv ML papers - core ML research including deep learning"
+
+  - name: arXiv cs.CL (Computation and Language)
+    url: https://rss.arxiv.org/rss/cs.CL
+    poll_interval_seconds: 21600
+    priority: 82
+    category: ai_research
+    topics: ["ai.research", "ai.llm"]
+    notes: "arXiv NLP papers - LLM research, tokenization, language understanding"
+
+  - name: arXiv cs.CV (Computer Vision)
+    url: https://rss.arxiv.org/rss/cs.CV
+    poll_interval_seconds: 21600
+    priority: 75
+    category: ai_research
+    topics: ["ai.research"]
+    notes: "arXiv vision papers - multimodal models, image generation"
 
 # =============================================================================
 # Aggregated Tech News (Curated, High-Signal)
