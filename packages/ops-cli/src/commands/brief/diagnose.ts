@@ -30,6 +30,7 @@ const DEFAULT_BRIEF_HEALTH_URL = "http://localhost:3005/health";
 const DEFAULT_DOCKER_COMPOSE_FILE = "docker-compose.yml";
 const DEFAULT_DOCKER_SERVICE = "brief";
 const DEFAULT_DOCKER_LOG_TAIL = 200;
+const DEFAULT_TIMEOUT_SECONDS = 600;
 const NOOP_LOGGER: PipelineLogger = {
   error() {},
   warn() {},
@@ -127,7 +128,7 @@ function parseLlmProvider(rawValue: string): LlmProvider {
 }
 
 export function resolveDiagnoseConfig(flags: CliFlags): DiagnoseConfig {
-  const timeoutRaw = getStringFlag(flags, "timeout") || "120";
+  const timeoutRaw = getStringFlag(flags, "timeout") || `${DEFAULT_TIMEOUT_SECONDS}`;
   const lookbackDaysRaw = getStringFlag(flags, "lookback-days") || "2";
   const dockerLogsTailRaw = getStringFlag(flags, "docker-logs-tail") || `${DEFAULT_DOCKER_LOG_TAIL}`;
   const kafkaBrokersRaw =

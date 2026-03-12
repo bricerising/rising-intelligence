@@ -43,6 +43,7 @@ const ConfigSchema = z.object({
   MAX_EVIDENCE_PER_TOPIC: z.coerce.number().int().positive().default(10),
   SNAPSHOT_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
   CONSUMER_LAG_UPDATE_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
+  MAX_TRACKED_EVENT_AGE_MS: z.coerce.number().int().positive().default(7 * 24 * 60 * 60 * 1000),
   DAILY_BRIEF_ENABLED: zBooleanEnv("true"),
   DAILY_BRIEF_UTC_HOUR: z.coerce.number().int().min(0).max(23).default(1),
   DAILY_BRIEF_UTC_MINUTE: z.coerce.number().int().min(0).max(59).default(0),

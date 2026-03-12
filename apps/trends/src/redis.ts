@@ -30,14 +30,25 @@ for _ = 1, planCount do
   local counterTtl = tonumber(ARGV[argIndex + 1])
   local evidenceKey = ARGV[argIndex + 2]
   local evidenceTtl = tonumber(ARGV[argIndex + 3])
+  local storyUrlsKey = ARGV[argIndex + 4]
+  local storyUrlsTtl = tonumber(ARGV[argIndex + 5])
+  local storyMember = ARGV[argIndex + 6]
 
-  redis.call("INCRBY", counterKey, volumeWeight)
-  redis.call("EXPIRE", counterKey, counterTtl)
+  local shouldIncrement = 1
+  if storyUrlsKey ~= "" and storyMember ~= "" then
+    shouldIncrement = redis.call("SADD", storyUrlsKey, storyMember)
+    redis.call("EXPIRE", storyUrlsKey, storyUrlsTtl)
+  end
+
+  if shouldIncrement == 1 then
+    redis.call("INCRBY", counterKey, volumeWeight)
+    redis.call("EXPIRE", counterKey, counterTtl)
+  end
   redis.call("ZADD", evidenceKey, engagementScore, eventId)
   redis.call("ZREMRANGEBYRANK", evidenceKey, 0, -(maxEvidencePerTopic + 1))
   redis.call("EXPIRE", evidenceKey, evidenceTtl)
 
-  argIndex = argIndex + 4
+  argIndex = argIndex + 7
 end
 
 return 1
@@ -63,6 +74,10 @@ export function getPreviousCounterKey(window: TrendWindow, topic: string): strin
 
 export function getEvidenceKey(window: TrendWindow, topic: string): string {
   return `evidence:${window}:${topic}`;
+}
+
+export function getStoryUrlsKey(window: TrendWindow, topic: string, bucket: string): string {
+  return `story_urls:${window}:${topic}:${bucket}`;
 }
 
 export function getDedupKey(window: TrendWindow, bucket: string): string {
@@ -143,6 +158,9 @@ export async function applyEventToWindows(
     counterTtlSeconds: number;
     evidenceKey: string;
     evidenceTtlSeconds: number;
+    storyUrlsKey: string;
+    storyUrlsTtlSeconds: number;
+    storyMember: string;
   }> = [];
 
   for (const window of windows) {
@@ -153,6 +171,7 @@ export async function applyEventToWindows(
 
     const ttlSeconds = getWindowSeconds(window) * 3;
     const evidenceTtlSeconds = getWindowSeconds(window) * 2;
+    const storyMember = event.url ?? "";
 
     for (const topic of topics) {
       windowPlans.push({
@@ -160,6 +179,9 @@ export async function applyEventToWindows(
         counterTtlSeconds: ttlSeconds,
         evidenceKey: getEvidenceKey(window, topic),
         evidenceTtlSeconds,
+        storyUrlsKey: storyMember ? getStoryUrlsKey(window, topic, bucket) : "",
+        storyUrlsTtlSeconds: ttlSeconds,
+        storyMember,
       });
     }
   }
@@ -169,6 +191,9 @@ export async function applyEventToWindows(
     plan.counterTtlSeconds,
     plan.evidenceKey,
     plan.evidenceTtlSeconds,
+    plan.storyUrlsKey,
+    plan.storyUrlsTtlSeconds,
+    plan.storyMember,
   ]);
   const scriptResult = await redis.eval(
     APPLY_EVENT_TO_WINDOWS_SCRIPT,

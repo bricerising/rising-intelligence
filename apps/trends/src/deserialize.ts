@@ -24,7 +24,10 @@ export function deserializeRawEvent(messageValue: Buffer): ParsedRawEvent {
     url: shared.url,
     title: shared.title,
     text: shared.text,
+    lang: shared.lang,
     tags: shared.tags,
+    extractedUrls: shared.extractedUrls,
+    sourceMeta: shared.sourceMeta,
     engagementScore: shared.engagementScore ?? 0,
     feedPriority: extractFeedPriority(shared.sourceMeta),
   };

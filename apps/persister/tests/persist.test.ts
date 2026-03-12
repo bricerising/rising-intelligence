@@ -281,6 +281,27 @@ describe("persistBatch", () => {
     });
   });
 
+  it("infers Apple ecosystem topics for untagged Apple stories", async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      rawEvent: { createMany },
+    } as any;
+
+    const event = createEvent("rss:infer-apple", Source.rss);
+    event.tags = [];
+    event.title = "Apple launches new Hello Apple Instagram account";
+    event.text = "Apple is expanding its ecosystem marketing with a new Hello Apple account.";
+
+    await persistBatch(prisma, [event]);
+
+    const data = createMany.mock.calls[0][0].data[0];
+    expect(data.tags).toEqual(expect.arrayContaining(["apple.ecosystem"]));
+    expect(data.topics).toEqual(data.tags);
+    expect(data.sourceMeta.ri_quality).toMatchObject({
+      inferred_topics: true,
+    });
+  });
+
   it("replaces placeholder comments text with title when available", async () => {
     const createMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = {

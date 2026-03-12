@@ -6,6 +6,7 @@ import {
   getDedupKey,
   getEvidenceKey,
   getPreviousCounterKey,
+  getStoryUrlsKey,
   writePreviousWindowCounts,
 } from "../src/redis.js";
 
@@ -84,6 +85,13 @@ describe("trends redis key helpers", () => {
     });
   });
 
+  describe("getStoryUrlsKey", () => {
+    it("generates story URL dedupe key", () => {
+      const key = getStoryUrlsKey("60m", "ai.openai", "2026-02-06T10:00:00.000Z");
+      expect(key).toBe("story_urls:60m:ai.openai:2026-02-06T10:00:00.000Z");
+    });
+  });
+
   describe("applyEventToWindows", () => {
     it("returns duplicate when event already exists in dedup set", async () => {
       const redis = {
@@ -100,8 +108,12 @@ describe("trends redis key helpers", () => {
           url: null,
           title: null,
           text: "hello",
+          lang: null,
           tags: ["aws.bedrock"],
+          extractedUrls: [],
+          sourceMeta: null,
           engagementScore: 7,
+          feedPriority: 50,
         },
         ["aws.bedrock"],
         ["15m", "60m"],
@@ -123,14 +135,20 @@ describe("trends redis key helpers", () => {
         2700,
         "evidence:15m:aws.bedrock",
         1800,
+        "",
+        2700,
+        "",
         "window:60m:aws.bedrock:2026-02-06T10:00:00.000Z",
         10800,
         "evidence:60m:aws.bedrock",
-        7200
+        7200,
+        "",
+        10800,
+        ""
       );
     });
 
-    it("updates counters and evidence for non-duplicate events", async () => {
+    it("updates counters, evidence, and story dedupe keys for non-duplicate events", async () => {
       const redis = {
         eval: vi.fn().mockResolvedValue(1),
       };
@@ -142,11 +160,15 @@ describe("trends redis key helpers", () => {
           source: "rss",
           fetchedAt: new Date("2026-02-06T10:07:30.123Z"),
           publishedAt: null,
-          url: null,
+          url: "https://example.com/story",
           title: null,
           text: "hello",
+          lang: null,
           tags: ["aws.bedrock", "ai.openai"],
+          extractedUrls: [],
+          sourceMeta: null,
           engagementScore: 11,
+          feedPriority: 50,
         },
         ["aws.bedrock", "ai.openai"],
         ["15m"],
@@ -168,10 +190,16 @@ describe("trends redis key helpers", () => {
         2700,
         "evidence:15m:aws.bedrock",
         1800,
+        "story_urls:15m:aws.bedrock:2026-02-06T10:00:00.000Z",
+        2700,
+        "https://example.com/story",
         "window:15m:ai.openai:2026-02-06T10:00:00.000Z",
         2700,
         "evidence:15m:ai.openai",
-        1800
+        1800,
+        "story_urls:15m:ai.openai:2026-02-06T10:00:00.000Z",
+        2700,
+        "https://example.com/story"
       );
     });
   });

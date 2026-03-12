@@ -125,7 +125,7 @@ curl -fsS http://localhost:3005/health | jq .
 If you need diagnostics around the request/response path:
 
 ```bash
-./node_modules/.bin/riops brief diagnose --timeout 180
+./node_modules/.bin/riops brief diagnose --timeout 600
 ```
 
 ## Common developer commands

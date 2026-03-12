@@ -123,6 +123,7 @@ model BriefTrendSnapshot {
   snapshot    Json // Full TrendSnapshot protobuf as JSON
 
   @@index([window, generatedAt(sort: Desc)], name: "idx_brief_trend_snapshots_window_generated")
+  @@unique([window, generatedAt], name: "uq_brief_trend_snapshots_window_generated")
   @@map("brief_trend_snapshots")
 }
 
