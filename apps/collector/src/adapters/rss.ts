@@ -11,7 +11,7 @@ import {
   type Source,
 } from "../types.js";
 import type { CheckpointStore } from "../checkpoint.js";
-import { extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
+import { extractUrls, extractHashtags, extractEntities } from "@rising-intelligence/pipeline";
 import type { ContentFetcherConfig } from "../content-fetcher.js";
 import {
   createTextEnrichmentStrategy,
@@ -68,6 +68,12 @@ export interface RSSFeedErrorReport {
   errorType: "parse_error";
 }
 
+export interface RSSFeedSuccessReport {
+  feed: string;
+  feedUrl: string;
+  itemCount: number;
+}
+
 export interface RSSAdapterOptions {
   edgarEnabled?: boolean;
   marketFilterProfiles?: readonly MarketFilterProfile[];
@@ -79,6 +85,7 @@ export interface RSSAdapterOptions {
   secUserAgent?: string;
   random?: () => number;
   fetchEdgarDetailMetadata?: EdgarDetailMetadataFetcher;
+  onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
 }
 
 function hashUrl(url: string): string {
@@ -466,6 +473,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
   private logger: Logger;
   private textEnrichmentStrategy: TextEnrichmentStrategy;
   private onFeedError?: (report: RSSFeedErrorReport) => void;
+  private onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
   private marketFilterProfiles: readonly MarketFilterProfile[];
   private edgarFormsAllowlist: Set<string>;
   private edgarFetchDetailMetadata: boolean;
@@ -491,6 +499,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
     this.checkpoints = checkpoints;
     this.logger = logger;
     this.onFeedError = onFeedError;
+    this.onFeedSuccess = options.onFeedSuccess;
     this.marketFilterProfiles = options.marketFilterProfiles ?? [];
     this.edgarFormsAllowlist = new Set(
       (options.edgarFormsAllowlist ?? DEFAULT_EDGAR_FORMS_ALLOWLIST)
@@ -780,6 +789,17 @@ export class RSSAdapter implements CollectorIngestionAdapter {
     }
 
     const items = parsedFeed.items ?? [];
+
+    try {
+      this.onFeedSuccess?.({
+        feed: feed.name,
+        feedUrl: feed.url,
+        itemCount: items.length,
+      });
+    } catch {
+      // Ignore metric recording errors
+    }
+
     if (items.length === 0) {
       this.logger.debug({ feed: feed.name }, "No items in feed");
       return;
@@ -862,6 +882,9 @@ export class RSSAdapter implements CollectorIngestionAdapter {
         };
       }
 
+      const combinedText = `${title} ${text}`;
+      const entities = extractEntities(combinedText);
+
       const content = createCollectedContent({
         eventId,
         source: "rss",
@@ -875,8 +898,11 @@ export class RSSAdapter implements CollectorIngestionAdapter {
           ? { displayName: item.creator }
           : undefined,
         extracted: {
-          urls: extractUrls(`${title} ${text}`),
-          hashtags: extractHashtags(`${title} ${text}`),
+          urls: extractUrls(combinedText),
+          hashtags: extractHashtags(combinedText),
+          entities: (entities.cves.length > 0 || entities.ghsas.length > 0)
+            ? entities
+            : undefined,
         },
         sourceMeta: sourceMeta,
       });
@@ -901,6 +927,7 @@ export interface CreateRSSAdapterInput {
   logger: Logger;
   contentFetcherConfig?: ContentFetcherConfig;
   onFeedError?: (report: RSSFeedErrorReport) => void;
+  onFeedSuccess?: (report: RSSFeedSuccessReport) => void;
   marketFilterProfiles?: readonly MarketFilterProfile[];
   edgarEnabled?: boolean;
   edgarFormsAllowlist?: readonly string[];
@@ -930,6 +957,7 @@ export function createRSSAdapter(
       edgarPollIntervalSeconds: input.edgarPollIntervalSeconds,
       edgarPollJitterRatio: input.edgarPollJitterRatio,
       secUserAgent: input.secUserAgent,
+      onFeedSuccess: input.onFeedSuccess,
     }
   );
 }

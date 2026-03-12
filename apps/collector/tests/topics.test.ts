@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { loadAllowlist, extractTopics, extractUrls, extractHashtags } from "@rising-intelligence/pipeline";
+import { loadAllowlist, extractTopics, extractUrls, extractHashtags, extractEntities } from "@rising-intelligence/pipeline";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -318,6 +318,50 @@ describe("Hashtag Extraction", () => {
   it("should deduplicate hashtags", () => {
     const hashtags = extractHashtags("#AWS and #aws and #AWS");
     expect(hashtags.length).toBe(1);
+  });
+});
+
+describe("Entity Extraction", () => {
+  it("should extract CVE IDs from text", () => {
+    const result = extractEntities(
+      "Critical vulnerability CVE-2024-1234 found in library. Also see CVE-2025-56789."
+    );
+    expect(result.cves).toEqual(["CVE-2024-1234", "CVE-2025-56789"]);
+    expect(result.ghsas).toEqual([]);
+  });
+
+  it("should extract GHSA IDs from text", () => {
+    const result = extractEntities(
+      "GitHub advisory GHSA-jfhm-5ghh-2f97 affects package foo."
+    );
+    expect(result.ghsas).toEqual(["GHSA-JFHM-5GHH-2F97"]);
+    expect(result.cves).toEqual([]);
+  });
+
+  it("should extract both CVE and GHSA IDs", () => {
+    const result = extractEntities(
+      "CVE-2024-9999 mapped to GHSA-jfhm-5ghh-2f97 in advisory database."
+    );
+    expect(result.cves).toEqual(["CVE-2024-9999"]);
+    expect(result.ghsas).toEqual(["GHSA-JFHM-5GHH-2F97"]);
+  });
+
+  it("should deduplicate and sort CVE IDs", () => {
+    const result = extractEntities(
+      "CVE-2024-5678 and CVE-2024-1234 and CVE-2024-5678 again."
+    );
+    expect(result.cves).toEqual(["CVE-2024-1234", "CVE-2024-5678"]);
+  });
+
+  it("should return empty arrays for text without entities", () => {
+    const result = extractEntities("No vulnerabilities here, just a blog post about AWS.");
+    expect(result.cves).toEqual([]);
+    expect(result.ghsas).toEqual([]);
+  });
+
+  it("should handle CVE IDs with varying digit counts", () => {
+    const result = extractEntities("CVE-2024-1234 and CVE-2025-1234567");
+    expect(result.cves).toEqual(["CVE-2024-1234", "CVE-2025-1234567"]);
   });
 });
 

@@ -366,6 +366,23 @@ cloud_security_advisories:
     topics: ["security.cve", "security.advisories"]
     notes: "NIST National Vulnerability Database recently analyzed CVEs"
 
+  - name: Kubernetes Official CVE Feed
+    url: https://kubernetes.io/docs/reference/issues-security/official-cve-feed/feed.xml
+    poll_interval_seconds: 3600
+    priority: 90
+    category: security_bulletin
+    topics: ["cloud.kubernetes", "security.cve", "security.advisories"]
+    notes: "Upstream Kubernetes CVE announcements - actionable for K8s operators"
+
+  - name: CISA Known Exploited Vulnerabilities
+    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+    poll_interval_seconds: 3600
+    priority: 92
+    category: security_bulletin
+    enabled: false
+    topics: ["security.cve", "security.advisories"]
+    notes: "CISA KEV catalog - JSON feed, requires custom parsing; disabled until adapter support"
+
 # =============================================================================
 # Cloud Service Health Status Feeds
 # =============================================================================
@@ -842,6 +859,14 @@ aggregators:
     category: aggregator
     topics: ["cloud.kubernetes", "cloud.cncf"]
     notes: "Cloud Native Computing Foundation blog - Kubernetes, cloud-native ecosystem"
+
+  - name: CNCF KubeWeekly
+    url: https://www.cncf.io/feed/?post_type=lf_kubeweekly
+    poll_interval_seconds: 86400
+    priority: 70
+    category: aggregator
+    topics: ["cloud.kubernetes", "cloud.cncf"]
+    notes: "Curated weekly roundup of Kubernetes and cloud-native ecosystem changes"
 
   # TechCrunch (optional - can be noisy)
   - name: TechCrunch
