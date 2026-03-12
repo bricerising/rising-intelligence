@@ -147,6 +147,112 @@ topics:
       - type: keyword
         value: "Fargate"
 
+  - key: aws.iam
+    display_name: AWS IAM
+    priority: 80
+    aliases: ["IAM"]
+    matchers:
+      - type: regex
+        pattern: "\\b(AWS\\s+)?IAM\\b"
+      - type: keyword
+        value: "Identity and Access Management"
+
+  - key: aws.cloudformation
+    display_name: AWS CloudFormation
+    priority: 75
+    aliases: ["CloudFormation", "CFN"]
+    matchers:
+      - type: keyword
+        value: "CloudFormation"
+
+  - key: aws.apigateway
+    display_name: AWS API Gateway
+    priority: 75
+    aliases: ["API Gateway"]
+    matchers:
+      - type: regex
+        pattern: "\\bAPI\\s+Gateway\\b.*\\bAWS\\b"
+      - type: regex
+        pattern: "\\bAWS\\b.*\\bAPI\\s+Gateway\\b"
+      - type: regex
+        pattern: "\\bAmazon\\s+API\\s+Gateway\\b"
+
+  - key: aws.security
+    display_name: AWS Security
+    priority: 80
+    aliases: ["AWS Security"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\b.*\\b(security|GuardDuty|Security Hub|WAF|Shield|Inspector|Macie)\\b"
+      - type: keyword
+        value: "GuardDuty"
+      - type: keyword
+        value: "AWS WAF"
+      - type: keyword
+        value: "Security Hub"
+
+  - key: aws.compute
+    display_name: AWS Compute
+    priority: 70
+    aliases: ["AWS Compute"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\b.*\\b(compute|Auto Scaling|Elastic Load Balancing|ELB)\\b"
+
+  - key: aws.ml
+    display_name: AWS Machine Learning
+    priority: 80
+    aliases: ["AWS ML", "AWS AI"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\b.*\\b(machine learning|ML|Rekognition|Comprehend|Textract|Polly|Transcribe)\\b"
+      - type: regex
+        pattern: "\\bAmazon\\s+(Rekognition|Comprehend|Textract|Polly|Transcribe)\\b"
+
+  - key: aws.data
+    display_name: AWS Data & Analytics
+    priority: 70
+    aliases: ["AWS Analytics"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\b.*\\b(analytics|Redshift|Athena|EMR|Glue|Kinesis|Lake Formation)\\b"
+      - type: regex
+        pattern: "\\bAmazon\\s+(Redshift|Athena|Kinesis)\\b"
+      - type: keyword
+        value: "AWS Glue"
+
+  - key: aws.devops
+    display_name: AWS DevOps
+    priority: 70
+    aliases: ["AWS DevOps"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\b.*\\b(CodePipeline|CodeBuild|CodeDeploy|CodeCommit|Systems Manager|SSM)\\b"
+      - type: regex
+        pattern: "\\bAWS\\s+(CodePipeline|CodeBuild|CodeDeploy|Systems Manager)\\b"
+
+  - key: aws.developer
+    display_name: AWS Developer Tools
+    priority: 65
+    aliases: ["AWS SDK"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\s+(SDK|CLI|CDK|SAM)\\b"
+      - type: keyword
+        value: "AWS CDK"
+
+  - key: aws.iot
+    display_name: AWS IoT
+    priority: 70
+    aliases: ["AWS IoT"]
+    matchers:
+      - type: regex
+        pattern: "\\bAWS\\s+IoT\\b"
+      - type: keyword
+        value: "AWS IoT"
+      - type: keyword
+        value: "AWS Greengrass"
+
   # ===========================================================================
   # AI / ML General (Priority 40-85: Varies by specificity)
   # ===========================================================================
@@ -161,7 +267,7 @@ topics:
       - type: regex
         pattern: "^.*\\bmachine learning\\b.*(algorithm|model|training|dataset).*$"
       - type: regex
-        pattern: "\\bAI[- ]?(based|powered|tool|tools|system|systems|chip|chips|startup|agent|agents)\\b"
+        pattern: "\\bAI[- ]?(based|powered|tool|tools|system|systems|chip|chips|startup)\\b"
 
   - key: ai.llm
     display_name: Large Language Models
@@ -188,12 +294,17 @@ topics:
   - key: ai.agents
     display_name: AI Agents
     priority: 85  # High priority - hot topic
-    aliases: ["Agents", "Agentic"]
+    aliases: ["Agentic AI"]
     matchers:
+      # Require AI/ML context to avoid matching "real estate agent", "support agent", etc.
       - type: regex
-        pattern: "\\b(AI\\s+)?agents?\\b"
+        pattern: "\\bAI\\s+agents?\\b"
       - type: keyword
         value: "agentic"
+      - type: regex
+        pattern: "\\bagent(s|ic)?\\b.*\\b(LLM|AI|model|tool.?use|function.?call|autono)"
+      - type: regex
+        pattern: "\\b(LLM|AI|model|autono).*\\bagent(s|ic)?\\b"
 
   - key: ai.rag
     display_name: RAG (Retrieval-Augmented Generation)
@@ -481,6 +592,97 @@ topics:
       - type: keyword
         value: "Cloudflare Workers"
 
+  # ===========================================================================
+  # GCP Sub-Services (Priority 70-80: Specific GCP products)
+  # ===========================================================================
+  - key: gcp.gke
+    display_name: GCP GKE
+    priority: 80
+    aliases: ["GKE", "Google Kubernetes Engine"]
+    matchers:
+      - type: keyword
+        value: "GKE"
+      - type: keyword
+        value: "Google Kubernetes Engine"
+
+  - key: gcp.bigquery
+    display_name: GCP BigQuery
+    priority: 80
+    aliases: ["BigQuery"]
+    matchers:
+      - type: keyword
+        value: "BigQuery"
+
+  - key: gcp.compute
+    display_name: GCP Compute Engine
+    priority: 75
+    aliases: ["Compute Engine"]
+    matchers:
+      - type: regex
+        pattern: "\\b(Google|GCP)\\s+(Compute Engine|Compute)\\b"
+
+  - key: gcp.cloudrun
+    display_name: GCP Cloud Run
+    priority: 75
+    aliases: ["Cloud Run"]
+    matchers:
+      - type: keyword
+        value: "Cloud Run"
+
+  - key: gcp.functions
+    display_name: GCP Cloud Functions
+    priority: 70
+    aliases: ["Cloud Functions"]
+    matchers:
+      - type: regex
+        pattern: "\\b(Google|GCP)\\s+Cloud\\s+Functions\\b"
+      - type: regex
+        pattern: "\\bCloud\\s+Functions\\b.*\\b(Google|GCP)\\b"
+
+  - key: gcp.cloudsql
+    display_name: GCP Cloud SQL
+    priority: 70
+    aliases: ["Cloud SQL"]
+    matchers:
+      - type: regex
+        pattern: "\\bCloud\\s+SQL\\b"
+
+  - key: gcp.cloudbuild
+    display_name: GCP Cloud Build
+    priority: 70
+    aliases: ["Cloud Build"]
+    matchers:
+      - type: regex
+        pattern: "\\bCloud\\s+Build\\b"
+
+  - key: gcp.vertex-ai
+    display_name: GCP Vertex AI
+    priority: 85
+    aliases: ["Vertex AI"]
+    matchers:
+      - type: keyword
+        value: "Vertex AI"
+
+  - key: gcp.dataflow
+    display_name: GCP Dataflow
+    priority: 70
+    aliases: ["Dataflow"]
+    matchers:
+      - type: regex
+        pattern: "\\b(Google|GCP)\\s+Dataflow\\b"
+      - type: regex
+        pattern: "\\bDataflow\\b.*\\b(Google|GCP|Apache Beam)\\b"
+
+  - key: gcp.observability
+    display_name: GCP Observability
+    priority: 65
+    aliases: ["Cloud Monitoring", "Cloud Logging"]
+    matchers:
+      - type: regex
+        pattern: "\\b(Google|GCP)\\s+(Cloud\\s+)?(Monitoring|Logging|Trace)\\b"
+      - type: keyword
+        value: "Google Cloud Observability"
+
   - key: cloud.general
     display_name: Cloud Computing
     priority: 10  # Very low priority - only for cloud strategy discussions
@@ -530,6 +732,107 @@ topics:
         pattern: "\\bCursor\\b.*\\b(AI|editor|IDE)\\b"
 
   # ===========================================================================
+  # Apple Ecosystem (Priority 60-85: Platform and developer topics)
+  # ===========================================================================
+  - key: apple.general
+    display_name: Apple
+    priority: 20  # Low priority - fallback when no specific Apple topic matches
+    aliases: ["Apple Inc"]
+    matchers:
+      - type: regex
+        pattern: "\\bApple\\b.*(announce|launch|release|product|strategy|WWDC)"
+      - type: keyword
+        value: "WWDC"
+
+  - key: apple.developer
+    display_name: Apple Developer
+    priority: 80
+    aliases: ["Apple Dev"]
+    matchers:
+      - type: keyword
+        value: "Apple Developer"
+      - type: regex
+        pattern: "\\b(SwiftUI|Swift\\s+\\d|UIKit|AppKit|Core\\s+(Data|ML|Location))\\b"
+      - type: regex
+        pattern: "\\bApple\\b.*\\b(SDK|API|framework|developer)\\b"
+
+  - key: apple.xcode
+    display_name: Xcode
+    priority: 80
+    aliases: ["Xcode"]
+    matchers:
+      - type: keyword
+        value: "Xcode"
+
+  - key: apple.releases
+    display_name: Apple Releases
+    priority: 82
+    aliases: ["iOS Release", "macOS Release"]
+    matchers:
+      - type: regex
+        pattern: "\\b(iOS|macOS|watchOS|tvOS|visionOS|iPadOS)\\s+\\d+(\\.\\d+)?"
+      - type: regex
+        pattern: "\\bApple\\b.*\\b(release|beta|RC|update)\\b"
+
+  - key: apple.security
+    display_name: Apple Security
+    priority: 85
+    aliases: ["Apple Security Advisory"]
+    matchers:
+      - type: regex
+        pattern: "\\bApple\\b.*\\b(security|vulnerabilit|CVE|patch|exploit)\\b"
+      - type: regex
+        pattern: "\\b(iOS|macOS)\\b.*\\b(security|zero.day|patch|vulnerabilit)\\b"
+
+  - key: apple.ecosystem
+    display_name: Apple Ecosystem
+    priority: 30  # Low priority - broad ecosystem coverage
+    aliases: ["Apple News"]
+    matchers:
+      - type: regex
+        pattern: "\\b(iPhone|iPad|Mac|MacBook|Apple Watch|Vision Pro|AirPods|HomePod)\\b"
+
+  - key: apple.macos
+    display_name: macOS
+    priority: 70
+    aliases: ["Mac OS"]
+    matchers:
+      - type: keyword
+        value: "macOS"
+      - type: regex
+        pattern: "\\bmacOS\\s+(Sequoia|Sonoma|Ventura|Monterey|Catalina)"
+
+  - key: apple.webkit
+    display_name: WebKit
+    priority: 70
+    aliases: ["Safari Engine"]
+    matchers:
+      - type: keyword
+        value: "WebKit"
+      - type: regex
+        pattern: "\\bSafari\\b.*\\b(browser|engine|update|release)\\b"
+
+  - key: apple.app-store-connect
+    display_name: App Store Connect
+    priority: 75
+    aliases: ["ASC"]
+    matchers:
+      - type: keyword
+        value: "App Store Connect"
+      - type: regex
+        pattern: "\\bApp\\s+Store\\b.*\\b(review|submission|distribution|connect)\\b"
+
+  - key: apple.apns
+    display_name: Apple Push Notifications
+    priority: 70
+    aliases: ["APNS", "APNs"]
+    matchers:
+      - type: regex
+        pattern: "\\bAPNs?\\b"
+      - type: keyword
+        value: "Apple Push Notification"
+
+  # ===========================================================================
   # Security (Priority 70: Important but often noisy)
   # ===========================================================================
   - key: security.general
@@ -565,6 +868,67 @@ topics:
         value: "NVD"
       - type: keyword
         value: "CVSS"
+
+  - key: security.advisories
+    display_name: Security Bulletins
+    priority: 75
+    aliases: ["Security Bulletin", "Patch Advisory"]
+    matchers:
+      - type: keyword
+        value: "security bulletin"
+      - type: keyword
+        value: "security advisory"
+      - type: keyword
+        value: "security update"
+      - type: regex
+        pattern: "\\b(patch|hotfix|security fix)\\b.*\\b(critical|important|high|severe)\\b"
+
+  - key: security.threat-intel
+    display_name: Threat Intelligence
+    priority: 75
+    aliases: ["Threat Intel", "APT"]
+    matchers:
+      - type: regex
+        pattern: "\\b(APT|threat actor|threat group|campaign|malware family|IOC|indicator.of.compromise)\\b"
+      - type: keyword
+        value: "threat intelligence"
+      - type: keyword
+        value: "threat landscape"
+
+  # ===========================================================================
+  # Policy & Regulatory (Priority 60-70)
+  # ===========================================================================
+  - key: regulation.sec
+    display_name: SEC Regulation
+    priority: 65
+    aliases: ["Securities and Exchange Commission"]
+    matchers:
+      - type: regex
+        pattern: "\\bSEC\\b.*\\b(regulation|ruling|enforcement|filing|compliance|rule)\\b"
+      - type: keyword
+        value: "Securities and Exchange Commission"
+
+  - key: macro.fed
+    display_name: Federal Reserve
+    priority: 65
+    aliases: ["Fed", "FOMC"]
+    matchers:
+      - type: keyword
+        value: "Federal Reserve"
+      - type: keyword
+        value: "FOMC"
+      - type: regex
+        pattern: "\\bFed\\b.*\\b(rate|policy|monetary|inflation|employment)\\b"
+
+  - key: tech.policy
+    display_name: Tech Policy
+    priority: 55
+    aliases: ["Tech Regulation"]
+    matchers:
+      - type: regex
+        pattern: "\\b(antitrust|regulation|policy)\\b.*\\b(tech|technology|Big Tech|Apple|Google|Meta|Amazon|Microsoft)\\b"
+      - type: regex
+        pattern: "\\b(EU|European Commission|FTC|DOJ)\\b.*\\b(tech|digital|antitrust)\\b"
 
   # ===========================================================================
   # AI Research (Priority 70-75: Papers and preprints)

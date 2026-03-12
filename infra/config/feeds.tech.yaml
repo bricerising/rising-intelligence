@@ -299,7 +299,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 88
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.cloudbuild", "security"]
+    topics: ["cloud.gcp", "gcp.cloudbuild", "security.advisories"]
     notes: "Security advisories specific to Cloud Build"
 
   - name: GCP Dataflow Security Bulletins
@@ -307,7 +307,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 86
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.dataflow", "security"]
+    topics: ["cloud.gcp", "gcp.dataflow", "security.advisories"]
     notes: "Security advisories specific to Dataflow"
 
   - name: GCP Generative AI on Vertex AI Security Bulletins
@@ -315,7 +315,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 88
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.vertex-ai", "security", "ai"]
+    topics: ["cloud.gcp", "gcp.vertex-ai", "security.advisories"]
     notes: "Security advisories for generative AI capabilities on Vertex AI"
 
   - name: GCP Managed Prometheus Security Bulletins
@@ -323,7 +323,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 84
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.observability", "security"]
+    topics: ["cloud.gcp", "gcp.observability", "security.advisories"]
     notes: "Security advisories for Managed Service for Prometheus"
 
   - name: GCP Compute Engine Security Bulletins
@@ -331,7 +331,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 90
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.compute", "security"]
+    topics: ["cloud.gcp", "gcp.compute", "security.advisories"]
     notes: "Compute Engine vulnerability and patch advisories"
 
   - name: GCP GKE Security Bulletins
@@ -339,7 +339,7 @@ cloud_security_advisories:
     poll_interval_seconds: 7200
     priority: 92
     category: security_bulletin
-    topics: ["cloud.gcp", "gcp.gke", "security"]
+    topics: ["cloud.gcp", "gcp.gke", "security.advisories"]
     notes: "Google Kubernetes Engine security advisories"
 
   - name: GitHub Security Advisories
@@ -358,6 +358,14 @@ cloud_security_advisories:
     topics: ["security.general", "cloud.azure"]
     notes: "Microsoft Security Response Center vulnerability disclosures and patches"
 
+  - name: NVD CVE Feed (Recent)
+    url: https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss-analyzed.xml
+    poll_interval_seconds: 3600
+    priority: 80
+    category: security_bulletin
+    topics: ["security.cve", "security.advisories"]
+    notes: "NIST National Vulnerability Database recently analyzed CVEs"
+
 # =============================================================================
 # Cloud Service Health Status Feeds
 # =============================================================================
@@ -368,7 +376,7 @@ cloud_service_health:
     poll_interval_seconds: 900
     priority: 93
     category: service_health
-    topics: ["aws.status", "status"]
+    topics: ["aws.general"]
     notes: "Public AWS service health feed across all services"
 
   - name: Google Cloud Service Health
@@ -376,7 +384,7 @@ cloud_service_health:
     poll_interval_seconds: 900
     priority: 93
     category: service_health
-    topics: ["cloud.gcp", "status"]
+    topics: ["cloud.gcp"]
     notes: "Official Google Cloud service health status Atom feed"
 
   - name: Azure Service Health
@@ -384,7 +392,7 @@ cloud_service_health:
     poll_interval_seconds: 900
     priority: 93
     category: service_health
-    topics: ["cloud.azure", "status"]
+    topics: ["cloud.azure"]
     notes: "Public Azure status RSS feed"
 
 # =============================================================================
@@ -397,7 +405,7 @@ apple_official_updates:
     poll_interval_seconds: 1800
     priority: 94
     category: official_blog
-    topics: ["apple.general", "apple.official"]
+    topics: ["apple.general", "apple.releases"]
     notes: "Canonical Apple announcements for product, policy, and executive updates"
 
   - name: Apple Developer News and Updates
@@ -421,7 +429,7 @@ apple_official_updates:
     poll_interval_seconds: 3600
     priority: 86
     category: official_blog
-    topics: ["apple.webkit", "browser.webkit"]
+    topics: ["apple.webkit"]
     notes: "WebKit platform updates impacting Safari behavior and web compatibility"
 
   - name: Apple Developer Forums (Xcode tag)
@@ -453,7 +461,7 @@ apple_official_updates:
     poll_interval_seconds: 3600
     priority: 76
     category: community_signal
-    topics: ["apple.developer", "apple.technotes"]
+    topics: ["apple.developer"]
     notes: "Technote-driven updates and remediation guidance discussed in the forums"
 
 apple_security_advisories:
@@ -628,7 +636,7 @@ apple_community_signals:
     priority: 45
     category: community_signal
     enabled: false
-    topics: ["apple.ecosystem", "community.reddit"]
+    topics: ["apple.ecosystem"]
     notes: "High-volume community chatter; disabled by default due noise"
 
 # =============================================================================
@@ -728,6 +736,24 @@ ai_research:
   #   category: ai_research
   #   topics: ["ai.meta"]
   #   notes: "Meta AI research - LLaMA releases, open-source models"
+
+  # DeepMind
+  - name: Google DeepMind Blog
+    url: https://deepmind.google/blog/rss.xml
+    poll_interval_seconds: 14400
+    priority: 88
+    category: ai_research
+    topics: ["ai.google", "ai.research"]
+    notes: "Google DeepMind research blog - Gemini, AlphaFold, frontier research"
+
+  # Mistral AI
+  - name: Mistral AI News
+    url: https://mistral.ai/feed.xml
+    poll_interval_seconds: 7200
+    priority: 85
+    category: ai_research
+    topics: ["ai.mistral"]
+    notes: "Mistral AI official updates - model releases, partnerships"
 
   # arXiv Research Feeds (updated daily ~midnight ET)
   - name: arXiv cs.AI (Artificial Intelligence)
