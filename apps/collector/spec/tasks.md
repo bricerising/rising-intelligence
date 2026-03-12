@@ -2,6 +2,7 @@
 
 ## Progress
 
+- 2026-03-12: Expanded the tech feed set with additional supported RSS/Atom sources (ZDI advisories/blog, arXiv stat.ML/cs.RO/q-bio.NC, Ethereum Foundation blog, NVIDIA/Intel GitHub security streams, OpenSSL and Bitcoin release feeds). Added disabled JSON/API placeholders for NVD 2.0, OSV, KEV, and Kubernetes CVE JSON pending a generic JSON adapter.
 - 2026-02-11: Implemented T009 source staleness metrics (`ri_collector_last_success_timestamp{source}`, `ri_collector_source_healthy{source}`) and preserved per-source `last_poll_at` across error states.
 - 2026-02-15: Implemented POS source-pack tasks T012-T020 (feed-set config, market-filter loading, high/low-volume gates, market tags + metadata, EDGAR form allowlist + detail metadata, no primary-doc downloads, and 30-minute EDGAR polling jitter guardrails). Expanded EDGAR watchlist coverage in `infra/config/feeds.pos.yaml` and corrected CIK mappings for Global Payments and Adyen.
 - 2026-02-15: Hardened POS runtime defaults for local deployment: added configurable SEC-compliant EDGAR user-agent (`SEC_USER_AGENT`), switched BIS source to a live RSS endpoint, and added public payments newsroom feeds (`PYMNTS`, `PaymentsJournal`) to improve steady POS signal volume.

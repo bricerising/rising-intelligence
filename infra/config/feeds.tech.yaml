@@ -5,6 +5,7 @@
 # Structure:
 # - Each source has: url, poll_interval, category, priority, and optional filters
 # - poll_interval: seconds between polls (respect rate limits)
+# - request_spacing_ms: optional minimum delay between requests to the same host
 # - priority: 1-100 (higher = more important, affects trend scoring)
 # - enabled: toggle sources on/off without removing config
 #
@@ -374,14 +375,50 @@ cloud_security_advisories:
     topics: ["cloud.kubernetes", "security.cve", "security.advisories"]
     notes: "Upstream Kubernetes CVE announcements - actionable for K8s operators"
 
-  - name: CISA Known Exploited Vulnerabilities
-    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+# =============================================================================
+# Security Research & Vulnerability Intelligence
+# =============================================================================
+security_research:
+
+  - name: ZDI Published Advisories
+    url: https://www.zerodayinitiative.com/rss/published/
     poll_interval_seconds: 3600
-    priority: 92
+    priority: 88
     category: security_bulletin
-    enabled: false
-    topics: ["security.cve", "security.advisories"]
-    notes: "CISA KEV catalog - JSON feed, requires custom parsing; disabled until adapter support"
+    topics: ["security.general", "security.advisories", "security.cve"]
+    notes: "Primary Zero Day Initiative published advisory feed"
+
+  - name: ZDI Upcoming Advisories
+    url: https://www.zerodayinitiative.com/rss/upcoming/
+    poll_interval_seconds: 3600
+    priority: 72
+    category: security_bulletin
+    topics: ["security.general", "security.advisories"]
+    notes: "Advance notice for upcoming ZDI disclosures"
+
+  - name: ZDI Blog
+    url: https://www.zerodayinitiative.com/blog/?format=rss
+    poll_interval_seconds: 10800
+    priority: 65
+    category: security_bulletin
+    topics: ["security.general", "security.advisories"]
+    notes: "Technical writeups and exploitation context from ZDI researchers"
+
+  - name: NVIDIA Product Security Commits
+    url: https://github.com/NVIDIA/product-security/commits/main.atom
+    poll_interval_seconds: 3600
+    priority: 82
+    category: security_bulletin
+    topics: ["semiconductors.general", "security.advisories"]
+    notes: "GitHub activity feed for NVIDIA security bulletins and CSAF documents"
+
+  - name: Intel Security Center Commits
+    url: https://github.com/intel/security-center/commits/main.atom
+    poll_interval_seconds: 3600
+    priority: 82
+    category: security_bulletin
+    topics: ["semiconductors.general", "security.advisories"]
+    notes: "GitHub activity feed for Intel security advisories and CSAF updates"
 
 # =============================================================================
 # Cloud Service Health Status Feeds
@@ -776,34 +813,65 @@ ai_research:
   - name: arXiv cs.AI (Artificial Intelligence)
     url: https://rss.arxiv.org/rss/cs.AI
     poll_interval_seconds: 21600  # Every 6 hours (feeds update daily)
+    request_spacing_ms: 3000
     priority: 80
     category: ai_research
     topics: ["ai.research", "ai.general"]
-    notes: "arXiv AI papers - new submissions in cs.AI category"
+    notes: "arXiv AI papers - new submissions in cs.AI category; enforce 3s host pacing"
 
   - name: arXiv cs.LG (Machine Learning)
     url: https://rss.arxiv.org/rss/cs.LG
     poll_interval_seconds: 21600
+    request_spacing_ms: 3000
     priority: 80
     category: ai_research
     topics: ["ai.research", "ai.llm"]
-    notes: "arXiv ML papers - core ML research including deep learning"
+    notes: "arXiv ML papers - core ML research including deep learning; enforce 3s host pacing"
 
   - name: arXiv cs.CL (Computation and Language)
     url: https://rss.arxiv.org/rss/cs.CL
     poll_interval_seconds: 21600
+    request_spacing_ms: 3000
     priority: 82
     category: ai_research
     topics: ["ai.research", "ai.llm"]
-    notes: "arXiv NLP papers - LLM research, tokenization, language understanding"
+    notes: "arXiv NLP papers - LLM research, tokenization, language understanding; enforce 3s host pacing"
 
   - name: arXiv cs.CV (Computer Vision)
     url: https://rss.arxiv.org/rss/cs.CV
     poll_interval_seconds: 21600
+    request_spacing_ms: 3000
     priority: 75
     category: ai_research
     topics: ["ai.research"]
-    notes: "arXiv vision papers - multimodal models, image generation"
+    notes: "arXiv vision papers - multimodal models, image generation; enforce 3s host pacing"
+
+  - name: arXiv stat.ML (Statistical ML)
+    url: https://rss.arxiv.org/rss/stat.ML
+    poll_interval_seconds: 43200
+    request_spacing_ms: 3000
+    priority: 72
+    category: ai_research
+    topics: ["ai.research"]
+    notes: "arXiv statistical ML papers - theory and methods coverage; enforce 3s host pacing"
+
+  - name: arXiv cs.RO (Robotics)
+    url: https://rss.arxiv.org/rss/cs.RO
+    poll_interval_seconds: 43200
+    request_spacing_ms: 3000
+    priority: 62
+    category: ai_research
+    topics: ["ai.research"]
+    notes: "arXiv robotics papers - research-to-product signal; enforce 3s host pacing"
+
+  - name: arXiv q-bio.NC (Neurons and Cognition)
+    url: https://rss.arxiv.org/rss/q-bio.NC
+    poll_interval_seconds: 86400
+    request_spacing_ms: 3000
+    priority: 40
+    category: ai_research
+    topics: ["ai.research"]
+    notes: "arXiv neuro/biological modeling papers; enforce 3s host pacing"
 
   - name: Hugging Face Blog
     url: https://huggingface.co/blog/feed.xml
@@ -812,6 +880,18 @@ ai_research:
     category: ai_research
     topics: ["ai.huggingface", "ai.llm"]
     notes: "Official Hugging Face blog - model releases, open-source ML updates"
+
+# =============================================================================
+# Protocol & Ecosystem Updates
+# =============================================================================
+protocol_ecosystem_updates:
+
+  - name: Ethereum Foundation Blog
+    url: https://blog.ethereum.org/feed.xml
+    poll_interval_seconds: 10800
+    priority: 45
+    category: official_blog
+    notes: "Official Ethereum Foundation updates - protocol, research, and ecosystem changes"
 
 # =============================================================================
 # Aggregated Tech News (Curated, High-Signal)
@@ -1020,6 +1100,10 @@ github_releases:
       repo: compose
       topics: ["cloud.docker"]
 
+    - owner: openssl
+      repo: openssl
+      topics: ["security.general"]
+
     # Languages & Runtimes
     - owner: nodejs
       repo: node
@@ -1064,6 +1148,77 @@ github_releases:
       repo: opentelemetry-js
       topics: ["observability.opentelemetry"]
 
+    # Security-critical OSS / protocol releases
+    - owner: bitcoin
+      repo: bitcoin
+
+# =============================================================================
+# Deferred JSON/API Sources
+# =============================================================================
+# These are intentionally disabled until the collector has a generic JSON/API adapter
+# with checkpointing, conditional requests, and structured dedup.
+future_json_sources:
+
+  - name: CISA KEV Raw JSON
+    url: https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json
+    poll_interval_seconds: 3600
+    priority: 95
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["security.cve", "security.advisories"]
+    notes: "Official CISA-maintained KEV mirror on GitHub; requires JSON adapter support"
+
+  - name: NVD CVE Recent (2.0 JSON GZ)
+    url: https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-recent.json.gz
+    poll_interval_seconds: 7200
+    priority: 92
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["security.cve", "security.advisories"]
+    notes: "Bulk JSON feed for newly published CVEs; requires META/ETag-aware adapter support"
+
+  - name: NVD CVE Modified (2.0 JSON GZ)
+    url: https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz
+    poll_interval_seconds: 7200
+    priority: 92
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["security.cve", "security.advisories"]
+    notes: "Bulk JSON feed for recently modified CVEs; requires META/ETag-aware adapter support"
+
+  - name: NVD CVE API
+    url: https://services.nvd.nist.gov/rest/json/cves/2.0
+    poll_interval_seconds: 900
+    priority: 92
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["security.cve", "security.advisories"]
+    notes: "Incremental CVE API for filtered sync; requires rate limiting and checkpoint support"
+
+  - name: OSV Query API
+    url: https://api.osv.dev/v1/query
+    poll_interval_seconds: 3600
+    priority: 88
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["security.cve", "security.advisories", "security.general"]
+    notes: "OpenSSF vulnerability query API; requires request batching and structured dedup support"
+
+  - name: Kubernetes Official CVE Feed (JSON)
+    url: https://k8s.io/docs/reference/issues-security/official-cve-feed/index.json
+    poll_interval_seconds: 3600
+    priority: 90
+    category: security_bulletin
+    enabled: false
+    source_type: json_api
+    topics: ["cloud.kubernetes", "security.cve", "security.advisories"]
+    notes: "Structured Kubernetes CVE feed; keep disabled until JSON adapter support lands"
+
 # =============================================================================
 # Advanced: Custom HN Feeds via hnrss.org
 # =============================================================================
@@ -1096,5 +1251,5 @@ hnrss_custom:
 # Every 2-4 hours: Security bulletins, research blogs, InfoQ, lower-priority sources
 # Daily: GitHub trending, GitHub releases
 #
-# Total sources (default enabled): ~67 RSS feeds + HN + 8 subreddits
-# Estimated daily RSS polls (enabled feeds): ~1650 (well within rate limits)
+# Total sources (default enabled): ~77 RSS/Atom feeds + HN + 8 subreddits
+# Estimated daily RSS polls (enabled feeds): ~1760 plus host-level pacing where configured

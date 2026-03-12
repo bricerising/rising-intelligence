@@ -34,6 +34,7 @@ interface FeedConfig {
   name: string;
   url: string;
   poll_interval_seconds: number;
+  request_spacing_ms?: number;
   priority: number;
   enabled: boolean;
   category?: string;
@@ -48,6 +49,7 @@ interface FeedConfig {
 
 interface FeedDefaults {
   poll_interval_seconds?: number;
+  request_spacing_ms?: number;
   priority?: number;
   enabled?: boolean;
   market_gate?: boolean;
@@ -166,6 +168,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function expandGitHubReleases(section: unknown): Record<string, unknown>[] {
   if (!isRecord(section)) {
     return [];
@@ -279,6 +285,10 @@ function normalizeFeedConfig(
         ?? DEFAULT_FEED_POLL_INTERVAL_SECONDS
     )
   );
+  const requestSpacingMsRaw = parseNumber(rawFeed.request_spacing_ms) ?? defaults.request_spacing_ms;
+  const requestSpacingMs = requestSpacingMsRaw === undefined
+    ? undefined
+    : Math.max(0, Math.floor(requestSpacingMsRaw));
 
   const priority = Math.max(
     1,
@@ -301,6 +311,7 @@ function normalizeFeedConfig(
     name,
     url,
     poll_interval_seconds: pollIntervalSeconds,
+    request_spacing_ms: requestSpacingMs,
     priority,
     enabled,
     category: typeof rawFeed.category === "string" ? rawFeed.category : undefined,
@@ -329,6 +340,7 @@ function loadFeedsConfig(paths: string): FeedConfig[] {
     const defaultsRoot = isRecord(root.defaults) ? root.defaults : {};
     const defaults: FeedDefaults = {
       poll_interval_seconds: parseNumber(defaultsRoot.poll_interval_seconds),
+      request_spacing_ms: parseNumber(defaultsRoot.request_spacing_ms),
       priority: parseNumber(defaultsRoot.priority),
       enabled: parseBoolean(defaultsRoot.enabled),
       market_gate: parseBoolean(defaultsRoot.market_gate),
@@ -484,6 +496,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
   private random: () => number;
   private fetchEdgarDetailMetadata: EdgarDetailMetadataFetcher;
   private nextPollAtByFeed = new Map<string, number>();
+  private nextRequestAtByHost = new Map<string, number>();
   private watchlistEntityTerms: string[];
 
   constructor(
@@ -605,6 +618,28 @@ export class RSSAdapter implements CollectorIngestionAdapter {
       return true;
     }
     return nowMs >= nextPollAt;
+  }
+
+  private async waitForFeedRequestWindow(feed: FeedConfig): Promise<void> {
+    const spacingMs = feed.request_spacing_ms;
+    if (!spacingMs || spacingMs <= 0) {
+      return;
+    }
+
+    let host: string;
+    try {
+      host = new URL(feed.url).host.toLowerCase();
+    } catch {
+      return;
+    }
+
+    const now = Date.now();
+    const nextAllowedAt = this.nextRequestAtByHost.get(host) ?? now;
+    const delayMs = nextAllowedAt - now;
+    if (delayMs > 0) {
+      await wait(delayMs);
+    }
+    this.nextRequestAtByHost.set(host, Date.now() + spacingMs);
   }
 
   async *fetch(): AsyncIterable<FetchResult> {
@@ -766,6 +801,7 @@ export class RSSAdapter implements CollectorIngestionAdapter {
 
     let parsedFeed;
     try {
+      await this.waitForFeedRequestWindow(feed);
       parsedFeed = await this.parser.parseURL(feed.url);
     } catch (error) {
       try {

@@ -53,6 +53,7 @@ describe("RSSAdapter", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -126,6 +127,36 @@ policy_feeds:
         name: "PR Newswire",
         market_gate: true,
         signal_tier: "high_volume",
+      });
+    });
+
+    it("propagates request_spacing_ms from defaults and lets feeds override it", () => {
+      writeFileSync(
+        feedsPath,
+        `
+defaults:
+  request_spacing_ms: 3000
+
+research:
+  - name: arXiv cs.AI
+    url: https://rss.arxiv.org/rss/cs.AI
+  - name: arXiv cs.RO
+    url: https://rss.arxiv.org/rss/cs.RO
+    request_spacing_ms: 5000
+`
+      );
+
+      const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+      const feeds = (adapter as any).feeds as any[];
+
+      expect(feeds).toHaveLength(2);
+      expect(feeds[0]).toMatchObject({
+        name: "arXiv cs.AI",
+        request_spacing_ms: 3000,
+      });
+      expect(feeds[1]).toMatchObject({
+        name: "arXiv cs.RO",
+        request_spacing_ms: 5000,
       });
     });
 
@@ -377,6 +408,48 @@ official_blogs:
       }
 
       expect(results).toHaveLength(0);
+    });
+
+    it("paces same-host requests when request_spacing_ms is configured", async () => {
+      vi.useFakeTimers();
+      writeFileSync(
+        feedsPath,
+        `
+research:
+  - name: arXiv cs.AI
+    url: https://rss.arxiv.org/rss/cs.AI
+    request_spacing_ms: 1000
+  - name: arXiv cs.RO
+    url: https://rss.arxiv.org/rss/cs.RO
+    request_spacing_ms: 1000
+`
+      );
+
+      const mockParser = {
+        parseURL: vi.fn().mockResolvedValue({ items: [] }),
+      };
+
+      (Parser as any).mockImplementation(() => mockParser);
+
+      const adapter = new RSSAdapter(feedsPath, 300000, createMockCheckpoints(), createTestLogger());
+      await adapter.initialize();
+
+      const consume = (async () => {
+        for await (const _result of adapter.fetch()) {
+          // No-op.
+        }
+      })();
+
+      await Promise.resolve();
+      expect(mockParser.parseURL).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(mockParser.parseURL).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await consume;
+
+      expect(mockParser.parseURL).toHaveBeenCalledTimes(2);
     });
 
     it("continues processing other feeds when one fails", async () => {

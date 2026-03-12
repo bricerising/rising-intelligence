@@ -149,11 +149,19 @@ X-RateLimit-Reset: 1707177600
 **Limits**:
 - No standard limits (varies by feed provider)
 - Best practice: respect `Cache-Control` and `Last-Modified` headers
+- Some publishers impose explicit host pacing requirements even for RSS/Atom
 
 **Implementation**:
 - Poll interval: minimum 300 seconds (5 minutes)
 - Use conditional requests (`If-Modified-Since`, `If-None-Match`)
 - Backoff: On 5xx errors, exponential backoff starting at 30s
+- Respect per-host pacing via `request_spacing_ms` in feed config when a publisher documents stricter requirements
+
+#### arXiv RSS pacing
+
+- arXiv RSS feeds MUST be spaced by at least 3 seconds per host request.
+- Collector feed config SHOULD set `request_spacing_ms: 3000` for all `rss.arxiv.org` feeds.
+- This pacing is host-level, so multiple arXiv category feeds in the same poll cycle remain compliant.
 
 ### NewsAPI (if used)
 
